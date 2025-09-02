@@ -1,0 +1,236 @@
+# tester.nim
+# Etch testing framework: test discovery, execution, and result reporting
+
+import std/[os, strformat, strutils, algorithm, osproc]
+
+type
+  TestResult* = object
+    name*: string
+    passed*: bool
+    expected*: string
+    actual*: string
+    error*: string
+
+  ExecutionResult = object
+    stdout: string
+    stderr: string
+    exitCode: int
+    isCompilerError: bool
+
+proc normalizeOutput(output: string): string =
+  ## Normalize output for comparison (remove extra whitespace, normalize line endings)
+  output.strip().replace("\r\n", "\n").replace("\r", "\n")
+
+proc executeWithSeparateStreams(cmd: string): ExecutionResult =
+  ## Execute command with separate stdout/stderr capture
+  try:
+    # Use execCmdEx and then try to separate compiler vs program output
+    let (output, exitCode) = osproc.execCmdEx(cmd)
+
+    # For now, treat all output as stdout (we'll filter it intelligently)
+    # In a real implementation, we could modify the Etch CLI to separate outputs
+    let stdout = output
+    let stderr = ""
+
+    # Determine if this is a compiler error vs runtime error
+    let isCompilerError = exitCode != 0 and (
+      output.contains("Error:") and not output.contains("Runtime error:") or
+      output.contains("undeclared identifier") or
+      output.contains("type mismatch") or
+      output.contains("cannot open") or
+      output.contains("No main") or
+      output.contains("Compilation failed") or
+      output.contains("failed to")
+    )
+
+    ExecutionResult(
+      stdout: stdout,
+      stderr: stderr,
+      exitCode: exitCode,
+      isCompilerError: isCompilerError
+    )
+  except:
+    ExecutionResult(
+      stdout: "",
+      stderr: "Failed to execute: " & getCurrentExceptionMsg(),
+      exitCode: -1,
+      isCompilerError: true
+    )
+
+proc smartFilterOutput(execResult: ExecutionResult): string =
+  ## Intelligently filter output based on execution context
+  if execResult.isCompilerError:
+    # For compiler errors, filter and return stdout (since all output goes there)
+    # We still need to filter out Nim compilation messages
+    var lines: seq[string] = @[]
+    for line in execResult.stdout.splitLines:
+      let trimmed = line.strip()
+      # Skip Nim compiler output but keep Etch compiler errors
+      if trimmed.startsWith("Hint:") or
+         trimmed.startsWith("Error: execution of an external program failed") or
+         trimmed.startsWith("Compiling:"):
+        continue
+      lines.add(line)
+    return normalizeOutput(lines.join("\n"))
+
+  # For successful execution or runtime errors, filter stdout
+  var lines: seq[string] = @[]
+  var foundProgramOutput = false
+
+  for line in execResult.stdout.splitLines:
+    let trimmed = line.strip()
+
+    # Skip empty lines at the beginning
+    if not foundProgramOutput and trimmed == "":
+      continue
+
+    # Common patterns that indicate compiler output (not program output)
+    if trimmed.startsWith("Compiling:") or
+       trimmed.startsWith("Cached bytecode to:") or
+       trimmed.startsWith("Using cached bytecode:") or
+       trimmed.startsWith("Generated debug bytecode:") or
+       (trimmed.startsWith("Warning:") and not foundProgramOutput) or
+       (trimmed.startsWith("Failed to") and not foundProgramOutput):
+      continue
+
+    # Once we find any output that looks like program output,
+    # include everything from that point forward
+    foundProgramOutput = true
+    lines.add(line)
+
+  # If no program output found but we have runtime error in stderr
+  if lines.len == 0 and execResult.stderr.contains("Runtime error:"):
+    return normalizeOutput(execResult.stderr)
+
+  normalizeOutput(lines.join("\n"))
+
+proc runSingleTest*(testFile: string): TestResult =
+  ## Run a single test file and compare output with expected result
+  let baseName = testFile.splitFile.name
+  let testDir = testFile.splitFile.dir
+  let resultFile = testDir / baseName & ".pass"
+  let errorFile = testDir / baseName & ".fail"
+
+  result = TestResult(name: baseName, passed: false)
+
+  # Check if we have a .pass file (success case) or .fail file (expected failure)
+  let hasResultFile = fileExists(resultFile)
+  let hasErrorFile = fileExists(errorFile)
+
+  if not hasResultFile and not hasErrorFile:
+    result.error = "No .pass or .fail file found"
+    return
+
+  if hasResultFile and hasErrorFile:
+    result.error = "Both .pass and .fail files found - use only one"
+    return
+
+  # Read expected output/error
+  try:
+    if hasResultFile:
+      result.expected = normalizeOutput(readFile(resultFile))
+    else:
+      result.expected = normalizeOutput(readFile(errorFile))
+  except:
+    result.error = "Failed to read expected output file: " & getCurrentExceptionMsg()
+    return
+
+  # Execute the test
+  let etchExe = getAppFilename()
+  let cmd = fmt"{etchExe} --run {testFile}"
+  let execResult = executeWithSeparateStreams(cmd)
+
+  # Handle different types of outcomes
+  if execResult.exitCode != 0:
+    # Test failed - check if this was expected
+    if hasErrorFile:
+      # Expected failure - compare error output
+      result.actual = smartFilterOutput(execResult)
+      result.passed = result.expected == result.actual
+      if not result.passed:
+        result.error = "Error output mismatch"
+    else:
+      # Unexpected failure
+      if execResult.isCompilerError:
+        result.error = fmt"Unexpected compilation failure: {normalizeOutput(execResult.stderr)}"
+      else:
+        result.error = fmt"Unexpected runtime error (exit code {execResult.exitCode})"
+      result.actual = smartFilterOutput(execResult)
+  else:
+    # Test succeeded - check if this was expected
+    if hasErrorFile:
+      # Expected failure but got success
+      result.error = "Expected test to fail but it succeeded"
+      result.actual = smartFilterOutput(execResult)
+    else:
+      # Expected success - compare output
+      result.actual = smartFilterOutput(execResult)
+      result.passed = result.expected == result.actual
+      if not result.passed:
+        result.error = "Output mismatch"
+
+proc findTestFiles*(directory: string): seq[string] =
+  ## Find all .etch files in directory that have corresponding .result or .error files
+  result = @[]
+
+  if not dirExists(directory):
+    echo fmt"Test directory '{directory}' does not exist"
+    return
+
+  for file in walkFiles(directory / "*.etch"):
+    let baseName = file.splitFile.name
+    let resultFile = directory / baseName & ".pass"
+    let errorFile = directory / baseName & ".fail"
+    if fileExists(resultFile) or fileExists(errorFile):
+      result.add(file)
+
+  result.sort()
+
+proc runTests*(directory: string = "examples"): int =
+  ## Run all tests in the specified directory
+  echo fmt"Running tests in directory: {directory}"
+
+  let testFiles = findTestFiles(directory)
+  if testFiles.len == 0:
+    echo "No test files found (looking for .etch files with corresponding .pass or .fail files)"
+    return 1
+
+  echo fmt"Found {testFiles.len} test files"
+  echo ""
+
+  var passed = 0
+  var failed = 0
+  var results: seq[TestResult] = @[]
+
+  for testFile in testFiles:
+    echo fmt"Running {testFile.splitFile.name}... "
+    let res = runSingleTest(testFile)
+    results.add(res)
+
+    if res.passed:
+      echo "✓ PASSED"
+      inc passed
+    else:
+      echo "✗ FAILED"
+      inc failed
+      echo fmt"  Error: {res.error}"
+      if res.expected != res.actual:
+        echo "  Expected:"
+        for line in res.expected.splitLines:
+          echo fmt"    {line}"
+        echo "  Actual:"
+        for line in res.actual.splitLines:
+          echo fmt"    {line}"
+      echo ""
+
+  echo fmt"Test Summary: {passed} passed, {failed} failed, {testFiles.len} total"
+
+  if failed > 0:
+    echo ""
+    echo "Failed tests:"
+    for r in results:
+      if not r.passed:
+        echo fmt"  - {r.name}: {r.error}"
+    return 1
+
+  return 0

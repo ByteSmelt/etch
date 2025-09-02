@@ -1,0 +1,7 @@
+fn main() -> void {
+    comptime {
+        let content: string = readFile("tests/data/config.txt");
+        print(content);
+    }
+    print(42);
+}
