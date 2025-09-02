@@ -60,13 +60,17 @@ type
     lineToInstructionMap*: Table[int, seq[int]]
     compilerFlags*: CompilerFlags
 
+const
+  BYTECODE_MAGIC = "ETCH"
+  BYTECODE_VERSION = 5
+
 proc serializeToBinary*(prog: BytecodeProgram): string =
   ## Serialize bytecode program to binary format for storage
   var stream = newStringStream()
 
   # Magic header: "ETCH" + version byte
-  stream.write("ETCH")
-  stream.write(uint8(3))  # Version 3 (added global values)
+  stream.write(BYTECODE_MAGIC)
+  stream.write(uint32(BYTECODE_VERSION))
 
   # Source hash (32 bytes, padded with zeros if needed)
   var hashBytes = prog.sourceHash
@@ -162,11 +166,11 @@ proc deserializeFromBinary*(data: string): BytecodeProgram =
 
   # Check magic header
   let magic = stream.readStr(4)
-  if magic != "ETCH":
+  if magic != BYTECODE_MAGIC:
     raise newException(ValueError, "Invalid bytecode file: bad magic")
 
-  let version = stream.readUint8()
-  if version != 1 and version != 2:
+  let version = stream.readUint32()
+  if version != uint32(BYTECODE_VERSION):
     raise newException(ValueError, "Unsupported bytecode version: " & $version)
 
   result = BytecodeProgram(
@@ -182,12 +186,9 @@ proc deserializeFromBinary*(data: string): BytecodeProgram =
   # Read source hash
   result.sourceHash = stream.readStr(32).strip(chars = {'\0'})
 
-  # Read compiler flags (only in version 2+)
-  if version >= 2:
-    let includeDebugFlag = stream.readUint8()
-    result.compilerFlags = CompilerFlags(includeDebugInfo: includeDebugFlag != 0)
-  else:
-    result.compilerFlags = CompilerFlags(includeDebugInfo: false)
+  # Read compiler flags
+  let includeDebugFlag = stream.readUint8()
+  result.compilerFlags = CompilerFlags(includeDebugInfo: includeDebugFlag != 0)
 
   # Read source file
   let sourceFileLen = stream.readUint32()
@@ -205,27 +206,26 @@ proc deserializeFromBinary*(data: string): BytecodeProgram =
     let gLen = stream.readUint32()
     result.globals.add(stream.readStr(int(gLen)))
 
-  # Read global values (only in version 3+)
-  if version >= 3:
-    let globalValueCount = stream.readUint32()
-    for i in 0..<globalValueCount:
-      let nameLen = stream.readUint32()
-      let name = stream.readStr(int(nameLen))
-      let valueKind = TypeKind(stream.readUint8())
-      var value = GlobalValue(kind: valueKind)
-      case valueKind
-      of tkInt:
-        value.ival = stream.readInt64()
-      of tkFloat:
-        value.fval = stream.readFloat64()
-      of tkBool:
-        value.bval = stream.readUint8() != 0
-      of tkString:
-        let sLen = stream.readUint32()
-        value.sval = stream.readStr(int(sLen))
-      else:
-        discard # Other types not supported yet
-      result.globalValues[name] = value
+  # Read global values
+  let globalValueCount = stream.readUint32()
+  for i in 0..<globalValueCount:
+    let nameLen = stream.readUint32()
+    let name = stream.readStr(int(nameLen))
+    let valueKind = TypeKind(stream.readUint8())
+    var value = GlobalValue(kind: valueKind)
+    case valueKind
+    of tkInt:
+      value.ival = stream.readInt64()
+    of tkFloat:
+      value.fval = stream.readFloat64()
+    of tkBool:
+      value.bval = stream.readUint8() != 0
+    of tkString:
+      let sLen = stream.readUint32()
+      value.sval = stream.readStr(int(sLen))
+    else:
+      discard # Other types not supported yet
+    result.globalValues[name] = value
 
   # Read functions
   let funcCount = stream.readUint32()
