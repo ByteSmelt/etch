@@ -5,7 +5,7 @@ import std/[strformat, sequtils, strutils]
 
 type
   TokKind* = enum
-    tkIdent, tkInt, tkFloat, tkString, tkBool, tkKw, tkSym, tkEof
+    tkIdent, tkInt, tkFloat, tkString, tkBool, tkKeyword, tkSymbol, tkEof
   Token* = object
     kind*: TokKind
     lex*: string
@@ -14,10 +14,10 @@ type
 const keywords = [
   "fn","let","var","return","if","elif","else","while",
   "true","false","int","float","string","bool","void","Ref","concept",
-  "satisfies","comptime","newref","and","or","array","nil"
+  "comptime","newref","and","or","array","nil"
 ].toSeq
 
-proc isKw(w: string): bool = w in keywords
+proc isKeyword(w: string): bool = w in keywords
 
 proc lex*(src: string): seq[Token] =
   var line = 1
@@ -30,6 +30,7 @@ proc lex*(src: string): seq[Token] =
       if src[i] == '\n': inc line; col = 1 else: inc col
       inc i
       continue
+
     # Skip // comment
     if i+1 < src.len and src[i] == '/' and src[i+1] == '/':
       while i < src.len and src[i] != '\n': inc i
@@ -38,13 +39,13 @@ proc lex*(src: string): seq[Token] =
     var m: int
     # 2-char symbol
     if i+1 < src.len and (src.substr(i, i+1) in ["->","==","!=", "<=",">="]):
-      result.add Token(kind: tkSym, lex: src.substr(i, i+1), line: line, col: col)
+      result.add Token(kind: tkSymbol, lex: src.substr(i, i+1), line: line, col: col)
       inc i, 2; inc col, 2
       continue
 
     # single symbol
     if src[i] in "+-*/%(){}<>=;:,[]@!#":
-      result.add Token(kind: tkSym, lex: $src[i], line: line, col: col)
+      result.add Token(kind: tkSymbol, lex: $src[i], line: line, col: col)
       inc i; inc col
       continue
 
@@ -54,6 +55,7 @@ proc lex*(src: string): seq[Token] =
     var isFloat = false
     while m < src.len and src[m].isDigit:
       had = true; inc m
+
     # check for decimal point
     if had and m < src.len and src[m] == '.':
       inc m
@@ -99,12 +101,12 @@ proc lex*(src: string): seq[Token] =
       inc m
       while m < src.len and (src[m].isAlphaNumeric or src[m] == '_'): inc m
       let w = src[i..<m]
-      result.add Token(kind: (if isKw(w): tkKw else: tkIdent), lex: w, line: line, col: col)
+      result.add Token(kind: (if isKeyword(w): tkKeyword else: tkIdent), lex: w, line: line, col: col)
       col += m-i; i = m
       continue
 
     # fallback: unknown char -> symbol token
-    result.add Token(kind: tkSym, lex: $src[i], line: line, col: col)
+    result.add Token(kind: tkSymbol, lex: $src[i], line: line, col: col)
     inc i; inc col
 
   result.add Token(kind: tkEof, lex: "<eof>", line: line, col: col)

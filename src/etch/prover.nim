@@ -10,7 +10,6 @@ import ast, errors
 const IMin = low(int64)
 const IMax = high(int64)
 
-
 type
   Info = object
     known*: bool
@@ -60,332 +59,416 @@ type ConditionResult = enum
 proc analyzeExpr(e: Expr; env: Env, prog: Program = nil): Info
 proc proveStmt(s: Stmt; env: Env, prog: Program = nil, fnContext: string = "")  # forward declaration
 
+# Forward declarations for modularized expression analysis
+proc analyzeIntExpr(e: Expr): Info
+proc analyzeFloatExpr(e: Expr): Info
+proc analyzeStringExpr(e: Expr): Info
+proc analyzeBoolExpr(e: Expr): Info
+proc analyzeVarExpr(e: Expr, env: Env): Info
+proc analyzeUnaryExpr(e: Expr, env: Env, prog: Program): Info
+proc analyzeBinaryExpr(e: Expr, env: Env, prog: Program): Info
+proc analyzeCallExpr(e: Expr, env: Env, prog: Program): Info
+proc analyzeRandCall(e: Expr, env: Env, prog: Program): Info
+proc analyzeComptimeExpr(e: Expr, env: Env, prog: Program): Info
+proc analyzeNewRefExpr(e: Expr, env: Env, prog: Program): Info
+proc analyzeDerefExpr(e: Expr, env: Env, prog: Program): Info
+proc analyzeArrayExpr(e: Expr, env: Env, prog: Program): Info
+proc analyzeIndexExpr(e: Expr, env: Env, prog: Program): Info
+proc analyzeSliceExpr(e: Expr, env: Env, prog: Program): Info
+proc analyzeArrayLenExpr(e: Expr, env: Env, prog: Program): Info
+proc analyzeCastExpr(e: Expr, env: Env, prog: Program): Info
+proc analyzeNilExpr(e: Expr): Info
+
+proc analyzeIntExpr(e: Expr): Info =
+  infoConst(e.ival)
+
+proc analyzeFloatExpr(e: Expr): Info =
+  # For float literals, we can provide a reasonable integer range for cast analysis
+  if e.fval >= IMin.float64 and e.fval <= IMax.float64:
+    let intApprox = e.fval.int64
+    Info(known: true, cval: intApprox, minv: intApprox, maxv: intApprox, nonZero: intApprox != 0, initialized: true)
+  else:
+    Info(known: false, minv: IMin, maxv: IMax, nonZero: false, initialized: true)
+
+proc analyzeStringExpr(e: Expr): Info =
+  # string analysis not needed for safety
+  Info(known: false, minv: IMin, maxv: IMax, nonZero: false, initialized: true)
+
+proc analyzeBoolExpr(e: Expr): Info =
+  infoBool(e.bval)
+
+proc analyzeVarExpr(e: Expr, env: Env): Info =
+  if env.vals.hasKey(e.vname):
+    let info = env.vals[e.vname]
+    if not info.initialized:
+      raise newProverError(e.pos, &"use of uninitialized variable '{e.vname}' - variable may not be initialized in all control flow paths")
+    return info
+  raise newProverError(e.pos, &"use of undeclared variable '{e.vname}'")
+
+proc analyzeUnaryExpr(e: Expr, env: Env, prog: Program): Info =
+  let i0 = analyzeExpr(e.ue, env, prog)
+  case e.uop
+  of uoNeg:
+    if i0.known: return infoConst(-i0.cval)
+    return Info(known: false, minv: (if i0.maxv == IMax: IMin else: -i0.maxv),
+                maxv: (if i0.minv == IMin: IMax else: -i0.minv), initialized: true)
+  of uoNot:
+    return infoBool(false) # boolean domain is tiny; not needed for arithmetic safety
+
+proc analyzeBinaryAddition(e: Expr, a: Info, b: Info): Info =
+  # Skip overflow checks for float operations
+  if e.typ != nil and e.typ.kind == tkFloat:
+    return Info(known: false, minv: IMin, maxv: IMax, nonZero: false, initialized: true)
+
+  if a.known and b.known:
+    let s = a.cval + b.cval
+    # overflow check at compile-time must not overflow Nim; use bigints? assume safe here with int64
+    if ( (b.cval > 0 and a.cval > IMax - b.cval) or (b.cval < 0 and a.cval < IMin - b.cval) ):
+      raise newProverError(e.pos, "addition overflow on constants")
+    return infoConst(s)
+  # range addition - be conservative but allow reasonable bounds
+  # Check for overflow before doing arithmetic
+  var minS, maxS: int64
+  try:
+    minS = a.minv + b.minv
+    maxS = a.maxv + b.maxv
+  except OverflowDefect:
+    raise newProverError(e.pos, "potential addition overflow")
+
+  return Info(known: false, minv: minS, maxv: maxS, nonZero: a.nonZero or b.nonZero, initialized: true)
+
+proc analyzeBinarySubtraction(e: Expr, a: Info, b: Info): Info =
+  # Skip overflow checks for float operations
+  if e.typ != nil and e.typ.kind == tkFloat:
+    return Info(known: false, minv: IMin, maxv: IMax, nonZero: false, initialized: true)
+
+  # similar policy as add
+  if a.known and b.known:
+    let d = a.cval - b.cval
+    if ( (b.cval < 0 and a.cval > IMax + b.cval) or (b.cval > 0 and a.cval < IMin + b.cval) ):
+      raise newException(ValueError, "Prover: possible - overflow on constants")
+    return infoConst(d)
+  let minD = a.minv - b.maxv
+  let maxD = a.maxv - b.minv
+  if minD < IMin or maxD > IMax:
+    raise newException(ValueError, "Prover: potential - overflow")
+  return Info(known: false, minv: minD, maxv: maxD, initialized: true)
+
+proc analyzeBinaryMultiplication(e: Expr, a: Info, b: Info): Info =
+  # Skip overflow checks for float operations
+  if e.typ != nil and e.typ.kind == tkFloat:
+    return Info(known: false, minv: IMin, maxv: IMax, nonZero: false, initialized: true)
+
+  # conservative: require constants for * or fail
+  if a.known and b.known:
+    let m = a.cval * b.cval
+    # conservative overflow check
+    if a.cval != 0 and m div a.cval != b.cval:
+      raise newException(ValueError, "Prover: * overflow on constants")
+    return infoConst(m)
+  raise newException(ValueError, "Prover: cannot prove * without constants (MVP)")
+
+proc analyzeBinaryDivision(e: Expr, a: Info, b: Info): Info =
+  # Skip overflow checks for float operations
+  if e.typ != nil and e.typ.kind == tkFloat:
+    return Info(known: false, minv: IMin, maxv: IMax, nonZero: false, initialized: true)
+
+  if b.known:
+    if b.cval == 0: raise newProverError(e.pos, "division by zero")
+  else:
+    if not b.nonZero:
+      raise newProverError(e.pos, "cannot prove divisor is non-zero")
+  # range not needed for overflow on div; accept
+  return Info(known: false, minv: IMin, maxv: IMax, nonZero: true, initialized: true)
+
+proc analyzeBinaryModulo(e: Expr, a: Info, b: Info): Info =
+  if b.known:
+    if b.cval == 0: raise newProverError(e.pos, "modulo by zero")
+  else:
+    if not b.nonZero:
+      raise newProverError(e.pos, "cannot prove divisor is non-zero")
+  # modulo result is always less than divisor (for positive divisor)
+  return Info(known: false, minv: IMin, maxv: IMax, nonZero: false, initialized: true)
+
+proc analyzeBinaryComparison(e: Expr, a: Info, b: Info): Info =
+  # Constant folding for comparisons
+  if a.known and b.known:
+    let res = case e.bop
+      of boEq: a.cval == b.cval
+      of boNe: a.cval != b.cval
+      of boLt: a.cval < b.cval
+      of boLe: a.cval <= b.cval
+      of boGt: a.cval > b.cval
+      of boGe: a.cval >= b.cval
+      else: false
+    return infoBool(res)
+  else:
+    return Info(known: false, minv: 0, maxv: 1, nonZero: false, isBool: true, initialized: true) # unknown boolean
+
+proc analyzeBinaryLogical(e: Expr, a: Info, b: Info): Info =
+  # Boolean operations - for now return unknown
+  return Info(known: false, minv: 0, maxv: 1, nonZero: false, isBool: true, initialized: true)
+
+proc analyzeBinaryExpr(e: Expr, env: Env, prog: Program): Info =
+  let a = analyzeExpr(e.lhs, env, prog)
+  let b = analyzeExpr(e.rhs, env, prog)
+  case e.bop
+  of boAdd: return analyzeBinaryAddition(e, a, b)
+  of boSub: return analyzeBinarySubtraction(e, a, b)
+  of boMul: return analyzeBinaryMultiplication(e, a, b)
+  of boDiv: return analyzeBinaryDivision(e, a, b)
+  of boMod: return analyzeBinaryModulo(e, a, b)
+  of boEq,boNe,boLt,boLe,boGt,boGe: return analyzeBinaryComparison(e, a, b)
+  of boAnd,boOr: return analyzeBinaryLogical(e, a, b)
+
+proc analyzeBuiltinCall(e: Expr, env: Env, prog: Program): Info =
+  # recognize trusted builtins affecting nonNil/nonZero
+  if e.fname.startsWith("print"):
+    # analyze arguments for safety even though print returns void
+    for arg in e.args: discard analyzeExpr(arg, env, prog)
+    return infoUnknown()
+  if e.fname == "assumeNonZero":
+    # treat as assertion
+    if e.args.len == 1:
+      var i0 = analyzeExpr(e.args[0], env, prog)
+      i0.nonZero = true
+      return i0
+  if e.fname == "assumeNonNil":
+    if e.args.len == 1 and e.args[0].kind == ekVar:
+      env.nils[e.args[0].vname] = false
+    return infoUnknown()
+  if e.fname == "rand":
+    return analyzeRandCall(e, env, prog)
+  # Unknown builtin - just analyze arguments
+  for arg in e.args: discard analyzeExpr(arg, env, prog)
+  return infoUnknown()
+
+proc analyzeRandCall(e: Expr, env: Env, prog: Program): Info =
+  # analyze arguments for safety
+  for arg in e.args: discard analyzeExpr(arg, env, prog)
+
+  # Track the range of rand(max) or rand(max, min)
+  if e.args.len == 1:
+    let maxInfo = analyzeExpr(e.args[0], env, prog)
+    if maxInfo.known:
+      # rand(max) returns 0 to max inclusive
+      return Info(known: false, minv: 0, maxv: maxInfo.cval, nonZero: maxInfo.cval > 0, initialized: true)
+    else:
+      # max is unknown, be conservative
+      return Info(known: false, minv: 0, maxv: IMax, nonZero: false, initialized: true)
+  elif e.args.len == 2:
+    let maxInfo = analyzeExpr(e.args[0], env, prog)
+    let minInfo = analyzeExpr(e.args[1], env, prog)
+    if maxInfo.known and minInfo.known:
+      # Both arguments are constants
+      let actualMin = min(minInfo.cval, maxInfo.cval)
+      let actualMax = max(minInfo.cval, maxInfo.cval)
+      return Info(known: false, minv: actualMin, maxv: actualMax,
+                 nonZero: actualMin > 0 or actualMax < 0, initialized: true)
+    else:
+      # Use range information even when not constant
+      let actualMin = min(minInfo.minv, maxInfo.minv)
+      let actualMax = max(minInfo.maxv, maxInfo.maxv)
+      return Info(known: false, minv: actualMin, maxv: actualMax,
+                 nonZero: actualMin > 0 or actualMax < 0, initialized: true)
+  else:
+    # Invalid rand call, return unknown
+    return infoUnknown()
+
+proc analyzeUserDefinedCall(e: Expr, env: Env, prog: Program): Info =
+  # User-defined function call - perform call-site safety analysis
+  let fn = prog.funInstances[e.fname]
+
+  # Analyze arguments to get their safety information
+  var argInfos: seq[Info] = @[]
+  for arg in e.args:
+    argInfos.add analyzeExpr(arg, env, prog)
+
+  # Add default parameter information
+  for i in e.args.len..<fn.params.len:
+    if fn.params[i].defaultValue.isSome:
+      let defaultInfo = analyzeExpr(fn.params[i].defaultValue.get, env, prog)
+      argInfos.add defaultInfo
+    else:
+      # This shouldn't happen if type checking is correct
+      argInfos.add infoUnknown()
+
+  # Now perform call-site safety analysis on the function body
+  # Create environment with actual argument information and global variables
+  var callEnv = Env(vals: env.vals, nils: env.nils)
+
+  # Set up parameter environment with actual call-site information
+  for i in 0..<min(argInfos.len, fn.params.len):
+    callEnv.vals[fn.params[i].name] = argInfos[i]
+    callEnv.nils[fn.params[i].name] = not argInfos[i].nonNil
+
+  # Analyze function body with call-site specific argument information
+  # This will catch safety violations like division by zero with actual arguments
+  for stmt in fn.body:
+    proveStmt(stmt, callEnv, prog, e.fname)
+
+  return infoUnknown()
+
+proc analyzeCallExpr(e: Expr, env: Env, prog: Program): Info =
+  # User-defined function call - perform call-site safety analysis
+  if prog != nil and prog.funInstances.hasKey(e.fname):
+    return analyzeUserDefinedCall(e, env, prog)
+  else:
+    return analyzeBuiltinCall(e, env, prog)
+
+proc analyzeComptimeExpr(e: Expr, env: Env, prog: Program): Info =
+  # replaced before prover normally; treat inner
+  analyzeExpr(e.inner, env, prog)
+
+proc analyzeNewRefExpr(e: Expr, env: Env, prog: Program): Info =
+  # newRef always non-nil
+  discard analyzeExpr(e.init, env, prog)  # Analyze the initialization expression
+  Info(known: false, nonNil: true, initialized: true)
+
+proc analyzeDerefExpr(e: Expr, env: Env, prog: Program): Info =
+  let i0 = analyzeExpr(e.refExpr, env, prog)
+  if not i0.nonNil: raise newException(ValueError, "Prover: cannot prove ref non-nil before deref")
+  infoUnknown()
+
+proc analyzeArrayExpr(e: Expr, env: Env, prog: Program): Info =
+  # Array literal - analyze all elements for safety and track size
+  for elem in e.elements:
+    discard analyzeExpr(elem, env, prog)
+  # Return info with known array size
+  infoArray(e.elements.len.int64, sizeKnown = true)
+
+proc analyzeIndexExpr(e: Expr, env: Env, prog: Program): Info =
+  # Array indexing - comprehensive bounds checking
+  let arrayInfo = analyzeExpr(e.arrayExpr, env, prog)
+  let indexInfo = analyzeExpr(e.indexExpr, env, prog)
+
+  # Basic negative index check
+  if indexInfo.known and indexInfo.cval < 0:
+    raise newProverError(e.indexExpr.pos, &"array index cannot be negative: {indexInfo.cval}")
+
+  # Comprehensive bounds checking when both array size and index are known
+  if arrayInfo.isArray and arrayInfo.arraySizeKnown and indexInfo.known:
+    if indexInfo.cval >= arrayInfo.arraySize:
+      raise newProverError(e.indexExpr.pos, &"array index {indexInfo.cval} out of bounds [0, {arrayInfo.arraySize-1}]")
+
+  # Range-based bounds checking when array size is known but index is in a range
+  elif arrayInfo.isArray and arrayInfo.arraySizeKnown:
+    # Check if the minimum possible index is out of bounds
+    if indexInfo.minv >= arrayInfo.arraySize:
+      raise newProverError(e.indexExpr.pos, &"array index range [{indexInfo.minv}, {indexInfo.maxv}] entirely out of bounds [0, {arrayInfo.arraySize-1}]")
+    # Check if the maximum possible index could be out of bounds
+    elif indexInfo.maxv >= arrayInfo.arraySize:
+      # Generate runtime bounds check - this access might be unsafe
+      raise newProverError(e.indexExpr.pos, &"array index might be out of bounds: index range [{indexInfo.minv}, {indexInfo.maxv}] extends beyond array bounds [0, {arrayInfo.arraySize-1}]")
+
+  # If array size is unknown but we have range info on index, check for negatives
+  elif not (arrayInfo.isArray and arrayInfo.arraySizeKnown):
+    if indexInfo.maxv < 0:
+      raise newProverError(e.indexExpr.pos, &"array index range [{indexInfo.minv}, {indexInfo.maxv}] is entirely negative")
+    elif indexInfo.minv < 0:
+      raise newProverError(e.indexExpr.pos, &"array index might be negative: index range [{indexInfo.minv}, {indexInfo.maxv}] includes negative values")
+
+  infoUnknown()
+
+proc analyzeSliceExpr(e: Expr, env: Env, prog: Program): Info =
+  # Array slicing - comprehensive slice bounds checking
+  let arrayInfo = analyzeExpr(e.sliceExpr, env, prog)
+
+  var startInfo, endInfo: Info
+  var hasStart = false
+  var hasEnd = false
+
+  # Analyze start bound if present
+  if e.startExpr.isSome:
+    startInfo = analyzeExpr(e.startExpr.get, env, prog)
+    hasStart = true
+    if startInfo.known and startInfo.cval < 0:
+      raise newProverError(e.startExpr.get.pos, &"slice start cannot be negative: {startInfo.cval}")
+
+  # Analyze end bound if present
+  if e.endExpr.isSome:
+    endInfo = analyzeExpr(e.endExpr.get, env, prog)
+    hasEnd = true
+    if endInfo.known and endInfo.cval < 0:
+      raise newProverError(e.endExpr.get.pos, &"slice end cannot be negative: {endInfo.cval}")
+
+  # Advanced bounds checking when array size is known
+  if arrayInfo.isArray and arrayInfo.arraySizeKnown:
+    # Check start bounds
+    if hasStart and startInfo.known and startInfo.cval > arrayInfo.arraySize:
+      raise newProverError(e.startExpr.get.pos, &"slice start {startInfo.cval} beyond array size {arrayInfo.arraySize}")
+
+    # Check end bounds
+    if hasEnd and endInfo.known and endInfo.cval > arrayInfo.arraySize:
+      raise newProverError(e.endExpr.get.pos, &"slice end {endInfo.cval} beyond array size {arrayInfo.arraySize}")
+
+    # Check start <= end when both are known constants
+    if hasStart and hasEnd and startInfo.known and endInfo.known:
+      if startInfo.cval > endInfo.cval:
+        raise newProverError(e.pos, &"invalid slice: start {startInfo.cval} > end {endInfo.cval}")
+
+  # Return array info for the slice (slices preserve array nature but might have different size)
+  if arrayInfo.isArray:
+    # For slices, size is generally unknown unless we can compute it precisely
+    infoArray(-1, sizeKnown = false)
+  else:
+    infoUnknown()
+
+proc analyzeArrayLenExpr(e: Expr, env: Env, prog: Program): Info =
+  # Array length operator: #array -> int
+  let arrayInfo = analyzeExpr(e.lenExpr, env, prog)
+  if arrayInfo.isArray and arrayInfo.arraySizeKnown:
+    # If we know the array size, return it as a constant
+    infoConst(arrayInfo.arraySize)
+  else:
+    # Array size is unknown at compile time, but we know it's non-negative
+    Info(known: false, minv: 0, maxv: IMax, nonZero: false, initialized: true)
+
+proc analyzeCastExpr(e: Expr, env: Env, prog: Program): Info =
+  # Explicit cast - analyze the source expression and return appropriate info for target type
+  let sourceInfo = analyzeExpr(e.castExpr, env, prog)  # Analyze source for safety
+
+  # For known values, we can be more precise about the cast result
+  if sourceInfo.known:
+    case e.castType.kind:
+    of tkInt:
+      # Cast to int: truncate float or pass through int
+      infoConst(sourceInfo.cval)  # For simplicity, assume cast preserves value
+    of tkFloat:
+      # Cast to float: pass through
+      infoConst(sourceInfo.cval)
+    of tkString:
+      # Cast to string: result is not numeric, return safe default
+      Info(known: false, minv: IMin, maxv: IMax, nonZero: false, initialized: true)
+    else:
+      Info(known: false, minv: IMin, maxv: IMax, nonZero: false, initialized: true)
+  else:
+    # Unknown source value: be conservative
+    Info(known: false, minv: IMin, maxv: IMax, nonZero: false, initialized: true)
+
+proc analyzeNilExpr(e: Expr): Info =
+  # nil reference - always known and not non-nil
+  Info(known: false, nonNil: false, initialized: true)
+
 proc analyzeExpr(e: Expr; env: Env, prog: Program = nil): Info =
   case e.kind
-  of ekInt: return infoConst(e.ival)
-  of ekFloat: 
-    # For float literals, we can provide a reasonable integer range for cast analysis
-    if e.fval >= IMin.float64 and e.fval <= IMax.float64:
-      let intApprox = e.fval.int64
-      return Info(known: true, cval: intApprox, minv: intApprox, maxv: intApprox, nonZero: intApprox != 0, initialized: true)
-    else:
-      return Info(known: false, minv: IMin, maxv: IMax, nonZero: false, initialized: true)
-  of ekString: return Info(known: false, minv: IMin, maxv: IMax, nonZero: false, initialized: true) # string analysis not needed
-  of ekBool: return infoBool(e.bval)
-  of ekVar:
-    if env.vals.hasKey(e.vname):
-      let info = env.vals[e.vname]
-      if not info.initialized:
-        raise newProverError(e.pos, &"use of uninitialized variable '{e.vname}' - variable may not be initialized in all control flow paths")
-      return info
-    raise newProverError(e.pos, &"use of undeclared variable '{e.vname}'")
-  of ekUn:
-    let i0 = analyzeExpr(e.ue, env, prog)
-    case e.uop
-    of uoNeg:
-      if i0.known: return infoConst(-i0.cval)
-      return Info(known: false, minv: (if i0.maxv == IMax: IMin else: -i0.maxv),
-                  maxv: (if i0.minv == IMin: IMax else: -i0.minv), initialized: true)
-    of uoNot:
-      return infoBool(false) # boolean domain is tiny; not needed for arithmetic safety
-  of ekBin:
-    let a = analyzeExpr(e.lhs, env, prog)
-    let b = analyzeExpr(e.rhs, env, prog)
-    case e.bop
-    of boAdd:
-      # Skip overflow checks for float operations
-      if e.typ != nil and e.typ.kind == tkFloat:
-        return Info(known: false, minv: IMin, maxv: IMax, nonZero: false, initialized: true)
-      
-      if a.known and b.known:
-        let s = a.cval + b.cval
-        # overflow check at compile-time must not overflow Nim; use bigints? assume safe here with int64
-        if ( (b.cval > 0 and a.cval > IMax - b.cval) or (b.cval < 0 and a.cval < IMin - b.cval) ):
-          raise newProverError(e.pos, "addition overflow on constants")
-        return infoConst(s)
-      # range addition - be conservative but allow reasonable bounds
-      # Check for overflow before doing arithmetic
-      var minS, maxS: int64
-      try:
-        minS = a.minv + b.minv
-        maxS = a.maxv + b.maxv
-      except OverflowDefect:
-        raise newProverError(e.pos, "potential addition overflow")
-
-      return Info(known: false, minv: minS, maxv: maxS, nonZero: a.nonZero or b.nonZero, initialized: true)
-    of boSub:
-      # Skip overflow checks for float operations
-      if e.typ != nil and e.typ.kind == tkFloat:
-        return Info(known: false, minv: IMin, maxv: IMax, nonZero: false, initialized: true)
-      
-      # similar policy as add
-      if a.known and b.known:
-        let d = a.cval - b.cval
-        if ( (b.cval < 0 and a.cval > IMax + b.cval) or (b.cval > 0 and a.cval < IMin + b.cval) ):
-          raise newException(ValueError, "Prover: possible - overflow on constants")
-        return infoConst(d)
-      let minD = a.minv - b.maxv
-      let maxD = a.maxv - b.minv
-      if minD < IMin or maxD > IMax:
-        raise newException(ValueError, "Prover: potential - overflow")
-      return Info(known: false, minv: minD, maxv: maxD, initialized: true)
-    of boMul:
-      # Skip overflow checks for float operations
-      if e.typ != nil and e.typ.kind == tkFloat:
-        return Info(known: false, minv: IMin, maxv: IMax, nonZero: false, initialized: true)
-      
-      # conservative: require constants for * or fail
-      if a.known and b.known:
-        let m = a.cval * b.cval
-        # conservative overflow check
-        if a.cval != 0 and m div a.cval != b.cval:
-          raise newException(ValueError, "Prover: * overflow on constants")
-        return infoConst(m)
-      raise newException(ValueError, "Prover: cannot prove * without constants (MVP)")
-    of boDiv:
-      # Skip overflow checks for float operations
-      if e.typ != nil and e.typ.kind == tkFloat:
-        return Info(known: false, minv: IMin, maxv: IMax, nonZero: false, initialized: true)
-      
-      if b.known:
-        if b.cval == 0: raise newProverError(e.pos, "division by zero")
-      else:
-        if not b.nonZero:
-          raise newProverError(e.pos, "cannot prove divisor is non-zero")
-      # range not needed for overflow on div; accept
-      return Info(known: false, minv: IMin, maxv: IMax, nonZero: true, initialized: true)
-    of boMod:
-      if b.known:
-        if b.cval == 0: raise newProverError(e.pos, "modulo by zero")
-      else:
-        if not b.nonZero:
-          raise newProverError(e.pos, "cannot prove divisor is non-zero")
-      # modulo result is always less than divisor (for positive divisor)
-      return Info(known: false, minv: IMin, maxv: IMax, nonZero: false, initialized: true)
-    of boEq,boNe,boLt,boLe,boGt,boGe:
-      # Constant folding for comparisons
-      if a.known and b.known:
-        let res = case e.bop
-          of boEq: a.cval == b.cval
-          of boNe: a.cval != b.cval
-          of boLt: a.cval < b.cval
-          of boLe: a.cval <= b.cval
-          of boGt: a.cval > b.cval
-          of boGe: a.cval >= b.cval
-          else: false
-        return infoBool(res)
-      else:
-        return Info(known: false, minv: 0, maxv: 1, nonZero: false, isBool: true, initialized: true) # unknown boolean
-    of boAnd,boOr:
-      # Boolean operations - for now return unknown
-      return Info(known: false, minv: 0, maxv: 1, nonZero: false, isBool: true, initialized: true)
-  of ekCall:
-    # recognize trusted builtins affecting nonNil/nonZero
-    if e.fname.startsWith("print"):
-      # analyze arguments for safety even though print returns void
-      for arg in e.args: discard analyzeExpr(arg, env, prog)
-      return infoUnknown()
-    if e.fname == "assumeNonZero":
-      # treat as assertion
-      if e.args.len == 1:
-        var i0 = analyzeExpr(e.args[0], env, prog)
-        i0.nonZero = true
-        return i0
-    if e.fname == "assumeNonNil":
-      if e.args.len == 1 and e.args[0].kind == ekVar:
-        env.nils[e.args[0].vname] = false
-      return infoUnknown()
-    if e.fname == "rand":
-      # analyze arguments for safety
-      for arg in e.args: discard analyzeExpr(arg, env, prog)
-
-      # Track the range of rand(max) or rand(max, min)
-      if e.args.len == 1:
-        let maxInfo = analyzeExpr(e.args[0], env, prog)
-        if maxInfo.known:
-          # rand(max) returns 0 to max inclusive
-          return Info(known: false, minv: 0, maxv: maxInfo.cval, nonZero: maxInfo.cval > 0, initialized: true)
-        else:
-          # max is unknown, be conservative
-          return Info(known: false, minv: 0, maxv: IMax, nonZero: false, initialized: true)
-      elif e.args.len == 2:
-        let maxInfo = analyzeExpr(e.args[0], env, prog)
-        let minInfo = analyzeExpr(e.args[1], env, prog)
-        if maxInfo.known and minInfo.known:
-          # Both arguments are constants
-          let actualMin = min(minInfo.cval, maxInfo.cval)
-          let actualMax = max(minInfo.cval, maxInfo.cval)
-          return Info(known: false, minv: actualMin, maxv: actualMax,
-                     nonZero: actualMin > 0 or actualMax < 0, initialized: true)
-        else:
-          # Use range information even when not constant
-          let actualMin = min(minInfo.minv, maxInfo.minv)
-          let actualMax = max(minInfo.maxv, maxInfo.maxv)
-          return Info(known: false, minv: actualMin, maxv: actualMax,
-                     nonZero: actualMin > 0 or actualMax < 0, initialized: true)
-      else:
-        # Invalid rand call, return unknown
-        return infoUnknown()
-    # User-defined function call - perform call-site safety analysis
-    if prog != nil and prog.funInstances.hasKey(e.fname):
-      let fn = prog.funInstances[e.fname]
-
-      # Analyze arguments to get their safety information
-      var argInfos: seq[Info] = @[]
-      for arg in e.args:
-        argInfos.add analyzeExpr(arg, env, prog)
-
-      # Add default parameter information
-      for i in e.args.len..<fn.params.len:
-        if fn.params[i].defaultValue.isSome:
-          let defaultInfo = analyzeExpr(fn.params[i].defaultValue.get, env, prog)
-          argInfos.add defaultInfo
-        else:
-          # This shouldn't happen if type checking is correct
-          argInfos.add infoUnknown()
-
-      # Now perform call-site safety analysis on the function body
-      # Create environment with actual argument information and global variables
-      var callEnv = Env(vals: env.vals, nils: env.nils)
-
-      # Set up parameter environment with actual call-site information
-      for i in 0..<min(argInfos.len, fn.params.len):
-        callEnv.vals[fn.params[i].name] = argInfos[i]
-        callEnv.nils[fn.params[i].name] = not argInfos[i].nonNil
-
-      # Analyze function body with call-site specific argument information
-      # This will catch safety violations like division by zero with actual arguments
-      for stmt in fn.body:
-        proveStmt(stmt, callEnv, prog, e.fname)
-
-      return infoUnknown()
-    else:
-      # Unknown function - just analyze arguments
-      for arg in e.args: discard analyzeExpr(arg, env, prog)
-      return infoUnknown()
-  of ekComptime:
-    # replaced before prover normally; treat inner
-    return analyzeExpr(e.inner, env, prog)
-  of ekNewRef:
-    return Info(known: false, nonNil: true, initialized: true) # newRef always non-nil
-  of ekDeref:
-    let i0 = analyzeExpr(e.refExpr, env, prog)
-    if not i0.nonNil: raise newException(ValueError, "Prover: cannot prove ref non-nil before deref")
-    return infoUnknown()
-  of ekArray:
-    # Array literal - analyze all elements for safety and track size
-    for elem in e.elements:
-      discard analyzeExpr(elem, env, prog)
-    # Return info with known array size
-    return infoArray(e.elements.len.int64, sizeKnown = true)
-  of ekIndex:
-    # Array indexing - comprehensive bounds checking
-    let arrayInfo = analyzeExpr(e.arrayExpr, env, prog)
-    let indexInfo = analyzeExpr(e.indexExpr, env, prog)
-    
-    # Basic negative index check
-    if indexInfo.known and indexInfo.cval < 0:
-      raise newProverError(e.indexExpr.pos, &"array index cannot be negative: {indexInfo.cval}")
-    
-    # Comprehensive bounds checking when both array size and index are known
-    if arrayInfo.isArray and arrayInfo.arraySizeKnown and indexInfo.known:
-      if indexInfo.cval >= arrayInfo.arraySize:
-        raise newProverError(e.indexExpr.pos, &"array index {indexInfo.cval} out of bounds [0, {arrayInfo.arraySize-1}]")
-    
-    # Range-based bounds checking when array size is known but index is in a range
-    elif arrayInfo.isArray and arrayInfo.arraySizeKnown:
-      # Check if the minimum possible index is out of bounds
-      if indexInfo.minv >= arrayInfo.arraySize:
-        raise newProverError(e.indexExpr.pos, &"array index range [{indexInfo.minv}, {indexInfo.maxv}] entirely out of bounds [0, {arrayInfo.arraySize-1}]")
-      # Check if the maximum possible index could be out of bounds
-      elif indexInfo.maxv >= arrayInfo.arraySize:
-        # Generate runtime bounds check - this access might be unsafe
-        raise newProverError(e.indexExpr.pos, &"array index might be out of bounds: index range [{indexInfo.minv}, {indexInfo.maxv}] extends beyond array bounds [0, {arrayInfo.arraySize-1}]")
-    
-    # If array size is unknown but we have range info on index, check for negatives
-    elif not (arrayInfo.isArray and arrayInfo.arraySizeKnown):
-      if indexInfo.maxv < 0:
-        raise newProverError(e.indexExpr.pos, &"array index range [{indexInfo.minv}, {indexInfo.maxv}] is entirely negative")
-      elif indexInfo.minv < 0:
-        raise newProverError(e.indexExpr.pos, &"array index might be negative: index range [{indexInfo.minv}, {indexInfo.maxv}] includes negative values")
-    
-    return infoUnknown()
-  of ekSlice:
-    # Array slicing - comprehensive slice bounds checking
-    let arrayInfo = analyzeExpr(e.sliceExpr, env, prog)
-    
-    var startInfo, endInfo: Info
-    var hasStart = false
-    var hasEnd = false
-    
-    # Analyze start bound if present
-    if e.startExpr.isSome:
-      startInfo = analyzeExpr(e.startExpr.get, env, prog)
-      hasStart = true
-      if startInfo.known and startInfo.cval < 0:
-        raise newProverError(e.startExpr.get.pos, &"slice start cannot be negative: {startInfo.cval}")
-    
-    # Analyze end bound if present
-    if e.endExpr.isSome:
-      endInfo = analyzeExpr(e.endExpr.get, env, prog)
-      hasEnd = true
-      if endInfo.known and endInfo.cval < 0:
-        raise newProverError(e.endExpr.get.pos, &"slice end cannot be negative: {endInfo.cval}")
-    
-    # Advanced bounds checking when array size is known
-    if arrayInfo.isArray and arrayInfo.arraySizeKnown:
-      # Check start bounds
-      if hasStart and startInfo.known and startInfo.cval > arrayInfo.arraySize:
-        raise newProverError(e.startExpr.get.pos, &"slice start {startInfo.cval} beyond array size {arrayInfo.arraySize}")
-      
-      # Check end bounds  
-      if hasEnd and endInfo.known and endInfo.cval > arrayInfo.arraySize:
-        raise newProverError(e.endExpr.get.pos, &"slice end {endInfo.cval} beyond array size {arrayInfo.arraySize}")
-      
-      # Check start <= end when both are known constants
-      if hasStart and hasEnd and startInfo.known and endInfo.known:
-        if startInfo.cval > endInfo.cval:
-          raise newProverError(e.pos, &"invalid slice: start {startInfo.cval} > end {endInfo.cval}")
-    
-    # Return array info for the slice (slices preserve array nature but might have different size)
-    if arrayInfo.isArray:
-      # For slices, size is generally unknown unless we can compute it precisely
-      return infoArray(-1, sizeKnown = false)
-    else:
-      return infoUnknown()
-  of ekArrayLen:
-    # Array length operator: #array -> int
-    let arrayInfo = analyzeExpr(e.lenExpr, env, prog)
-    if arrayInfo.isArray and arrayInfo.arraySizeKnown:
-      # If we know the array size, return it as a constant
-      return infoConst(arrayInfo.arraySize)
-    else:
-      # Array size is unknown at compile time, but we know it's non-negative
-      return Info(known: false, minv: 0, maxv: IMax, nonZero: false, initialized: true)
-  of ekCast:
-    # Explicit cast - analyze the source expression and return appropriate info for target type
-    let sourceInfo = analyzeExpr(e.castExpr, env, prog)  # Analyze source for safety
-    
-    # For known values, we can be more precise about the cast result
-    if sourceInfo.known:
-      case e.castType.kind:
-      of tkInt:
-        # Cast to int: truncate float or pass through int
-        return infoConst(sourceInfo.cval)  # For simplicity, assume cast preserves value
-      of tkFloat:
-        # Cast to float: pass through
-        return infoConst(sourceInfo.cval)
-      of tkString:
-        # Cast to string: result is not numeric, return safe default
-        return Info(known: false, minv: IMin, maxv: IMax, nonZero: false, initialized: true)
-      else:
-        return Info(known: false, minv: IMin, maxv: IMax, nonZero: false, initialized: true)
-    else:
-      # Unknown source value: be conservative 
-      return Info(known: false, minv: IMin, maxv: IMax, nonZero: false, initialized: true)
-  of ekNil:
-    # nil reference - always known and not non-nil
-    return Info(known: false, nonNil: false, initialized: true)
+  of ekInt: return analyzeIntExpr(e)
+  of ekFloat: return analyzeFloatExpr(e)
+  of ekString: return analyzeStringExpr(e)
+  of ekBool: return analyzeBoolExpr(e)
+  of ekVar: return analyzeVarExpr(e, env)
+  of ekUn: return analyzeUnaryExpr(e, env, prog)
+  of ekBin: return analyzeBinaryExpr(e, env, prog)
+  of ekCall: return analyzeCallExpr(e, env, prog)
+  of ekComptime: return analyzeComptimeExpr(e, env, prog)
+  of ekNewRef: return analyzeNewRefExpr(e, env, prog)
+  of ekDeref: return analyzeDerefExpr(e, env, prog)
+  of ekArray: return analyzeArrayExpr(e, env, prog)
+  of ekIndex: return analyzeIndexExpr(e, env, prog)
+  of ekSlice: return analyzeSliceExpr(e, env, prog)
+  of ekArrayLen: return analyzeArrayLenExpr(e, env, prog)
+  of ekCast: return analyzeCastExpr(e, env, prog)
+  of ekNil: return analyzeNilExpr(e)
 
 proc evaluateCondition(cond: Expr, env: Env, prog: Program = nil): ConditionResult =
   ## Unified condition evaluation for dead code detection
@@ -474,7 +557,7 @@ proc proveStmt(s: Stmt; env: Env, prog: Program = nil, fnContext: string = "") =
         else:
           echo &"{errors.currentFilename}:{s.pos.line}:{s.pos.col}: warning: unreachable code (condition is always false)"
       # Skip then branch, analyze elif/else branches and merge results
-      
+
       var elifEnvs: seq[Env] = @[]
       # Process elif chain
       for i, elifBranch in s.elifChain:
@@ -483,11 +566,11 @@ proc proveStmt(s: Stmt; env: Env, prog: Program = nil, fnContext: string = "") =
         if elifCondResult != crAlwaysFalse:
           for st in elifBranch.body: proveStmt(st, elifEnv, prog, fnContext)
           elifEnvs.add(elifEnv)
-      
+
       # Process else branch
       var elseEnv = Env(vals: env.vals, nils: env.nils)
       for st in s.elseBody: proveStmt(st, elseEnv, prog, fnContext)
-      
+
       # Merge results from all executed branches
       if elifEnvs.len > 0:
         # Collect all variables from all environments
@@ -497,24 +580,24 @@ proc proveStmt(s: Stmt; env: Env, prog: Program = nil, fnContext: string = "") =
             if k notin allVars: allVars.add(k)
         for k in elseEnv.vals.keys:
           if k notin allVars: allVars.add(k)
-        
+
         # Merge each variable across all paths
         for varName in allVars:
           var infos: seq[Info] = @[]
-          
+
           # Check elif branches
           for elifEnv in elifEnvs:
             if elifEnv.vals.hasKey(varName):
               infos.add(elifEnv.vals[varName])
             elif env.vals.hasKey(varName):
               infos.add(env.vals[varName])
-          
+
           # Check else branch
           if elseEnv.vals.hasKey(varName):
             infos.add(elseEnv.vals[varName])
           elif env.vals.hasKey(varName):
             infos.add(env.vals[varName])
-          
+
           # Compute meet of all info states
           if infos.len > 0:
             var mergedInfo = infos[0]
@@ -574,7 +657,7 @@ proc proveStmt(s: Stmt; env: Env, prog: Program = nil, fnContext: string = "") =
     for st in s.elseBody: proveStmt(st, elseEnv)
     # Join - merge variable states from all branches
     # For complete initialization analysis, we need to check all possible paths
-    
+
     # Collect all variables that exist in any branch
     var allVars: seq[string] = @[]
     for k in thenEnv.vals.keys:
@@ -584,19 +667,19 @@ proc proveStmt(s: Stmt; env: Env, prog: Program = nil, fnContext: string = "") =
     for elifEnv in elifEnvs:
       for k in elifEnv.vals.keys:
         if k notin allVars: allVars.add(k)
-    
+
     # Merge each variable across all paths
     for varName in allVars:
       var infos: seq[Info] = @[]
       var branchCount = 0
-      
+
       # Check then branch
       if thenEnv.vals.hasKey(varName):
         infos.add(thenEnv.vals[varName])
         branchCount += 1
       elif env.vals.hasKey(varName):
         infos.add(env.vals[varName])  # Use original state if not modified in this branch
-      
+
       # Check elif branches
       for elifEnv in elifEnvs:
         if elifEnv.vals.hasKey(varName):
@@ -604,7 +687,7 @@ proc proveStmt(s: Stmt; env: Env, prog: Program = nil, fnContext: string = "") =
         elif env.vals.hasKey(varName):
           infos.add(env.vals[varName])  # Use original state
         branchCount += 1
-      
+
       # Check else branch (if it exists or if there are no elif branches)
       let hasElseBranch = s.elseBody.len > 0 or s.elifChain.len > 0
       if hasElseBranch:
@@ -613,11 +696,11 @@ proc proveStmt(s: Stmt; env: Env, prog: Program = nil, fnContext: string = "") =
         elif env.vals.hasKey(varName):
           infos.add(env.vals[varName])  # Use original state
         branchCount += 1
-      
+
       # If no else branch exists, the variable might not be initialized in all paths
       if not hasElseBranch and env.vals.hasKey(varName):
         infos.add(env.vals[varName])  # Include original state as potential path
-      
+
       # Compute meet (intersection) of all info states
       if infos.len > 0:
         var mergedInfo = infos[0]
@@ -646,19 +729,19 @@ proc proveStmt(s: Stmt; env: Env, prog: Program = nil, fnContext: string = "") =
     # Conservative loop analysis for initialization:
     # Variables initialized only inside the loop body cannot be considered initialized
     # after the loop, because the loop might never execute (condition could be false initially)
-    
+
     # Save original environment state
     var originalVars = initTable[string, Info]()
     for k, v in env.vals:
       originalVars[k] = v
-    
+
     # Create loop body environment
     var loopEnv = Env(vals: env.vals, nils: env.nils)
-    
+
     # Analyze loop body
-    for st in s.wbody: 
+    for st in s.wbody:
       proveStmt(st, loopEnv, prog, fnContext)
-    
+
     # Merge loop results conservatively:
     # Only variables that were already initialized before the loop
     # or that maintain their initialization status are considered safe
@@ -667,7 +750,7 @@ proc proveStmt(s: Stmt; env: Env, prog: Program = nil, fnContext: string = "") =
         # Variable existed before loop
         let originalInfo = originalVars[varName]
         let loopInfo = loopEnv.vals[varName]
-        
+
         # If variable was uninitialized before loop and only initialized inside,
         # it's still considered uninitialized after loop (loop might not execute)
         if not originalInfo.initialized:
@@ -695,14 +778,14 @@ proc proveStmt(s: Stmt; env: Env, prog: Program = nil, fnContext: string = "") =
 proc prove*(prog: Program, filename: string = "<unknown>") =
   errors.loadSourceLines(filename)
   var env = Env(vals: initTable[string, Info](), nils: initTable[string, bool]())
-  
+
   # First pass: add all global variable declarations to environment (forward references)
   for g in prog.globals:
     if g.kind == skVar:
       # Add variable as uninitialized first to allow forward references
       env.vals[g.vname] = infoUninitialized()
       env.nils[g.vname] = true
-  
+
   # Second pass: analyze global variable initializations with full environment
   for g in prog.globals: proveStmt(g, env, prog)
   # Analyze main function directly (it's the entry point)

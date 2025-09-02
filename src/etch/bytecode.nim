@@ -6,7 +6,6 @@ import ast, serialize
 export serialize
 
 type
-
   CompilationContext* = object
     currentFunction*: string
     localVars*: seq[string]  # Variables in current scope

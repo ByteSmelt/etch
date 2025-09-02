@@ -8,4 +8,3 @@ bin           = @["etch"]
 
 # Dependencies
 requires "nim >= 2.2.4"
-requires "npeg >= 1.3.0"

@@ -19,8 +19,8 @@ proc friendlyTokenName(kind: TokKind, lex: string): string =
   of tkFloat: return &"number '{lex}'"
   of tkString: return &"string \"{lex}\""
   of tkBool: return &"boolean '{lex}'"
-  of tkKw: return &"keyword '{lex}'"
-  of tkSym: return &"symbol '{lex}'"
+  of tkKeyword: return &"keyword '{lex}'"
+  of tkSymbol: return &"symbol '{lex}'"
   of tkEof: return "end of file"
 
 proc cur(p: Parser): Token = p.toks[p.i]
@@ -74,23 +74,23 @@ proc inferTypeFromExpr(expr: Expr): EtchType =
 # --- Type parsing ---
 proc parseType(p: Parser): EtchType =
   let t = p.cur
-  if t.kind in {tkKw, tkIdent}:
+  if t.kind in {tkKeyword, tkIdent}:
     if t.lex == "int": discard p.eat; return tInt()
     if t.lex == "float": discard p.eat; return tFloat()
     if t.lex == "string": discard p.eat; return tString()
     if t.lex == "bool": discard p.eat; return tBool()
     if t.lex == "void": discard p.eat; return tVoid()
     if t.lex == "Ref":
-      discard p.expect(tkKw, "Ref")
-      discard p.expect(tkSym, "[")
+      discard p.expect(tkKeyword, "Ref")
+      discard p.expect(tkSymbol, "[")
       let inner = p.parseType()
-      discard p.expect(tkSym, "]")
+      discard p.expect(tkSymbol, "]")
       return tRef(inner)
     if t.lex == "array":
-      discard p.expect(tkKw, "array")
-      discard p.expect(tkSym, "[")
+      discard p.expect(tkKeyword, "array")
+      discard p.expect(tkSymbol, "[")
       let inner = p.parseType()
-      discard p.expect(tkSym, "]")
+      discard p.expect(tkSymbol, "]")
       return tArray(inner)
     # generic type name
     discard p.eat
@@ -150,14 +150,14 @@ proc parseBuiltinKeywordExpr(p: Parser; t: Token): Expr =
   of "false": return Expr(kind: ekBool, bval: false, pos: p.posOf(t))
   of "nil": return Expr(kind: ekNil, pos: p.posOf(t))
   of "comptime":
-    discard p.expect(tkSym, "(")
+    discard p.expect(tkSymbol, "(")
     let e = p.parseExpr()
-    discard p.expect(tkSym, ")")
+    discard p.expect(tkSymbol, ")")
     return Expr(kind: ekComptime, inner: e, pos: p.posOf(t))
   of "newref":
-    discard p.expect(tkSym, "(")
+    discard p.expect(tkSymbol, "(")
     let e = p.parseExpr()
-    discard p.expect(tkSym, ")")
+    discard p.expect(tkSymbol, ")")
     return Expr(kind: ekNewRef, init: e, pos: p.posOf(t))
   else:
     # Allow keyword names as identifiers for simplicity except reserved control words
@@ -166,11 +166,11 @@ proc parseBuiltinKeywordExpr(p: Parser; t: Token): Expr =
 proc parseCastExpr(p: Parser; t: Token): Expr =
   ## Parses cast expressions: type(expr)
   discard p.eat() # consume (
-  if p.cur.kind == tkSym and p.cur.lex == ")":
+  if p.cur.kind == tkSymbol and p.cur.lex == ")":
     raise newParseError(p.posOf(t), "cast expression cannot be empty")
 
   let castExpr = p.parseExpr()
-  discard p.expect(tkSym, ")")
+  discard p.expect(tkSymbol, ")")
   let castType = case t.lex:
     of "int": tInt()
     of "float": tFloat()
@@ -183,17 +183,17 @@ proc parseFunctionCallExpr(p: Parser; t: Token): Expr =
   ## Parses function call expressions: func(arg1, arg2, ...)
   var args: seq[Expr] = @[]
   discard p.eat() # consume (
-  if not (p.cur.kind == tkSym and p.cur.lex == ")"):
+  if not (p.cur.kind == tkSymbol and p.cur.lex == ")"):
     args.add p.parseExpr()
-    while p.cur.kind == tkSym and p.cur.lex == ",":
+    while p.cur.kind == tkSymbol and p.cur.lex == ",":
       discard p.eat()
       args.add p.parseExpr()
-  discard p.expect(tkSym, ")")
+  discard p.expect(tkSymbol, ")")
   return Expr(kind: ekCall, fname: t.lex, args: args, pos: p.posOf(t))
 
 proc parseIdentifierExpr(p: Parser; t: Token): Expr =
   ## Parses identifier expressions (variables, function calls, or casts)
-  if p.cur.kind == tkSym and p.cur.lex == "(":
+  if p.cur.kind == tkSymbol and p.cur.lex == "(":
     # Check if this is a cast (built-in type name)
     if t.lex in ["int", "float", "string", "bool"]:
       return p.parseCastExpr(t)
@@ -207,17 +207,17 @@ proc parseSymbolExpr(p: Parser; t: Token): Expr =
   case t.lex
   of "(":
     let e = p.parseExpr()
-    discard p.expect(tkSym, ")")
+    discard p.expect(tkSymbol, ")")
     return e
   of "[":
     # Array literal: [expr1, expr2, ...]
     var elements: seq[Expr] = @[]
-    if not (p.cur.kind == tkSym and p.cur.lex == "]"):
+    if not (p.cur.kind == tkSymbol and p.cur.lex == "]"):
       elements.add p.parseExpr()
-      while p.cur.kind == tkSym and p.cur.lex == ",":
+      while p.cur.kind == tkSymbol and p.cur.lex == ",":
         discard p.eat()
         elements.add p.parseExpr()
-    discard p.expect(tkSym, "]")
+    discard p.expect(tkSymbol, "]")
     return Expr(kind: ekArray, elements: elements, pos: p.posOf(t))
   of "-":
     let e = p.parseExpr(6) # highest prefix binding
@@ -245,43 +245,43 @@ proc parseAtomicExpr(p: Parser): Expr =
   case t.kind
   of tkInt, tkFloat, tkString, tkBool:
     return p.parseLiteralExpr(t)
-  of tkKw:
-    if t.lex in ["int", "float", "string", "bool"] and p.cur.kind == tkSym and p.cur.lex == "(":
+  of tkKeyword:
+    if t.lex in ["int", "float", "string", "bool"] and p.cur.kind == tkSymbol and p.cur.lex == "(":
       return p.parseCastExpr(t)
     else:
       return p.parseBuiltinKeywordExpr(t)
   of tkIdent:
     return p.parseIdentifierExpr(t)
-  of tkSym:
+  of tkSymbol:
     return p.parseSymbolExpr(t)
   of tkEof:
     raise newParseError(Pos(line: t.line, col: t.col), "unexpected end of input")
 
 proc parseArrayAccessOrSlice(p: Parser; left: Expr; t: Token): Expr =
   ## Parses array indexing or slicing: expr[index] or expr[start:end] or expr[:end]
-  if p.cur.kind == tkSym and p.cur.lex == ":":
+  if p.cur.kind == tkSymbol and p.cur.lex == ":":
     # Slicing from start: expr[:end]
     discard p.eat()  # consume ":"
-    let endExpr = if p.cur.kind == tkSym and p.cur.lex == "]":
+    let endExpr = if p.cur.kind == tkSymbol and p.cur.lex == "]":
                     none(Expr)
                   else:
                     some(p.parseExpr())
-    discard p.expect(tkSym, "]")
+    discard p.expect(tkSymbol, "]")
     return Expr(kind: ekSlice, sliceExpr: left, startExpr: none(Expr), endExpr: endExpr, pos: p.posOf(t))
   else:
     let firstExpr = p.parseExpr()
-    if p.cur.kind == tkSym and p.cur.lex == ":":
+    if p.cur.kind == tkSymbol and p.cur.lex == ":":
       # Slicing: expr[start:end]
       discard p.eat()  # consume ":"
-      let endExpr = if p.cur.kind == tkSym and p.cur.lex == "]":
+      let endExpr = if p.cur.kind == tkSymbol and p.cur.lex == "]":
                       none(Expr)
                     else:
                       some(p.parseExpr())
-      discard p.expect(tkSym, "]")
+      discard p.expect(tkSymbol, "]")
       return Expr(kind: ekSlice, sliceExpr: left, startExpr: some(firstExpr), endExpr: endExpr, pos: p.posOf(t))
     else:
       # Simple indexing: expr[index]
-      discard p.expect(tkSym, "]")
+      discard p.expect(tkSymbol, "]")
       return Expr(kind: ekIndex, arrayExpr: left, indexExpr: firstExpr, pos: p.posOf(t))
 
 proc parseInfixExpr(p: Parser; left: Expr; t: Token): Expr =
@@ -298,8 +298,8 @@ proc parseExpr*(p: Parser; rbp=0): Expr =
   var left = p.parseAtomicExpr()
   while true:
     let t = p.cur
-    if (t.kind == tkSym and t.lex in ["+","-","*","/","%","==","!=","<",">","<=",">=","["]) or
-       (t.kind == tkKw and t.lex in ["and", "or"]):
+    if (t.kind == tkSymbol and t.lex in ["+","-","*","/","%","==","!=","<",">","<=",">=","["]) or
+       (t.kind == tkKeyword and t.lex in ["and", "or"]):
       if getOperatorPrecedence(t.lex) <= rbp: break
       discard p.eat()
       left = p.parseInfixExpr(left, t)
@@ -310,10 +310,10 @@ proc parseExpr*(p: Parser; rbp=0): Expr =
 # --- Statements ---
 proc parseBlock(p: Parser): seq[Stmt] =
   var body: seq[Stmt] = @[]
-  discard p.expect(tkSym, "{")
-  while not (p.cur.kind == tkSym and p.cur.lex == "}"):
+  discard p.expect(tkSymbol, "{")
+  while not (p.cur.kind == tkSymbol and p.cur.lex == "}"):
     body.add p.parseStmt()
-  discard p.expect(tkSym, "}")
+  discard p.expect(tkSymbol, "}")
   body
 
 proc parseVarDecl(p: Parser; vflag: VarFlag): Stmt =
@@ -322,12 +322,12 @@ proc parseVarDecl(p: Parser; vflag: VarFlag): Stmt =
   var ini: Option[Expr] = none(Expr)
 
   # Check if type annotation is provided
-  if p.cur.kind == tkSym and p.cur.lex == ":":
+  if p.cur.kind == tkSymbol and p.cur.lex == ":":
     discard p.eat()  # consume ":"
     ty = p.parseType()
 
   # Check for initialization
-  if p.cur.kind == tkSym and p.cur.lex == "=":
+  if p.cur.kind == tkSymbol and p.cur.lex == "=":
     discard p.eat()  # consume "="
     ini = some(p.parseExpr())
 
@@ -345,17 +345,17 @@ proc parseVarDecl(p: Parser; vflag: VarFlag): Stmt =
     # No type annotation and no initializer
     raise newParseError(p.posOf(tname), &"variable '{tname.lex}' requires either type annotation or initializer for type inference")
 
-  discard p.expect(tkSym, ";")
+  discard p.expect(tkSymbol, ";")
   Stmt(kind: skVar, vflag: vflag, vname: tname.lex, vtype: ty, vinit: ini, pos: p.posOf(tname))
 
 proc parseIf(p: Parser): Stmt =
-  let k = p.expect(tkKw, "if")
+  let k = p.expect(tkKeyword, "if")
   let cond = p.parseExpr()
   let thn = p.parseBlock()
 
   # Parse elif chain
   var elifChain: seq[tuple[cond: Expr, body: seq[Stmt]]] = @[]
-  while p.cur.kind == tkKw and p.cur.lex == "elif":
+  while p.cur.kind == tkKeyword and p.cur.lex == "elif":
     discard p.eat()  # consume "elif"
     let elifCond = p.parseExpr()
     let elifBody = p.parseBlock()
@@ -363,52 +363,52 @@ proc parseIf(p: Parser): Stmt =
 
   # Parse else if present
   var els: seq[Stmt] = @[]
-  if p.cur.kind == tkKw and p.cur.lex == "else":
+  if p.cur.kind == tkKeyword and p.cur.lex == "else":
     discard p.eat()
     els = p.parseBlock()
 
   Stmt(kind: skIf, cond: cond, thenBody: thn, elifChain: elifChain, elseBody: els, pos: p.posOf(k))
 
 proc parseWhile(p: Parser): Stmt =
-  let k = p.expect(tkKw, "while")
+  let k = p.expect(tkKeyword, "while")
   let c = p.parseExpr()
   let b = p.parseBlock()
   Stmt(kind: skWhile, wcond: c, wbody: b, pos: p.posOf(k))
 
 proc parseReturn(p: Parser): Stmt =
-  let k = p.expect(tkKw, "return")
+  let k = p.expect(tkKeyword, "return")
   var e: Option[Expr] = none(Expr)
-  if not (p.cur.kind == tkSym and p.cur.lex == ";"):
+  if not (p.cur.kind == tkSymbol and p.cur.lex == ";"):
     e = some(p.parseExpr())
-  discard p.expect(tkSym, ";")
+  discard p.expect(tkSymbol, ";")
   Stmt(kind: skReturn, re: e, pos: p.posOf(k))
 
 proc parseComptime(p: Parser): Stmt =
-  let k = p.expect(tkKw, "comptime")
+  let k = p.expect(tkKeyword, "comptime")
   let body = p.parseBlock()
   Stmt(kind: skComptime, cbody: body, pos: p.posOf(k))
 
 proc parseSimpleStmt(p: Parser): Stmt =
   # assignment or call expr
   let start = p.cur
-  if start.kind == tkIdent and p.peek().kind == tkSym and p.peek().lex == "=":
+  if start.kind == tkIdent and p.peek().kind == tkSymbol and p.peek().lex == "=":
     let n = p.eat()
-    discard p.expect(tkSym, "=")
+    discard p.expect(tkSymbol, "=")
     let e = p.parseExpr()
-    discard p.expect(tkSym, ";")
+    discard p.expect(tkSymbol, ";")
     return Stmt(kind: skAssign, aname: n.lex, aval: e, pos: p.posOf(n))
   else:
     let e = p.parseExpr()
-    discard p.expect(tkSym, ";")
+    discard p.expect(tkSymbol, ";")
     return Stmt(kind: skExpr, sexpr: e, pos: p.posOf(start))
 
 proc parseConcept(p: Parser; prog: Program) =
-  discard p.expect(tkKw, "concept")
+  discard p.expect(tkKeyword, "concept")
   let cname = p.expect(tkIdent).lex
-  discard p.expect(tkSym, "{")
+  discard p.expect(tkSymbol, "{")
   var reqs: set[ConceptReq] = {}
   # very tiny syntax: use tokens "add", "div", "cmp", "deref" inside body
-  while not (p.cur.kind == tkSym and p.cur.lex == "}"):
+  while not (p.cur.kind == tkSymbol and p.cur.lex == "}"):
     let t = p.expect(tkIdent)
     case t.lex
     of "add": reqs.incl crAdd
@@ -418,55 +418,55 @@ proc parseConcept(p: Parser; prog: Program) =
     else:
       let actualName = friendlyTokenName(t.kind, t.lex)
       raise newParseError(Pos(line: t.line, col: t.col), &"unknown concept requirement, got {actualName}")
-    if p.cur.kind == tkSym and p.cur.lex == ";": discard p.eat()
-  discard p.expect(tkSym, "}")
+    if p.cur.kind == tkSymbol and p.cur.lex == ";": discard p.eat()
+  discard p.expect(tkSymbol, "}")
   let c = Concept(name: cname, reqs: reqs)
   prog.concepts[cname] = c
 
 proc parseTyParams(p: Parser): seq[TyParam] =
   result = @[]
-  if p.cur.kind == tkSym and p.cur.lex == "[":
+  if p.cur.kind == tkSymbol and p.cur.lex == "[":
     discard p.eat()
     while true:
       let nameTok = p.expect(tkIdent)
       var c: Option[string] = none(string)
-      if p.cur.kind == tkSym and p.cur.lex == ":":
+      if p.cur.kind == tkSymbol and p.cur.lex == ":":
         discard p.eat()
         let cname = p.expect(tkIdent).lex
         c = some(cname)
       result.add TyParam(name: nameTok.lex, koncept: c)
-      if p.cur.kind == tkSym and p.cur.lex == ",":
+      if p.cur.kind == tkSymbol and p.cur.lex == ",":
         discard p.eat(); continue
-      discard p.expect(tkSym, "]")
+      discard p.expect(tkSymbol, "]")
       break
 
 proc parseFn(p: Parser; prog: Program) =
-  discard p.expect(tkKw, "fn")
+  discard p.expect(tkKeyword, "fn")
   let name = p.expect(tkIdent).lex
   let tps = p.parseTyParams()
-  discard p.expect(tkSym, "(")
+  discard p.expect(tkSymbol, "(")
   var ps: seq[Param] = @[]
-  if not (p.cur.kind == tkSym and p.cur.lex == ")"):
+  if not (p.cur.kind == tkSymbol and p.cur.lex == ")"):
     while true:
       let pn = p.expect(tkIdent).lex
-      discard p.expect(tkSym, ":")
+      discard p.expect(tkSymbol, ":")
       let pt = p.parseType()
 
       # Check for default parameter value
       var defaultValue = none(Expr)
-      if p.cur.kind == tkSym and p.cur.lex == "=":
+      if p.cur.kind == tkSymbol and p.cur.lex == "=":
         discard p.eat()  # consume "="
         defaultValue = some(p.parseExpr())
 
       ps.add Param(name: pn, typ: pt, defaultValue: defaultValue)
-      if p.cur.kind == tkSym and p.cur.lex == ",":
+      if p.cur.kind == tkSymbol and p.cur.lex == ",":
         discard p.eat()
       else: break
-  discard p.expect(tkSym, ")")
+  discard p.expect(tkSymbol, ")")
 
   # Return type is optional - if -> is present, parse it, otherwise infer from body
   var rt: EtchType = nil
-  if p.cur.kind == tkSym and p.cur.lex == "->":
+  if p.cur.kind == tkSymbol and p.cur.lex == "->":
     discard p.eat()  # consume "->"
     rt = p.parseType()
 
@@ -476,7 +476,7 @@ proc parseFn(p: Parser; prog: Program) =
 
 proc parseStmt*(p: Parser): Stmt =
   case p.cur.kind
-  of tkKw:
+  of tkKeyword:
     case p.cur.lex
     of "let":
       discard p.eat(); return p.parseVarDecl(vfLet)
@@ -505,11 +505,11 @@ proc parseProgram*(toks: seq[Token], filename: string = "<unknown>"): Program =
   result.concepts["Derefable"] = conceptDeref()
 
   while p.cur.kind != tkEof:
-    if p.cur.kind == tkKw and p.cur.lex == "concept":
+    if p.cur.kind == tkKeyword and p.cur.lex == "concept":
       p.parseConcept(result)
-    elif p.cur.kind == tkKw and p.cur.lex == "fn":
+    elif p.cur.kind == tkKeyword and p.cur.lex == "fn":
       p.parseFn(result)
-    elif p.cur.kind == tkKw and (p.cur.lex == "let" or p.cur.lex == "var"):
+    elif p.cur.kind == tkKeyword and (p.cur.lex == "let" or p.cur.lex == "var"):
       let st = p.parseStmt()
       result.globals.add st
     else:

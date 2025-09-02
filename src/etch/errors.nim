@@ -1,6 +1,16 @@
 import strformat, strutils
 import ast
 
+# Etch-specific exception types
+type
+  EtchError* = object of CatchableError
+    pos*: Pos
+
+  ParseError* = object of EtchError
+  TypecheckError* = object of EtchError
+  ProverError* = object of EtchError
+  RuntimeError* = object of EtchError
+
 # Global state for error formatting
 var currentFilename* = "<unknown>"
 var sourceLines*: seq[string] = @[]
@@ -11,16 +21,6 @@ proc loadSourceLines*(filename: string) =
     sourceLines = readFile(filename).splitLines()
   except:
     sourceLines = @[]
-
-# Etch-specific exception types
-type
-  EtchError* = object of CatchableError
-    pos*: Pos
-
-  ParseError* = object of EtchError
-  TypecheckError* = object of EtchError
-  ProverError* = object of EtchError
-  RuntimeError* = object of EtchError
 
 proc formatError*(pos: Pos, msg: string): string =
   let filename = if pos.filename.len > 0: pos.filename else: currentFilename
