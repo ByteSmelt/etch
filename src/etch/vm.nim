@@ -460,6 +460,358 @@ proc setVar(vm: VM, name: string, value: V) =
   else:
     vm.globals[name] = value
 
+# Individual operation functions
+proc opLoadIntImpl(vm: VM, instr: Instruction) = vm.push(vInt(instr.arg))
+proc opLoadFloatImpl(vm: VM, instr: Instruction) = vm.push(vFloat(parseFloat(vm.program.constants[instr.arg])))
+proc opLoadStringImpl(vm: VM, instr: Instruction) = vm.push(vString(vm.program.constants[instr.arg]))
+proc opLoadBoolImpl(vm: VM, instr: Instruction) = vm.push(vBool(instr.arg != 0))
+proc opLoadVarImpl(vm: VM, instr: Instruction) = vm.push(vm.getVar(instr.sarg))
+proc opStoreVarImpl(vm: VM, instr: Instruction) = vm.setVar(instr.sarg, vm.pop())
+proc opLoadNilImpl(vm: VM, instr: Instruction) = vm.push(vRef(-1))
+proc opPopImpl(vm: VM, instr: Instruction) = discard vm.pop()
+proc opDupImpl(vm: VM, instr: Instruction) = vm.push(vm.peek())
+
+proc opAddImpl(vm: VM, instr: Instruction) =
+  let b = vm.pop()
+  let a = vm.pop()
+  if a.kind == tkInt and b.kind == tkInt:
+    vm.push(vInt(a.ival + b.ival))
+  elif a.kind == tkFloat and b.kind == tkFloat:
+    vm.push(vFloat(a.fval + b.fval))
+  else:
+    raise newException(ValueError, "Type mismatch in addition")
+
+proc opSubImpl(vm: VM, instr: Instruction) =
+  let b = vm.pop()
+  let a = vm.pop()
+  if a.kind == tkInt and b.kind == tkInt:
+    vm.push(vInt(a.ival - b.ival))
+  elif a.kind == tkFloat and b.kind == tkFloat:
+    vm.push(vFloat(a.fval - b.fval))
+  else:
+    raise newException(ValueError, "Type mismatch in subtraction")
+
+proc opMulImpl(vm: VM, instr: Instruction) =
+  let b = vm.pop()
+  let a = vm.pop()
+  if a.kind == tkInt and b.kind == tkInt:
+    vm.push(vInt(a.ival * b.ival))
+  elif a.kind == tkFloat and b.kind == tkFloat:
+    vm.push(vFloat(a.fval * b.fval))
+  else:
+    raise newException(ValueError, "Type mismatch in multiplication")
+
+proc opDivImpl(vm: VM, instr: Instruction) =
+  let b = vm.pop()
+  let a = vm.pop()
+  if a.kind == tkInt and b.kind == tkInt:
+    if b.ival == 0:
+      raise newException(ValueError, "Division by zero")
+    vm.push(vInt(a.ival div b.ival))
+  elif a.kind == tkFloat and b.kind == tkFloat:
+    if b.fval == 0.0:
+      raise newException(ValueError, "Division by zero")
+    vm.push(vFloat(a.fval / b.fval))
+  else:
+    raise newException(ValueError, "Type mismatch in division")
+
+proc opModImpl(vm: VM, instr: Instruction) =
+  let b = vm.pop()
+  let a = vm.pop()
+  if a.kind == tkInt and b.kind == tkInt:
+    if b.ival == 0:
+      raise newException(ValueError, "Modulo by zero")
+    vm.push(vInt(a.ival mod b.ival))
+  else:
+    raise newException(ValueError, "Modulo requires integers")
+
+proc opNegImpl(vm: VM, instr: Instruction) =
+  let a = vm.pop()
+  if a.kind == tkInt:
+    vm.push(vInt(-a.ival))
+  elif a.kind == tkFloat:
+    vm.push(vFloat(-a.fval))
+  else:
+    raise newException(ValueError, "Negation requires numeric type")
+
+proc opEqImpl(vm: VM, instr: Instruction) =
+  let b = vm.pop()
+  let a = vm.pop()
+  let res = case a.kind:
+    of tkInt: a.ival == b.ival
+    of tkFloat: a.fval == b.fval
+    of tkBool: a.bval == b.bval
+    of tkString: a.sval == b.sval
+    else: false
+  vm.push(vBool(res))
+
+proc opNeImpl(vm: VM, instr: Instruction) =
+  let b = vm.pop()
+  let a = vm.pop()
+  let res = case a.kind:
+    of tkInt: a.ival != b.ival
+    of tkFloat: a.fval != b.fval
+    of tkBool: a.bval != b.bval
+    of tkString: a.sval != b.sval
+    else: true
+  vm.push(vBool(res))
+
+proc opLtImpl(vm: VM, instr: Instruction) =
+  let b = vm.pop()
+  let a = vm.pop()
+  if a.kind == tkInt and b.kind == tkInt:
+    vm.push(vBool(a.ival < b.ival))
+  elif a.kind == tkFloat and b.kind == tkFloat:
+    vm.push(vBool(a.fval < b.fval))
+  else:
+    raise newException(ValueError, "Type mismatch in comparison")
+
+proc opLeImpl(vm: VM, instr: Instruction) =
+  let b = vm.pop()
+  let a = vm.pop()
+  if a.kind == tkInt and b.kind == tkInt:
+    vm.push(vBool(a.ival <= b.ival))
+  elif a.kind == tkFloat and b.kind == tkFloat:
+    vm.push(vBool(a.fval <= b.fval))
+  else:
+    raise newException(ValueError, "Type mismatch in comparison")
+
+proc opGtImpl(vm: VM, instr: Instruction) =
+  let b = vm.pop()
+  let a = vm.pop()
+  if a.kind == tkInt and b.kind == tkInt:
+    vm.push(vBool(a.ival > b.ival))
+  elif a.kind == tkFloat and b.kind == tkFloat:
+    vm.push(vBool(a.fval > b.fval))
+  else:
+    raise newException(ValueError, "Type mismatch in comparison")
+
+proc opGeImpl(vm: VM, instr: Instruction) =
+  let b = vm.pop()
+  let a = vm.pop()
+  if a.kind == tkInt and b.kind == tkInt:
+    vm.push(vBool(a.ival >= b.ival))
+  elif a.kind == tkFloat and b.kind == tkFloat:
+    vm.push(vBool(a.fval >= b.fval))
+  else:
+    raise newException(ValueError, "Type mismatch in comparison")
+
+proc opAndImpl(vm: VM, instr: Instruction) =
+  let b = vm.pop()
+  let a = vm.pop()
+  if a.kind == tkBool and b.kind == tkBool:
+    vm.push(vBool(a.bval and b.bval))
+  else:
+    raise newException(ValueError, "Logical AND requires bools")
+
+proc opOrImpl(vm: VM, instr: Instruction) =
+  let b = vm.pop()
+  let a = vm.pop()
+  if a.kind == tkBool and b.kind == tkBool:
+    vm.push(vBool(a.bval or b.bval))
+  else:
+    raise newException(ValueError, "Logical OR requires bools")
+
+proc opNotImpl(vm: VM, instr: Instruction) =
+  let a = vm.pop()
+  if a.kind == tkBool:
+    vm.push(vBool(not a.bval))
+  else:
+    raise newException(ValueError, "Logical NOT requires bool")
+
+proc opNewRefImpl(vm: VM, instr: Instruction) =
+  let value = vm.pop()
+  vm.push(vm.alloc(value))
+
+proc opDerefImpl(vm: VM, instr: Instruction) =
+  let refVal = vm.pop()
+  if refVal.kind == tkRef:
+    if refVal.refId >= 0 and refVal.refId < vm.heap.len:
+      let cell = vm.heap[refVal.refId]
+      if cell.alive:
+        vm.push(cell.val)
+      else:
+        raise newException(ValueError, "Dereferencing dead reference")
+    else:
+      raise newException(ValueError, "Invalid reference")
+  else:
+    raise newException(ValueError, "Deref expects reference")
+
+proc opMakeArrayImpl(vm: VM, instr: Instruction) =
+  let count = instr.arg
+  var elements: seq[V] = @[]
+  for i in 0..<count:
+    elements.insert(vm.pop(), 0)
+  vm.push(vArray(elements))
+
+proc opArrayGetImpl(vm: VM, instr: Instruction) =
+  let index = vm.pop()
+  let array = vm.pop()
+  if array.kind != tkArray:
+    raise newException(ValueError, "Array get expects array")
+  if index.kind != tkInt:
+    raise newException(ValueError, "Array index must be int")
+  if index.ival < 0 or index.ival >= array.aval.len:
+    raise newException(ValueError, &"Array index {index.ival} out of bounds")
+  vm.push(array.aval[index.ival])
+
+proc opArraySliceImpl(vm: VM, instr: Instruction) =
+  let endVal = vm.pop()
+  let startVal = vm.pop()
+  let array = vm.pop()
+  if array.kind != tkArray:
+    raise newException(ValueError, "Array slice expects array")
+  let startIdx = if startVal.kind == tkInt and startVal.ival != -1: startVal.ival else: 0
+  let endIdx = if endVal.kind == tkInt and endVal.ival != -1: endVal.ival else: array.aval.len
+  let actualStart = max(0, min(startIdx, array.aval.len))
+  let actualEnd = max(actualStart, min(endIdx, array.aval.len))
+  if actualStart >= actualEnd:
+    vm.push(vArray(@[]))
+  else:
+    vm.push(vArray(array.aval[actualStart..<actualEnd]))
+
+proc opArrayLenImpl(vm: VM, instr: Instruction) =
+  let array = vm.pop()
+  if array.kind != tkArray:
+    raise newException(ValueError, "Array length expects array")
+  vm.push(vInt(array.aval.len.int64))
+
+proc opCastImpl(vm: VM, instr: Instruction) =
+  let source = vm.pop()
+  case instr.arg:
+  of 1:
+    case source.kind:
+    of tkFloat: vm.push(vInt(source.fval.int64))
+    of tkInt: vm.push(source)
+    else: raise newException(ValueError, "invalid cast to int")
+  of 2:
+    case source.kind:
+    of tkInt: vm.push(vFloat(source.ival.float64))
+    of tkFloat: vm.push(source)
+    else: raise newException(ValueError, "invalid cast to float")
+  of 3:
+    case source.kind:
+    of tkInt: vm.push(vString($source.ival))
+    of tkFloat: vm.push(vString($source.fval))
+    else: raise newException(ValueError, "invalid cast to string")
+  else: 
+    raise newException(ValueError, "unsupported cast type")
+
+proc opJumpImpl(vm: VM, instr: Instruction) =
+  vm.pc = int(instr.arg)
+
+proc opJumpIfFalseImpl(vm: VM, instr: Instruction) =
+  let condition = vm.pop()
+  if not truthy(condition):
+    vm.pc = int(instr.arg)
+
+proc opReturnImpl(vm: VM, instr: Instruction): bool =
+  if vm.callStack.len == 0:
+    return false
+  let frame = vm.callStack.pop()
+  vm.pc = frame.returnAddress
+  return true
+
+proc opCallImpl(vm: VM, instr: Instruction): bool =
+  let funcName = instr.sarg
+  let argCount = int(instr.arg)
+
+  # Handle builtin functions using enhanced AST interpreter built-ins
+  if funcName == "print":
+    let arg = vm.pop()
+    case arg.kind
+    of tkString: echo arg.sval
+    of tkInt: echo arg.ival
+    of tkFloat: echo arg.fval
+    of tkBool: echo if arg.bval: "true" else: "false"
+    else: echo "<ref>"
+    vm.push(V(kind: tkVoid))
+    return true
+
+  if funcName == "newref":
+    let arg = vm.pop()
+    let refVal = vm.alloc(arg)
+    vm.push(refVal)
+    return true
+
+  if funcName == "deref":
+    let refVal = vm.pop()
+    if refVal.kind != tkRef:
+      raise newException(ValueError, "deref on non-ref")
+    let cell = vm.heap[refVal.refId]
+    if cell.isNil or not cell.alive:
+      raise newException(ValueError, "nil ref")
+    vm.push(cell.val)
+    return true
+
+  if funcName == "rand":
+    if argCount == 1:
+      let maxVal = vm.pop()
+      if maxVal.kind == tkInt and maxVal.ival > 0:
+        let res = rand(int(maxVal.ival))
+        vm.push(vInt(int64(res)))
+      else:
+        vm.push(vInt(0))
+    elif argCount == 2:
+      let maxVal = vm.pop()
+      let minVal = vm.pop()
+      if maxVal.kind == tkInt and minVal.kind == tkInt and maxVal.ival >= minVal.ival:
+        let res = rand(int(maxVal.ival - minVal.ival)) + int(minVal.ival)
+        vm.push(vInt(int64(res)))
+      else:
+        vm.push(vInt(0))
+    return true
+
+  if funcName == "seed":
+    if argCount == 1:
+      let seedVal = vm.pop()
+      if seedVal.kind == tkInt:
+        randomize(int(seedVal.ival))
+      vm.push(V(kind: tkVoid))
+    return true
+
+  if funcName == "readFile":
+    if argCount == 1:
+      let pathArg = vm.pop()
+      if pathArg.kind == tkString:
+        try:
+          let content = readFile(pathArg.sval)
+          vm.push(vString(content))
+        except:
+          vm.push(vString(""))
+      else:
+        vm.push(vString(""))
+    return true
+
+  # User-defined function call
+  if not vm.program.functions.hasKey(funcName):
+    raise newException(ValueError, "Unknown function: " & funcName)
+
+  # Create new frame
+  let newFrame = Frame(
+    vars: initTable[string, V](),
+    returnAddress: vm.pc
+  )
+
+  # Pop arguments and collect them
+  var args: seq[V] = @[]
+  for i in 0..<argCount:
+    args.add(vm.pop())
+
+  # Get parameter names from function debug info
+  if vm.program.functionDebugInfo.hasKey(funcName):
+    let debugInfo = vm.program.functionDebugInfo[funcName]
+    for i in 0..<min(args.len, debugInfo.parameterNames.len):
+      newFrame.vars[debugInfo.parameterNames[i]] = args[i]
+  else:
+    # Fallback: use generic parameter names if debug info is not available
+    for i in 0..<args.len:
+      newFrame.vars["param" & $i] = args[i]
+
+  vm.callStack.add(newFrame)
+  vm.pc = vm.program.functions[funcName]
+  return true
+
 proc executeInstruction*(vm: VM): bool =
   ## Execute a single bytecode instruction. Returns false when program should halt.
   if vm.pc >= vm.program.instructions.len:
@@ -469,356 +821,43 @@ proc executeInstruction*(vm: VM): bool =
   vm.pc += 1
 
   case instr.op
-  of opLoadInt:
-    vm.push(vInt(instr.arg))
-  of opLoadFloat:
-    let floatStr = vm.program.constants[instr.arg]
-    vm.push(vFloat(parseFloat(floatStr)))
-  of opLoadString:
-    let str = vm.program.constants[instr.arg]
-    vm.push(vString(str))
-  of opLoadBool:
-    vm.push(vBool(instr.arg != 0))
-  of opLoadVar:
-    let val = vm.getVar(instr.sarg)
-    vm.push(val)
-  of opStoreVar:
-    let val = vm.pop()
-    vm.setVar(instr.sarg, val)
-  of opAdd:
-    let b = vm.pop()
-    let a = vm.pop()
-    if a.kind == tkInt and b.kind == tkInt:
-      vm.push(vInt(a.ival + b.ival))
-    elif a.kind == tkFloat and b.kind == tkFloat:
-      vm.push(vFloat(a.fval + b.fval))
-    else:
-      raise newException(ValueError, "Type mismatch in addition")
-  of opSub:
-    let b = vm.pop()
-    let a = vm.pop()
-    if a.kind == tkInt and b.kind == tkInt:
-      vm.push(vInt(a.ival - b.ival))
-    elif a.kind == tkFloat and b.kind == tkFloat:
-      vm.push(vFloat(a.fval - b.fval))
-    else:
-      raise newException(ValueError, "Type mismatch in subtraction")
-  of opMul:
-    let b = vm.pop()
-    let a = vm.pop()
-    if a.kind == tkInt and b.kind == tkInt:
-      vm.push(vInt(a.ival * b.ival))
-    elif a.kind == tkFloat and b.kind == tkFloat:
-      vm.push(vFloat(a.fval * b.fval))
-    else:
-      raise newException(ValueError, "Type mismatch in multiplication")
-  of opDiv:
-    let b = vm.pop()
-    let a = vm.pop()
-    if a.kind == tkInt and b.kind == tkInt:
-      if b.ival == 0:
-        raise newException(ValueError, "Division by zero")
-      vm.push(vInt(a.ival div b.ival))
-    elif a.kind == tkFloat and b.kind == tkFloat:
-      if b.fval == 0.0:
-        raise newException(ValueError, "Division by zero")
-      vm.push(vFloat(a.fval / b.fval))
-    else:
-      raise newException(ValueError, "Type mismatch in division")
-  of opMod:
-    let b = vm.pop()
-    let a = vm.pop()
-    if a.kind == tkInt and b.kind == tkInt:
-      if b.ival == 0:
-        raise newException(ValueError, "Modulo by zero")
-      vm.push(vInt(a.ival mod b.ival))
-    else:
-      raise newException(ValueError, "Modulo requires integers")
-  of opEq:
-    let b = vm.pop()
-    let a = vm.pop()
-    let res = case a.kind:
-      of tkInt: a.ival == b.ival
-      of tkFloat: a.fval == b.fval
-      of tkBool: a.bval == b.bval
-      of tkString: a.sval == b.sval
-      else: false
-    vm.push(vBool(res))
-  of opNe:
-    let b = vm.pop()
-    let a = vm.pop()
-    let res = case a.kind:
-      of tkInt: a.ival != b.ival
-      of tkFloat: a.fval != b.fval
-      of tkBool: a.bval != b.bval
-      of tkString: a.sval != b.sval
-      else: true
-    vm.push(vBool(res))
-  of opLt:
-    let b = vm.pop()
-    let a = vm.pop()
-    if a.kind == tkInt and b.kind == tkInt:
-      vm.push(vBool(a.ival < b.ival))
-    elif a.kind == tkFloat and b.kind == tkFloat:
-      vm.push(vBool(a.fval < b.fval))
-    else:
-      raise newException(ValueError, "Type mismatch in comparison")
-  of opLe:
-    let b = vm.pop()
-    let a = vm.pop()
-    if a.kind == tkInt and b.kind == tkInt:
-      vm.push(vBool(a.ival <= b.ival))
-    elif a.kind == tkFloat and b.kind == tkFloat:
-      vm.push(vBool(a.fval <= b.fval))
-    else:
-      raise newException(ValueError, "Type mismatch in comparison")
-  of opGt:
-    let b = vm.pop()
-    let a = vm.pop()
-    if a.kind == tkInt and b.kind == tkInt:
-      vm.push(vBool(a.ival > b.ival))
-    elif a.kind == tkFloat and b.kind == tkFloat:
-      vm.push(vBool(a.fval > b.fval))
-    else:
-      raise newException(ValueError, "Type mismatch in comparison")
-  of opGe:
-    let b = vm.pop()
-    let a = vm.pop()
-    if a.kind == tkInt and b.kind == tkInt:
-      vm.push(vBool(a.ival >= b.ival))
-    elif a.kind == tkFloat and b.kind == tkFloat:
-      vm.push(vBool(a.fval >= b.fval))
-    else:
-      raise newException(ValueError, "Type mismatch in comparison")
-  of opAnd:
-    let b = vm.pop()
-    let a = vm.pop()
-    if a.kind == tkBool and b.kind == tkBool:
-      vm.push(vBool(a.bval and b.bval))
-    else:
-      raise newException(ValueError, "Logical AND requires bools")
-  of opOr:
-    let b = vm.pop()
-    let a = vm.pop()
-    if a.kind == tkBool and b.kind == tkBool:
-      vm.push(vBool(a.bval or b.bval))
-    else:
-      raise newException(ValueError, "Logical OR requires bools")
-  of opNot:
-    let a = vm.pop()
-    if a.kind == tkBool:
-      vm.push(vBool(not a.bval))
-    else:
-      raise newException(ValueError, "Logical NOT requires bool")
-  of opNeg:
-    let a = vm.pop()
-    if a.kind == tkInt:
-      vm.push(vInt(-a.ival))
-    elif a.kind == tkFloat:
-      vm.push(vFloat(-a.fval))
-    else:
-      raise newException(ValueError, "Negation requires numeric type")
-  of opJump:
-    vm.pc = int(instr.arg)
-  of opJumpIfFalse:
-    let condition = vm.pop()
-    if not truthy(condition):
-      vm.pc = int(instr.arg)
-  of opCall:
-    let funcName = instr.sarg
-    let argCount = int(instr.arg)
-
-    # Handle builtin functions using enhanced AST interpreter built-ins
-    if funcName == "print":
-      let arg = vm.pop()
-      case arg.kind
-      of tkString: echo arg.sval
-      of tkInt: echo arg.ival
-      of tkFloat: echo arg.fval
-      of tkBool: echo if arg.bval: "true" else: "false"
-      else: echo "<ref>"
-      vm.push(V(kind: tkVoid))
-      return true
-
-    if funcName == "newref":
-      let arg = vm.pop()
-      let refVal = vm.alloc(arg)
-      vm.push(refVal)
-      return true
-
-    if funcName == "deref":
-      let refVal = vm.pop()
-      if refVal.kind != tkRef:
-        raise newException(ValueError, "deref on non-ref")
-      let cell = vm.heap[refVal.refId]
-      if cell.isNil or not cell.alive:
-        raise newException(ValueError, "nil ref")
-      vm.push(cell.val)
-      return true
-
-    if funcName == "rand":
-      if argCount == 1:
-        let maxVal = vm.pop()
-        if maxVal.kind == tkInt and maxVal.ival > 0:
-          let res = rand(int(maxVal.ival))
-          vm.push(vInt(int64(res)))
-        else:
-          vm.push(vInt(0))
-      elif argCount == 2:
-        # Stack order: args are pushed in reverse, so we pop them in original order
-        # For rand(max, min): first pop gets max, second pop gets min
-        let maxVal = vm.pop()  # This is args[0] (max = 100)
-        let minVal = vm.pop()  # This is args[1] (min = 20)
-        if maxVal.kind == tkInt and minVal.kind == tkInt and maxVal.ival >= minVal.ival:
-          let res = rand(int(maxVal.ival - minVal.ival)) + int(minVal.ival)
-          vm.push(vInt(int64(res)))
-        else:
-          vm.push(vInt(0))
-      return true
-
-    if funcName == "seed":
-      if argCount == 1:
-        let seedVal = vm.pop()
-        if seedVal.kind == tkInt:
-          randomize(int(seedVal.ival))
-        vm.push(V(kind: tkVoid))
-      return true
-
-    if funcName == "readFile":
-      if argCount == 1:
-        let pathArg = vm.pop()
-        if pathArg.kind == tkString:
-          try:
-            let content = readFile(pathArg.sval)
-            vm.push(vString(content))
-          except:
-            vm.push(vString(""))
-        else:
-          vm.push(vString(""))
-      return true
-
-    # User-defined function call
-    if not vm.program.functions.hasKey(funcName):
-      raise newException(ValueError, "Unknown function: " & funcName)
-
-    # Create new frame
-    let newFrame = Frame(
-      vars: initTable[string, V](),
-      returnAddress: vm.pc
-    )
-
-    # Pop arguments and collect them (they're already in reverse order from stack)
-    var args: seq[V] = @[]
-    for i in 0..<argCount:
-      args.add(vm.pop())  # Add to end - this gives us correct parameter order
-
-    # Get parameter names from function debug info
-    if vm.program.functionDebugInfo.hasKey(funcName):
-      let debugInfo = vm.program.functionDebugInfo[funcName]
-      for i in 0..<min(args.len, debugInfo.parameterNames.len):
-        newFrame.vars[debugInfo.parameterNames[i]] = args[i]
-    else:
-      # Fallback: use generic parameter names if debug info is not available
-      for i in 0..<args.len:
-        newFrame.vars["param" & $i] = args[i]
-
-    vm.callStack.add(newFrame)
-    vm.pc = vm.program.functions[funcName]
+  of opLoadInt: vm.opLoadIntImpl(instr)
+  of opLoadFloat: vm.opLoadFloatImpl(instr)
+  of opLoadString: vm.opLoadStringImpl(instr)
+  of opLoadBool: vm.opLoadBoolImpl(instr)
+  of opLoadVar: vm.opLoadVarImpl(instr)
+  of opStoreVar: vm.opStoreVarImpl(instr)
+  of opLoadNil: vm.opLoadNilImpl(instr)
+  of opPop: vm.opPopImpl(instr)
+  of opDup: vm.opDupImpl(instr)
+  of opAdd: vm.opAddImpl(instr)
+  of opSub: vm.opSubImpl(instr)
+  of opMul: vm.opMulImpl(instr)
+  of opDiv: vm.opDivImpl(instr)
+  of opMod: vm.opModImpl(instr)
+  of opNeg: vm.opNegImpl(instr)
+  of opEq: vm.opEqImpl(instr)
+  of opNe: vm.opNeImpl(instr)
+  of opLt: vm.opLtImpl(instr)
+  of opLe: vm.opLeImpl(instr)
+  of opGt: vm.opGtImpl(instr)
+  of opGe: vm.opGeImpl(instr)
+  of opAnd: vm.opAndImpl(instr)
+  of opOr: vm.opOrImpl(instr)
+  of opNot: vm.opNotImpl(instr)
+  of opNewRef: vm.opNewRefImpl(instr)
+  of opDeref: vm.opDerefImpl(instr)
+  of opMakeArray: vm.opMakeArrayImpl(instr)
+  of opArrayGet: vm.opArrayGetImpl(instr)
+  of opArraySlice: vm.opArraySliceImpl(instr)
+  of opArrayLen: vm.opArrayLenImpl(instr)
+  of opCast: vm.opCastImpl(instr)
+  of opJump: vm.opJumpImpl(instr)
+  of opJumpIfFalse: vm.opJumpIfFalseImpl(instr)
+  of opCall: 
+    return vm.opCallImpl(instr)
   of opReturn:
-    if vm.callStack.len == 0:
-      return false  # Exit program
-
-    let frame = vm.callStack.pop()
-    vm.pc = frame.returnAddress
-  of opNewRef:
-    let value = vm.pop()
-    let refVal = vm.alloc(value)
-    vm.push(refVal)
-  of opDeref:
-    let refVal = vm.pop()
-    if refVal.kind == tkRef:
-      if refVal.refId >= 0 and refVal.refId < vm.heap.len:
-        let cell = vm.heap[refVal.refId]
-        if cell.alive:
-          vm.push(cell.val)
-        else:
-          raise newException(ValueError, "Dereferencing dead reference")
-      else:
-        raise newException(ValueError, "Invalid reference")
-    else:
-      raise newException(ValueError, "Deref expects reference")
-  of opMakeArray:
-    # Pop N elements from stack and create array
-    let count = instr.arg
-    var elements: seq[V] = @[]
-    for i in 0..<count:
-      elements.insert(vm.pop(), 0)  # Insert at beginning to maintain order
-    vm.push(vArray(elements))
-  of opArrayGet:
-    # Pop index and array, push element
-    let index = vm.pop()
-    let array = vm.pop()
-    if array.kind != tkArray:
-      raise newException(ValueError, "Array get expects array")
-    if index.kind != tkInt:
-      raise newException(ValueError, "Array index must be int")
-    if index.ival < 0 or index.ival >= array.aval.len:
-      raise newException(ValueError, &"Array index {index.ival} out of bounds")
-    vm.push(array.aval[index.ival])
-  of opArraySlice:
-    # Pop end, start, array, push slice
-    let endVal = vm.pop()
-    let startVal = vm.pop()
-    let array = vm.pop()
-    if array.kind != tkArray:
-      raise newException(ValueError, "Array slice expects array")
-
-    let startIdx = if startVal.kind == tkInt and startVal.ival != -1: startVal.ival else: 0
-    let endIdx = if endVal.kind == tkInt and endVal.ival != -1: endVal.ival else: array.aval.len
-
-    let actualStart = max(0, min(startIdx, array.aval.len))
-    let actualEnd = max(actualStart, min(endIdx, array.aval.len))
-
-    if actualStart >= actualEnd:
-      vm.push(vArray(@[]))
-    else:
-      vm.push(vArray(array.aval[actualStart..<actualEnd]))
-  of opArrayLen:
-    # Pop array and push its length as int
-    let array = vm.pop()
-    if array.kind != tkArray:
-      raise newException(ValueError, "Array length expects array")
-    vm.push(vInt(array.aval.len.int64))
-  of opLoadNil:
-    # Push nil reference
-    vm.push(vRef(-1))
-  of opCast:
-    # Pop value and cast to target type based on instruction argument
-    let source = vm.pop()
-    let castTypeCode = instr.arg
-    case castTypeCode:
-    of 1:  # Cast to int
-      case source.kind:
-      of tkFloat: vm.push(vInt(source.fval.int64))
-      of tkInt: vm.push(source)  # Already int, pass through
-      else: raise newException(ValueError, "invalid cast to int")
-    of 2:  # Cast to float
-      case source.kind:
-      of tkInt: vm.push(vFloat(source.ival.float64))
-      of tkFloat: vm.push(source)  # Already float, pass through
-      else: raise newException(ValueError, "invalid cast to float")
-    of 3:  # Cast to string
-      case source.kind:
-      of tkInt: vm.push(vString($source.ival))
-      of tkFloat: vm.push(vString($source.fval))
-      else: raise newException(ValueError, "invalid cast to string")
-    else: 
-      raise newException(ValueError, "unsupported cast type")
-  of opPop:
-    discard vm.pop()
-  of opDup:
-    let val = vm.peek()
-    vm.push(val)
+    return vm.opReturnImpl(instr)
 
   return true
 
