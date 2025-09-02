@@ -474,56 +474,66 @@ proc opDupImpl(vm: VM, instr: Instruction) = vm.push(vm.peek())
 proc opAddImpl(vm: VM, instr: Instruction) =
   let b = vm.pop()
   let a = vm.pop()
-  if a.kind == tkInt and b.kind == tkInt:
+  if a.kind != b.kind:
+    raise newException(ValueError, "Type mismatch in addition")
+  if a.kind == tkInt:
     vm.push(vInt(a.ival + b.ival))
-  elif a.kind == tkFloat and b.kind == tkFloat:
+  elif a.kind == tkFloat:
     vm.push(vFloat(a.fval + b.fval))
   else:
-    raise newException(ValueError, "Type mismatch in addition")
+    raise newException(ValueError, "Unsupported types in addition")
 
 proc opSubImpl(vm: VM, instr: Instruction) =
   let b = vm.pop()
   let a = vm.pop()
-  if a.kind == tkInt and b.kind == tkInt:
+  if a.kind != b.kind:
+    raise newException(ValueError, "Type mismatch in subtraction")
+  if a.kind == tkInt:
     vm.push(vInt(a.ival - b.ival))
-  elif a.kind == tkFloat and b.kind == tkFloat:
+  elif a.kind == tkFloat:
     vm.push(vFloat(a.fval - b.fval))
   else:
-    raise newException(ValueError, "Type mismatch in subtraction")
+    raise newException(ValueError, "Unsupported types in subtraction")
 
 proc opMulImpl(vm: VM, instr: Instruction) =
   let b = vm.pop()
   let a = vm.pop()
-  if a.kind == tkInt and b.kind == tkInt:
+  if a.kind != b.kind:
+    raise newException(ValueError, "Type mismatch in multiplication")
+  if a.kind == tkInt:
     vm.push(vInt(a.ival * b.ival))
-  elif a.kind == tkFloat and b.kind == tkFloat:
+  elif a.kind == tkFloat:
     vm.push(vFloat(a.fval * b.fval))
   else:
-    raise newException(ValueError, "Type mismatch in multiplication")
+    raise newException(ValueError, "Unsupported types in multiplication")
 
 proc opDivImpl(vm: VM, instr: Instruction) =
   let b = vm.pop()
   let a = vm.pop()
-  if a.kind == tkInt and b.kind == tkInt:
+  if a.kind != b.kind:
+    raise newException(ValueError, "Type mismatch in division")
+  if a.kind == tkInt:
     if b.ival == 0:
       raise newException(ValueError, "Division by zero")
     vm.push(vInt(a.ival div b.ival))
-  elif a.kind == tkFloat and b.kind == tkFloat:
+  elif a.kind == tkFloat:
     if b.fval == 0.0:
       raise newException(ValueError, "Division by zero")
     vm.push(vFloat(a.fval / b.fval))
   else:
-    raise newException(ValueError, "Type mismatch in division")
+    raise newException(ValueError, "Unsupported types in division")
 
 proc opModImpl(vm: VM, instr: Instruction) =
   let b = vm.pop()
   let a = vm.pop()
-  if a.kind == tkInt and b.kind == tkInt:
+  if a.kind != b.kind:
+    raise newException(ValueError, "Type mismatch in modulo")
+  if a.kind == tkInt:
     if b.ival == 0:
       raise newException(ValueError, "Modulo by zero")
     vm.push(vInt(a.ival mod b.ival))
   else:
-    raise newException(ValueError, "Modulo requires integers")
+    raise newException(ValueError, "Unsupported types in modulo")
 
 proc opNegImpl(vm: VM, instr: Instruction) =
   let a = vm.pop()
@@ -537,6 +547,8 @@ proc opNegImpl(vm: VM, instr: Instruction) =
 proc opEqImpl(vm: VM, instr: Instruction) =
   let b = vm.pop()
   let a = vm.pop()
+  if a.kind != b.kind:
+    raise newException(ValueError, "Type mismatch in comparison")
   let res = case a.kind:
     of tkInt: a.ival == b.ival
     of tkFloat: a.fval == b.fval
@@ -548,6 +560,8 @@ proc opEqImpl(vm: VM, instr: Instruction) =
 proc opNeImpl(vm: VM, instr: Instruction) =
   let b = vm.pop()
   let a = vm.pop()
+  if a.kind != b.kind:
+    raise newException(ValueError, "Type mismatch in comparison")
   let res = case a.kind:
     of tkInt: a.ival != b.ival
     of tkFloat: a.fval != b.fval
@@ -559,65 +573,70 @@ proc opNeImpl(vm: VM, instr: Instruction) =
 proc opLtImpl(vm: VM, instr: Instruction) =
   let b = vm.pop()
   let a = vm.pop()
-  if a.kind == tkInt and b.kind == tkInt:
+  if a.kind != b.kind:
+    raise newException(ValueError, "Type mismatch in comparison")
+  if a.kind == tkInt:
     vm.push(vBool(a.ival < b.ival))
-  elif a.kind == tkFloat and b.kind == tkFloat:
+  elif a.kind == tkFloat:
     vm.push(vBool(a.fval < b.fval))
   else:
-    raise newException(ValueError, "Type mismatch in comparison")
+    raise newException(ValueError, "Unsupported types in comparison")
 
 proc opLeImpl(vm: VM, instr: Instruction) =
   let b = vm.pop()
   let a = vm.pop()
-  if a.kind == tkInt and b.kind == tkInt:
+  if a.kind != b.kind:
+    raise newException(ValueError, "Type mismatch in comparison")
+  if a.kind == tkInt:
     vm.push(vBool(a.ival <= b.ival))
-  elif a.kind == tkFloat and b.kind == tkFloat:
+  elif a.kind == tkFloat:
     vm.push(vBool(a.fval <= b.fval))
   else:
-    raise newException(ValueError, "Type mismatch in comparison")
+    raise newException(ValueError, "Unsupported types in comparison")
 
 proc opGtImpl(vm: VM, instr: Instruction) =
   let b = vm.pop()
   let a = vm.pop()
-  if a.kind == tkInt and b.kind == tkInt:
+  if a.kind != b.kind:
+    raise newException(ValueError, "Type mismatch in comparison")
+  if a.kind == tkInt:
     vm.push(vBool(a.ival > b.ival))
-  elif a.kind == tkFloat and b.kind == tkFloat:
+  elif a.kind == tkFloat:
     vm.push(vBool(a.fval > b.fval))
   else:
-    raise newException(ValueError, "Type mismatch in comparison")
+    raise newException(ValueError, "Unsupported types in comparison")
 
 proc opGeImpl(vm: VM, instr: Instruction) =
   let b = vm.pop()
   let a = vm.pop()
-  if a.kind == tkInt and b.kind == tkInt:
+  if a.kind != b.kind:
+    raise newException(ValueError, "Type mismatch in comparison")
+  if a.kind == tkInt:
     vm.push(vBool(a.ival >= b.ival))
-  elif a.kind == tkFloat and b.kind == tkFloat:
+  elif a.kind == tkFloat:
     vm.push(vBool(a.fval >= b.fval))
   else:
-    raise newException(ValueError, "Type mismatch in comparison")
+    raise newException(ValueError, "Unsupported types in comparison")
 
 proc opAndImpl(vm: VM, instr: Instruction) =
   let b = vm.pop()
   let a = vm.pop()
-  if a.kind == tkBool and b.kind == tkBool:
-    vm.push(vBool(a.bval and b.bval))
-  else:
+  if a.kind != tkBool or b.kind != tkBool:
     raise newException(ValueError, "Logical AND requires bools")
+  vm.push(vBool(a.bval and b.bval))
 
 proc opOrImpl(vm: VM, instr: Instruction) =
   let b = vm.pop()
   let a = vm.pop()
-  if a.kind == tkBool and b.kind == tkBool:
-    vm.push(vBool(a.bval or b.bval))
-  else:
+  if a.kind != tkBool or b.kind != tkBool:
     raise newException(ValueError, "Logical OR requires bools")
+  vm.push(vBool(a.bval or b.bval))
 
 proc opNotImpl(vm: VM, instr: Instruction) =
   let a = vm.pop()
-  if a.kind == tkBool:
-    vm.push(vBool(not a.bval))
-  else:
+  if a.kind != tkBool:
     raise newException(ValueError, "Logical NOT requires bool")
+  vm.push(vBool(not a.bval))
 
 proc opNewRefImpl(vm: VM, instr: Instruction) =
   let value = vm.pop()
@@ -625,17 +644,14 @@ proc opNewRefImpl(vm: VM, instr: Instruction) =
 
 proc opDerefImpl(vm: VM, instr: Instruction) =
   let refVal = vm.pop()
-  if refVal.kind == tkRef:
-    if refVal.refId >= 0 and refVal.refId < vm.heap.len:
-      let cell = vm.heap[refVal.refId]
-      if cell.alive:
-        vm.push(cell.val)
-      else:
-        raise newException(ValueError, "Dereferencing dead reference")
-    else:
-      raise newException(ValueError, "Invalid reference")
-  else:
+  if refVal.kind != tkRef:
     raise newException(ValueError, "Deref expects reference")
+  if refVal.refId < 0 or refVal.refId >= vm.heap.len:
+    raise newException(ValueError, "Invalid reference")
+  let cell = vm.heap[refVal.refId]
+  if not cell.alive:
+    raise newException(ValueError, "Dereferencing dead reference")
+  vm.push(cell.val)
 
 proc opMakeArrayImpl(vm: VM, instr: Instruction) =
   let count = instr.arg
@@ -694,7 +710,7 @@ proc opCastImpl(vm: VM, instr: Instruction) =
     of tkInt: vm.push(vString($source.ival))
     of tkFloat: vm.push(vString($source.fval))
     else: raise newException(ValueError, "invalid cast to string")
-  else: 
+  else:
     raise newException(ValueError, "unsupported cast type")
 
 proc opJumpImpl(vm: VM, instr: Instruction) =
@@ -854,7 +870,7 @@ proc executeInstruction*(vm: VM): bool =
   of opCast: vm.opCastImpl(instr)
   of opJump: vm.opJumpImpl(instr)
   of opJumpIfFalse: vm.opJumpIfFalseImpl(instr)
-  of opCall: 
+  of opCall:
     return vm.opCallImpl(instr)
   of opReturn:
     return vm.opReturnImpl(instr)
