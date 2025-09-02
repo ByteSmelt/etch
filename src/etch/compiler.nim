@@ -182,7 +182,7 @@ proc tryRunCachedOrCompile*(options: CompilerOptions): CompilerResult =
   let bytecodeFile = getBytecodeFileName(options.sourceFile)
 
   # Check if we can use cached bytecode
-  if options.runVM and not options.emitC and not shouldRecompile(options.sourceFile, bytecodeFile, options.includeDebugInfo):
+  if options.runVM and not shouldRecompile(options.sourceFile, bytecodeFile, options.includeDebugInfo):
     let cachedResult = runCachedBytecode(bytecodeFile)
     if cachedResult.success:
       return cachedResult

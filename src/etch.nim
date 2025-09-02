@@ -27,7 +27,6 @@ when isMainModule:
     quit runTests(testDir)
 
   var runVm = false
-  var emitC = false
   var includeDebugInfo = false
   var cOut = ""
   var files: seq[string] = @[]
@@ -48,7 +47,6 @@ when isMainModule:
     sourceFile: sourceFile,
     runVM: runVm,
     includeDebugInfo: includeDebugInfo,
-    emitC: emitC,
     cOutFile: cOut
   )
 
