@@ -68,8 +68,9 @@ proc inferCall(prog: Program; sc: Scope; e: Expr; subst: var TySubst): EtchType 
     if e.fname == "comptime":
       if e.args.len != 1: raise newTypecheckError(e.pos, "comptime expects 1 argument")
       let t0 = inferExprTypes(prog, nil, sc, e.args[0], subst)
-      e.kind = ekComptime
-      e.typ = t0
+      let comptimeExpr = Expr(kind: ekComptime, pos: e.pos, typ: t0, inner: e.args[0])
+      # Replace the original expression with the new comptime expression
+      e[] = comptimeExpr[]
       return t0
     if e.fname == "rand":
       if e.args.len < 1 or e.args.len > 2:
