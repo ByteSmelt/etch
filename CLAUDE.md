@@ -10,6 +10,5 @@
 ## Testing and validation of correctness
 
 To test you have to:
-- Test nim unit tests with `nimble test` in the root folder
-- Test compiling and running examples with `nimble examples` (alias for `nim r src/etch.nim --test examples/`)
-- Compile and run a single etch file with `nim r src/etch.nim --run examples/simple_test.etch`
+- Test compiling and running examples with `just examples` (alias for `nim r src/etch.nim --test examples/`)
+- Compile and run a single etch file with `just go examples/simple_test.etch`

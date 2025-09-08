@@ -1,0 +1,30 @@
+{
+  "name": "etchlang",
+  "displayName": "Etch Language Support",
+  "description": "Syntax highlighting for the Etch language",
+  "version": "0.0.1",
+  "publisher": "kunitoki",
+  "engines": {
+    "vscode": "^1.50.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "etchlang",
+        "aliases": ["EtchLang", "etchlang", "etch"],
+        "extensions": [".etch"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "etchlang",
+        "scopeName": "source.etchlang",
+        "path": "./syntaxes/etchlang.tmLanguage.json"
+      }
+    ]
+  }
+}

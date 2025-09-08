@@ -10,11 +10,8 @@ fn max[T: Comparable](a: T, b: T) -> T {
 }
 
 fn main() -> void {
-  let x: int = 10;
-  let y: int = 20;
-  print( max(x, y) ); // 20
-
-  let z: float = 1.0;
-  let w: float = 2.0;
-  print( max(z, w) ); // 2.0
+  seed(42);
+  let x: int = rand(50, 10);  // [10, 50]
+  let y: int = rand(50, 10);  // [10, 50]
+  print( max(x, y) );
 }

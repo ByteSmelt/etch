@@ -1,6 +1,5 @@
-fn main() -> void {
+fn testInit(condition: bool) -> void {
     var x: int;
-    var condition: bool = true;
     
     if condition {
         x = 42;
@@ -9,4 +8,9 @@ fn main() -> void {
     }
     
     print(x);  // This should be fine - x is always initialized
+}
+
+fn main() -> void {
+    seed(42);
+    testInit(rand(1) == 0);
 }

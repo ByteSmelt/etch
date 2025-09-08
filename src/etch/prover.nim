@@ -27,6 +27,7 @@ type
 type Env = ref object
   vals: Table[string, Info]
   nils: Table[string, bool]
+  exprs: Table[string, Expr]  # Track original expressions for variables
 
 proc infoConst(v: int64): Info =
   Info(known: true, cval: v, minv: v, maxv: v, nonZero: v != 0, isBool: false, initialized: true)
@@ -295,7 +296,7 @@ proc analyzeUserDefinedCall(e: Expr, env: Env, prog: Program): Info =
 
   # Now perform call-site safety analysis on the function body
   # Create environment with actual argument information and global variables
-  var callEnv = Env(vals: env.vals, nils: env.nils)
+  var callEnv = Env(vals: env.vals, nils: env.nils, exprs: env.exprs)
 
   # Set up parameter environment with actual call-site information
   for i in 0..<min(argInfos.len, fn.params.len):
@@ -368,6 +369,36 @@ proc analyzeIndexExpr(e: Expr, env: Env, prog: Program): Info =
     elif indexInfo.minv < 0:
       raise newProverError(e.indexExpr.pos, &"array index might be negative: index range [{indexInfo.minv}, {indexInfo.maxv}] includes negative values")
 
+  # Determine the result type information for nested arrays
+  # If the result type is also an array, we need to analyze the specific inner array size
+  if e.typ != nil and e.typ.kind == tkArray:
+    # The result is an array type - need to determine its size
+    # Case 1: Direct indexing into array literal
+    if e.arrayExpr.kind == ekArray and indexInfo.known and 
+       indexInfo.cval >= 0 and indexInfo.cval < e.arrayExpr.elements.len:
+      # We're indexing into an array literal with a known index
+      let elementExpr = e.arrayExpr.elements[indexInfo.cval]
+      if elementExpr.kind == ekArray:
+        # The element is itself an array literal - return its specific size info
+        return infoArray(elementExpr.elements.len.int64, sizeKnown = true)
+    
+    # Case 2: Indexing into a variable that contains an array literal
+    elif e.arrayExpr.kind == ekVar and indexInfo.known:
+      # Look up the variable's original expression
+      if env.exprs.hasKey(e.arrayExpr.vname):
+        let originalExpr = env.exprs[e.arrayExpr.vname]
+        if originalExpr.kind == ekArray and indexInfo.cval >= 0 and indexInfo.cval < originalExpr.elements.len:
+          # The variable was initialized with an array literal
+          let elementExpr = originalExpr.elements[indexInfo.cval]
+          if elementExpr.kind == ekArray:
+            # The element is itself an array literal - return its specific size info
+            return infoArray(elementExpr.elements.len.int64, sizeKnown = true)
+      # If we can't determine the exact size, return unknown array size
+      return infoArray(-1, sizeKnown = false)
+      
+    # If we can't determine the exact size but know it's an array, return unknown array info  
+    return infoArray(-1, sizeKnown = false)
+      
   infoUnknown()
 
 proc analyzeSliceExpr(e: Expr, env: Env, prog: Program): Info =
@@ -519,6 +550,7 @@ proc proveStmt(s: Stmt; env: Env, prog: Program = nil, fnContext: string = "") =
       let info = analyzeExpr(s.vinit.get(), env, prog)
       env.vals[s.vname] = info
       env.nils[s.vname] = not info.nonNil
+      env.exprs[s.vname] = s.vinit.get()  # Store original expression
     else:
       # Variable is declared but not initialized
       env.vals[s.vname] = infoUninitialized()
@@ -533,6 +565,7 @@ proc proveStmt(s: Stmt; env: Env, prog: Program = nil, fnContext: string = "") =
     var newInfo = info
     newInfo.initialized = true
     env.vals[s.aname] = newInfo
+    env.exprs[s.aname] = s.aval  # Store original expression
     if info.nonNil: env.nils[s.aname] = false
   of skIf:
     let condResult = evaluateCondition(s.cond, env, prog)
@@ -541,34 +574,35 @@ proc proveStmt(s: Stmt; env: Env, prog: Program = nil, fnContext: string = "") =
     of crAlwaysTrue:
       if s.elifChain.len > 0 or s.elseBody.len > 0:
         if fnContext.len > 0 and fnContext.contains('<') and fnContext.contains('>') and not fnContext.contains("<>"):
-          echo &"{errors.currentFilename}:{s.pos.line}:{s.pos.col}: warning: unreachable code (condition is always true) in {fnContext}"
+          raise newProverError(s.pos, &"unreachable code (condition is always true) in {fnContext}")
         else:
-          echo &"{errors.currentFilename}:{s.pos.line}:{s.pos.col}: warning: unreachable code (condition is always true)"
+          raise newProverError(s.pos, "unreachable code (condition is always true)")
       # Only analyze then branch
-      var thenEnv = Env(vals: env.vals, nils: env.nils)
+      var thenEnv = Env(vals: env.vals, nils: env.nils, exprs: env.exprs)
       for st in s.thenBody: proveStmt(st, thenEnv, prog, fnContext)
       # Copy then results back to main env
       for k, v in thenEnv.vals: env.vals[k] = v
+      for k, v in thenEnv.exprs: env.exprs[k] = v
       return
     of crAlwaysFalse:
       if s.thenBody.len > 0:
         if fnContext.len > 0 and fnContext.contains('<') and fnContext.contains('>') and not fnContext.contains("<>"):
-          echo &"{errors.currentFilename}:{s.pos.line}:{s.pos.col}: warning: unreachable code (condition is always false) in {fnContext}"
+          raise newProverError(s.pos, &"unreachable code (condition is always false) in {fnContext}")
         else:
-          echo &"{errors.currentFilename}:{s.pos.line}:{s.pos.col}: warning: unreachable code (condition is always false)"
+          raise newProverError(s.pos, "unreachable code (condition is always false)")
       # Skip then branch, analyze elif/else branches and merge results
 
       var elifEnvs: seq[Env] = @[]
       # Process elif chain
       for i, elifBranch in s.elifChain:
-        var elifEnv = Env(vals: env.vals, nils: env.nils)
+        var elifEnv = Env(vals: env.vals, nils: env.nils, exprs: env.exprs)
         let elifCondResult = evaluateCondition(elifBranch.cond, env, prog)
         if elifCondResult != crAlwaysFalse:
           for st in elifBranch.body: proveStmt(st, elifEnv, prog, fnContext)
           elifEnvs.add(elifEnv)
 
       # Process else branch
-      var elseEnv = Env(vals: env.vals, nils: env.nils)
+      var elseEnv = Env(vals: env.vals, nils: env.nils, exprs: env.exprs)
       for st in s.elseBody: proveStmt(st, elseEnv, prog, fnContext)
 
       # Merge results from all executed branches
@@ -608,13 +642,15 @@ proc proveStmt(s: Stmt; env: Env, prog: Program = nil, fnContext: string = "") =
         # Only else branch executed, copy its results
         for k, v in elseEnv.vals:
           env.vals[k] = v
+        for k, v in elseEnv.exprs:
+          env.exprs[k] = v
       return
     of crUnknown:
       discard # Continue with normal analysis
 
     # Normal case: condition is not known at compile time
     # Process then branch (condition could be true)
-    var thenEnv = Env(vals: env.vals, nils: env.nils)
+    var thenEnv = Env(vals: env.vals, nils: env.nils, exprs: env.exprs)
     let condInfo = analyzeExpr(s.cond, env, prog)
     if not (condInfo.known and condInfo.cval == 0):
       # Control flow sensitive analysis: refine environment based on condition
@@ -714,9 +750,9 @@ proc proveStmt(s: Stmt; env: Env, prog: Program = nil, fnContext: string = "") =
     of crAlwaysFalse:
       if s.wbody.len > 0:
         if fnContext.len > 0 and fnContext.contains('<') and fnContext.contains('>') and not fnContext.contains("<>"):
-          echo &"{errors.currentFilename}:{s.pos.line}:{s.pos.col}: warning: unreachable code (while condition is always false) in {fnContext}"
+          raise newProverError(s.pos, &"unreachable code (while condition is always false) in {fnContext}")
         else:
-          echo &"{errors.currentFilename}:{s.pos.line}:{s.pos.col}: warning: unreachable code (while condition is always false)"
+          raise newProverError(s.pos, "unreachable code (while condition is always false)")
       # Skip loop body analysis since it's never executed
       return
     of crAlwaysTrue:
@@ -736,7 +772,7 @@ proc proveStmt(s: Stmt; env: Env, prog: Program = nil, fnContext: string = "") =
       originalVars[k] = v
 
     # Create loop body environment
-    var loopEnv = Env(vals: env.vals, nils: env.nils)
+    var loopEnv = Env(vals: env.vals, nils: env.nils, exprs: env.exprs)
 
     # Analyze loop body
     for st in s.wbody:
@@ -777,7 +813,7 @@ proc proveStmt(s: Stmt; env: Env, prog: Program = nil, fnContext: string = "") =
 
 proc prove*(prog: Program, filename: string = "<unknown>") =
   errors.loadSourceLines(filename)
-  var env = Env(vals: initTable[string, Info](), nils: initTable[string, bool]())
+  var env = Env(vals: initTable[string, Info](), nils: initTable[string, bool](), exprs: initTable[string, Expr]())
 
   # First pass: add all global variable declarations to environment (forward references)
   for g in prog.globals:
@@ -791,7 +827,7 @@ proc prove*(prog: Program, filename: string = "<unknown>") =
   # Analyze main function directly (it's the entry point)
   if prog.funInstances.hasKey("main"):
     let mainFn = prog.funInstances["main"]
-    var mainEnv = Env(vals: env.vals, nils: env.nils) # copy global environment
+    var mainEnv = Env(vals: env.vals, nils: env.nils, exprs: env.exprs) # copy global environment
     for stmt in mainFn.body:
       proveStmt(stmt, mainEnv, prog)
 

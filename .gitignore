@@ -1,9 +1,13 @@
+.DS_Store
+
 nimcache/
 nimblecache/
 htmldocs/
 
-.DS_Store
-
 __etch__/
 *.etcx
 *.etca
+*.vsix
+nimble.develop
+nimble.paths
+tests/.DS_Store

@@ -4,7 +4,7 @@ fn main() -> void {
 
     // Array indexing
     let first: int = numbers[0];
-    let last: int = numbers[rand(4)];
+    var last: int = numbers[rand(0, 2)];
     print(numbers[0]);
     print(numbers[4]);
 
@@ -18,6 +18,7 @@ fn main() -> void {
     let matrix: array[array[int]] = [[1, 2], [3, 4]];
     let row: array[int] = matrix[0];
     let element: int = matrix[1][0];  // Should be 3
+    print(element);
 
     // String arrays
     let words: array[string] = ["hello", "world", "etch"];

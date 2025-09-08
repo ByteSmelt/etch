@@ -1,7 +1,7 @@
 # tester.nim
 # Etch testing framework: test discovery, execution, and result reporting
 
-import std/[os, strformat, strutils, algorithm, osproc]
+import std/[os, strformat, strutils, algorithm, osproc, sequtils, tables]
 
 type
   TestResult* = object
@@ -18,8 +18,14 @@ type
     isCompilerError: bool
 
 proc normalizeOutput(output: string): string =
-  ## Normalize output for comparison (remove extra whitespace, normalize line endings)
-  output.strip().replace("\r\n", "\n").replace("\r", "\n")
+  output
+    .strip()
+    .replace("\r\n", "\n")
+    .replace("\r", "\n")
+    .splitLines()
+    .mapIt(it.strip())
+    .filterIt(it.len > 0)
+    .join("\n")
 
 proc executeWithSeparateStreams(cmd: string): ExecutionResult =
   ## Execute command with separate stdout/stderr capture

@@ -1,15 +1,12 @@
-fn test(condition: bool) -> void {
+fn main() -> void {
     var x: int;
+    seed(42);
     
-    if condition {
+    if rand(1) == 0 {
         x = 42;
     } else {
         x = 99;
     }
     
     print(x);  // This should be fine - x is always initialized
-}
-
-fn main() -> void {
-    test(true);
 }

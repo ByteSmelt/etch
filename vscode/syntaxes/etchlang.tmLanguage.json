@@ -1,0 +1,66 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vscode/main/extensions/json/syntaxes/json.tmLanguage.schema.json",
+  "name": "EtchLang",
+  "scopeName": "source.etchlang",
+  "patterns": [
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#numbers" },
+    { "include": "#strings" },
+    { "include": "#comments" }
+  ],
+  "repository": {
+    "keywords": {
+      "patterns": [
+        {
+          "match": "\\b(fn|comptime|inject|let|var|while|if|else|return|print)\\b",
+          "name": "keyword.control.etchlang"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "match": "\\b(void|int|float|bool|string)\\b",
+          "name": "storage.type.etchlang"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "match": "\\b\\d+\\b",
+          "name": "constant.numeric.etchlang"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "begin": "\"",
+          "end": "\"",
+          "name": "string.quoted.double.etchlang",
+          "patterns": [
+            {
+              "match": "\\\\.",
+              "name": "constant.character.escape.etchlang"
+            }
+          ]
+        }
+      ]
+    },
+    "comments": {
+      "patterns": [
+        {
+          "begin": "/\\*",
+          "end": "\\*/",
+          "name": "comment.block.etchlang"
+        },
+        {
+          "match": "//.*$",
+          "name": "comment.line.double-slash.etchlang"
+        }
+      ]
+    }
+  }
+}

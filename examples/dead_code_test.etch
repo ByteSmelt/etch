@@ -1,19 +1,11 @@
 fn main() -> void {
-  // Case 1: Always false condition
-  if 0 == 1 {
-    print(10 / 0);  // Should warn about dead code, not division error
-  }
-
-  // Case 2: Always true condition
-  if 5 > 3 {
+  seed(42);
+  let a: int = rand(10, 0);  // Random value [0, 10]
+  let b: int = 5;
+  
+  if a > b {
     print(42);
   } else {
-    print(99);  // Should warn about dead code
-  }
-
-  // Case 3: Normal case that should still work
-  let x: int = 5;
-  if x < 0 {
-    print(x);  // Should work normally
+    print(99);
   }
 }

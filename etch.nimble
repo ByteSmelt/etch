@@ -8,6 +8,3 @@ bin           = @["etch"]
 
 # Dependencies
 requires "nim >= 2.2.4"
-
-task examples, "try all examples suite":
-  exec "nim r src/etch.nim --test examples/"
