@@ -23,7 +23,7 @@ proc normalizeOutput(output: string): string =
     .replace("\r\n", "\n")
     .replace("\r", "\n")
     .splitLines()
-    .mapIt(it.strip())
+    .mapIt(it.strip(trailing = true, leading = false))  # Only strip trailing whitespace, preserve leading
     .filterIt(it.len > 0)
     .join("\n")
 

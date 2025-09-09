@@ -252,8 +252,8 @@ proc analyzeRandCall(e: Expr, env: Env, prog: Program): Info =
   if e.args.len == 1:
     let maxInfo = analyzeExpr(e.args[0], env, prog)
     if maxInfo.known:
-      # rand(max) returns 0 to max inclusive
-      return Info(known: false, minv: 0, maxv: maxInfo.cval, nonZero: maxInfo.cval > 0, initialized: true)
+      # rand(max) returns 0 to max inclusive - can be zero unless min > 0
+      return Info(known: false, minv: 0, maxv: maxInfo.cval, nonZero: false, initialized: true)
     else:
       # max is unknown, be conservative
       return Info(known: false, minv: 0, maxv: IMax, nonZero: false, initialized: true)

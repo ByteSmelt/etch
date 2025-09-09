@@ -1,6 +1,6 @@
 fn main() -> void {
     var x: int;
-    var i: int = 10;
+    var i: int = 0;
 
     while i < 5 {
         x = i * 2;
