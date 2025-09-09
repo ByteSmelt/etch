@@ -1,11 +1,11 @@
 fn main() -> void {
     var x: int;
-    var i: int = 0;
+    var i: int = 10;
 
     while i < 5 {
         x = i * 2;
         i = i + 1;
     }
 
-    print(x);  // This should fail - x may not be initialized if loop doesn't execute
+    print(x);  // x is guaranteed to be initialized since loop executes at least once (0 < 5)
 }

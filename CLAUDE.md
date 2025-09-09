@@ -11,4 +11,5 @@
 
 To test you have to:
 - Test compiling and running examples with `just examples` (alias for `nim r src/etch.nim --test examples/`)
-- Compile and run a single etch file with `just go examples/simple_test.etch`
+- Test compiling and running a single example `just test examples/simple_test.etch` (alias for `nim r src/etch.nim --test examples/simple_test.etch`)
+- Compile and run a single etch file with `just go examples/simple_test.etch` (alias for `nim r src/etch.nim --run examples/simple_test.etch`)

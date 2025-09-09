@@ -205,33 +205,21 @@ proc findTestFiles*(directory: string): seq[string] =
 
   result.sort()
 
-proc runTests*(directory: string = "examples"): int =
-  ## Run all tests in the specified directory
-  echo fmt"Running tests in directory: {directory}"
-
-  let testFiles = findTestFiles(directory)
-  if testFiles.len == 0:
-    echo "No test files found (looking for .etch files with corresponding .pass or .fail files)"
-    return 1
-
-  echo fmt"Found {testFiles.len} test files"
-  echo ""
-
-  var passed = 0
-  var failed = 0
-  var results: seq[TestResult] = @[]
-
-  for testFile in testFiles:
-    echo fmt"Running {testFile.splitFile.name}... "
-    let res = runSingleTest(testFile)
-    results.add(res)
-
+proc runTests*(path: string = "examples"): int =
+  ## Run tests - if path is a file, run single test; if directory, run all tests
+  
+  # Check if path is a file or directory
+  if fileExists(path):
+    # Single file test
+    echo fmt"Running single test: {path}"
+    
+    let res = runSingleTest(path)
+    
     if res.passed:
       echo "✓ PASSED"
-      inc passed
+      return 0
     else:
       echo "✗ FAILED"
-      inc failed
       echo fmt"  Error: {res.error}"
       if res.expected != res.actual:
         echo "  Expected:"
@@ -240,16 +228,57 @@ proc runTests*(directory: string = "examples"): int =
         echo "  Actual:"
         for line in res.actual.splitLines:
           echo fmt"    {line}"
-      echo ""
+      return 1
+  
+  elif dirExists(path):
+    # Directory test (existing behavior)
+    echo fmt"Running tests in directory: {path}"
 
-  echo fmt"Test Summary: {passed} passed, {failed} failed, {testFiles.len} total"
+    let testFiles = findTestFiles(path)
+    if testFiles.len == 0:
+      echo "No test files found (looking for .etch files with corresponding .pass or .fail files)"
+      return 1
 
-  if failed > 0:
+    echo fmt"Found {testFiles.len} test files"
     echo ""
-    echo "Failed tests:"
-    for r in results:
-      if not r.passed:
-        echo fmt"  - {r.name}: {r.error}"
-    return 1
 
-  return 0
+    var passed = 0
+    var failed = 0
+    var results: seq[TestResult] = @[]
+
+    for testFile in testFiles:
+      echo fmt"Running {testFile.splitFile.name}... "
+      let res = runSingleTest(testFile)
+      results.add(res)
+
+      if res.passed:
+        echo "✓ PASSED"
+        inc passed
+      else:
+        echo "✗ FAILED"
+        inc failed
+        echo fmt"  Error: {res.error}"
+        if res.expected != res.actual:
+          echo "  Expected:"
+          for line in res.expected.splitLines:
+            echo fmt"    {line}"
+          echo "  Actual:"
+          for line in res.actual.splitLines:
+            echo fmt"    {line}"
+        echo ""
+
+    echo fmt"Test Summary: {passed} passed, {failed} failed, {testFiles.len} total"
+
+    if failed > 0:
+      echo ""
+      echo "Failed tests:"
+      for r in results:
+        if not r.passed:
+          echo fmt"  - {r.name}: {r.error}"
+      return 1
+
+    return 0
+  
+  else:
+    echo fmt"Error: Path '{path}' does not exist"
+    return 1

@@ -4,6 +4,10 @@
 examples:
     nim r src/etch.nim --test examples/
 
+# Test compiling and running a specific example file
+test file:
+    nim r src/etch.nim --test {{file}}
+
 # Run a specific example file
 go file:
     nim r src/etch.nim --run {{file}}

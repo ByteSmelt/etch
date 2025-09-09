@@ -5,7 +5,7 @@
 # - deref on Ref[...] is proven non-nil
 
 import std/[tables, options, strformat, strutils]
-import ast, errors
+import ast, errors, symbolic
 
 const IMin = low(int64)
 const IMax = high(int64)
@@ -744,6 +744,7 @@ proc proveStmt(s: Stmt; env: Env, prog: Program = nil, fnContext: string = "") =
           mergedInfo = meet(mergedInfo, infos[i])
         env.vals[varName] = mergedInfo
   of skWhile:
+    # Enhanced while loop analysis using symbolic execution
     let condResult = evaluateCondition(s.wcond, env, prog)
 
     case condResult
@@ -762,46 +763,86 @@ proc proveStmt(s: Stmt; env: Env, prog: Program = nil, fnContext: string = "") =
     of crUnknown:
       discard
 
-    # Conservative loop analysis for initialization:
-    # Variables initialized only inside the loop body cannot be considered initialized
-    # after the loop, because the loop might never execute (condition could be false initially)
+    # Try symbolic execution for precise loop analysis
+    var symState = newSymbolicState()
+    
+    # Convert current environment to symbolic state
+    for varName, info in env.vals:
+      let symVal = convertProverInfoToSymbolic(info)
+      symState.setVariable(varName, symVal)
+    
+    # Try to execute the loop symbolically
+    let loopResult = symbolicExecuteWhile(s, symState, prog)
+    
+    case loopResult
+    of erContinue:
+      # Loop executed completely with known values - use precise results
+      for varName, symVal in symState.variables:
+        let newInfo = convertSymbolicToProverInfo(symVal)
+        env.vals[varName] = Info(
+          known: newInfo.known, cval: newInfo.cval,
+          minv: newInfo.minv, maxv: newInfo.maxv,
+          nonZero: newInfo.nonZero, nonNil: newInfo.nonNil,
+          isBool: newInfo.isBool, initialized: newInfo.initialized,
+          isArray: newInfo.isArray, arraySize: newInfo.arraySize,
+          arraySizeKnown: newInfo.arraySizeKnown
+        )
+    of erRuntimeHit, erIterationLimit:
+      # Fell back to conservative analysis - but we may have learned something
+      # from the initial iterations that executed symbolically
+      
+      # Use hybrid approach: variables that were definitely initialized 
+      # in the symbolic portion are marked as initialized
+      var originalVars = initTable[string, Info]()
+      for k, v in env.vals:
+        originalVars[k] = v
 
-    # Save original environment state
-    var originalVars = initTable[string, Info]()
-    for k, v in env.vals:
-      originalVars[k] = v
+      # Create loop body environment for remaining analysis
+      var loopEnv = Env(vals: env.vals, nils: env.nils, exprs: env.exprs)
 
-    # Create loop body environment
-    var loopEnv = Env(vals: env.vals, nils: env.nils, exprs: env.exprs)
+      # Analyze loop body with traditional method
+      for st in s.wbody:
+        proveStmt(st, loopEnv, prog, fnContext)
 
-    # Analyze loop body
-    for st in s.wbody:
-      proveStmt(st, loopEnv, prog, fnContext)
+      # Enhanced merge: if symbolic execution determined a variable was initialized,
+      # trust that result even if traditional analysis is conservative
+      for varName in loopEnv.vals.keys:
+        if originalVars.hasKey(varName) and symState.hasVariable(varName):
+          let originalInfo = originalVars[varName]
+          let loopInfo = loopEnv.vals[varName]
+          let symVal = symState.getVariable(varName).get()
 
-    # Merge loop results conservatively:
-    # Only variables that were already initialized before the loop
-    # or that maintain their initialization status are considered safe
-    for varName in loopEnv.vals.keys:
-      if originalVars.hasKey(varName):
-        # Variable existed before loop
-        let originalInfo = originalVars[varName]
-        let loopInfo = loopEnv.vals[varName]
-
-        # If variable was uninitialized before loop and only initialized inside,
-        # it's still considered uninitialized after loop (loop might not execute)
-        if not originalInfo.initialized:
-          var conservativeInfo = loopInfo
+          # If symbolic execution shows variable is initialized, trust it
+          if symVal.initialized and not originalInfo.initialized:
+            var enhancedInfo = loopInfo
+            enhancedInfo.initialized = true
+            env.vals[varName] = enhancedInfo
+          elif not originalInfo.initialized:
+            # Fall back to conservative approach
+            var conservativeInfo = loopInfo
+            conservativeInfo.initialized = false
+            env.vals[varName] = conservativeInfo
+          else:
+            # Variable was already initialized, merge normally
+            env.vals[varName] = meet(originalInfo, loopInfo)
+        elif originalVars.hasKey(varName):
+          # Handle variables without symbolic info conservatively
+          let originalInfo = originalVars[varName]
+          let loopInfo = loopEnv.vals[varName]
+          if not originalInfo.initialized:
+            var conservativeInfo = loopInfo
+            conservativeInfo.initialized = false
+            env.vals[varName] = conservativeInfo
+          else:
+            env.vals[varName] = meet(originalInfo, loopInfo)
+        else:
+          # New variable declared in loop - conservative approach
+          var conservativeInfo = loopEnv.vals[varName]
           conservativeInfo.initialized = false
           env.vals[varName] = conservativeInfo
-        else:
-          # Variable was already initialized, merge normally
-          env.vals[varName] = meet(originalInfo, loopInfo)
-      else:
-        # New variable declared in loop - it's not guaranteed to be initialized
-        # after the loop since loop might not execute
-        var conservativeInfo = loopEnv.vals[varName]
-        conservativeInfo.initialized = false
-        env.vals[varName] = conservativeInfo
+    of erComplete:
+      # Loop completed (shouldn't happen for while loops, but handle gracefully)
+      discard
   of skExpr:
     discard analyzeExpr(s.sexpr, env, prog)
   of skReturn:
