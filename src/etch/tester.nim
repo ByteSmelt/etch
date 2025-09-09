@@ -171,9 +171,22 @@ proc runSingleTest*(testFile: string): TestResult =
     else:
       # Expected success - compare output
       result.actual = smartFilterOutput(execResult)
-      result.passed = result.expected == result.actual
-      if not result.passed:
-        result.error = "Output mismatch"
+      
+      # Compare only the last N lines of actual output with expected output
+      # This handles compile-time vs runtime output differences
+      let actualLines = result.actual.splitLines().filterIt(it.strip().len > 0)
+      let expectedLines = result.expected.splitLines().filterIt(it.strip().len > 0)
+      
+      if expectedLines.len > 0 and actualLines.len >= expectedLines.len:
+        let lastActualLines = actualLines[^expectedLines.len .. ^1]
+        result.passed = expectedLines == lastActualLines
+        if not result.passed:
+          result.actual = lastActualLines.join("\n")
+          result.error = "Output mismatch (comparing last N lines)"
+      else:
+        result.passed = result.expected == result.actual
+        if not result.passed:
+          result.error = "Output mismatch"
 
 proc findTestFiles*(directory: string): seq[string] =
   ## Find all .etch files in directory that have corresponding .result or .error files
