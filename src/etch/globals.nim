@@ -25,4 +25,3 @@ proc evaluateGlobalVariables*(prog: Program): Table[string, V] =
       globalVars[g.vname] = V(kind: tkInt, ival: 0)
 
   return globalVars
-
