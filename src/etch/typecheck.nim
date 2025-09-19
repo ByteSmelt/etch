@@ -201,8 +201,12 @@ proc inferExprTypes(prog: Program; fd: FunDecl; sc: Scope; e: Expr; subst: var T
     let t0 = inferExprTypes(prog, fd, sc, e.ue, subst)
     case e.uop
     of uoNeg:
-      if t0.kind != tkInt: raise newTypecheckError(e.pos, "unary - on non-int")
-      e.typ = tInt(); return e.typ
+      if t0.kind == tkInt:
+        e.typ = tInt(); return e.typ
+      elif t0.kind == tkFloat:
+        e.typ = tFloat(); return e.typ
+      else:
+        raise newTypecheckError(e.pos, "unary - requires int or float")
     of uoNot:
       if t0.kind != tkBool: raise newTypecheckError(e.pos, "not on non-bool")
       e.typ = tBool(); return e.typ

@@ -255,8 +255,9 @@ proc analyzeRandCall(e: Expr, env: Env, prog: Program): Info =
       # rand(max) returns 0 to max inclusive - can be zero unless min > 0
       return Info(known: false, minv: 0, maxv: maxInfo.cval, nonZero: false, initialized: true)
     else:
-      # max is unknown, be conservative
-      return Info(known: false, minv: 0, maxv: IMax, nonZero: false, initialized: true)
+      # max is in a range, use the maximum possible value as the upper bound
+      # rand(max) where max is in range [a, b] returns values in range [0, b]
+      return Info(known: false, minv: 0, maxv: max(0, maxInfo.maxv), nonZero: false, initialized: true)
   elif e.args.len == 2:
     let maxInfo = analyzeExpr(e.args[0], env, prog)
     let minInfo = analyzeExpr(e.args[1], env, prog)

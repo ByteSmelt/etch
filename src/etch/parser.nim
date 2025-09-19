@@ -62,12 +62,67 @@ proc inferTypeFromExpr(expr: Expr): EtchType =
     if innerType == nil:
       return nil
     return tRef(innerType)
+  of ekUn:
+    # Handle unary expressions
+    case expr.uop
+    of uoNeg:
+      # Unary negation: infer type from the operand
+      let operandType = inferTypeFromExpr(expr.ue)
+      if operandType != nil and operandType.kind == tkInt:
+        return tInt()
+      elif operandType != nil and operandType.kind == tkFloat:
+        return tFloat()
+      else:
+        return nil
+    of uoNot:
+      # Logical not: should always return bool
+      let operandType = inferTypeFromExpr(expr.ue)
+      if operandType != nil and operandType.kind == tkBool:
+        return tBool()
+      else:
+        return nil
+  of ekCall:
+    # Handle builtin function calls that have statically known return types
+    case expr.fname
+    of "rand":
+      # rand(max) or rand(max, min) always returns int
+      if expr.args.len >= 1 and expr.args.len <= 2:
+        return tInt()
+      else:
+        return nil
+    of "readFile":
+      # readFile(path) always returns string
+      if expr.args.len == 1:
+        return tString()
+      else:
+        return nil
+    of "print", "seed", "inject":
+      # These functions return void
+      return tVoid()
+    of "newref":
+      # newref(value) returns Ref[typeof(value)]
+      if expr.args.len == 1:
+        let innerType = inferTypeFromExpr(expr.args[0])
+        if innerType != nil:
+          return tRef(innerType)
+        else:
+          return nil
+      else:
+        return nil
+    of "deref":
+      # deref(ref) returns the inner type of the reference
+      # However, we can't easily determine this without type checking
+      # the argument, so return nil for now
+      return nil
+    else:
+      # Unknown function call - requires type annotation
+      return nil
   of ekComptime:
     # For comptime expressions, we cannot infer the type until after evaluation
     # at compile time. Signal that type annotation is needed for now.
     return nil
   else:
-    # For other expressions (variables, calls, etc.), we cannot infer the type
+    # For other expressions (variables, etc.), we cannot infer the type
     # without a type checker - return nil to indicate type annotation is required
     return nil
 
