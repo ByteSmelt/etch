@@ -54,6 +54,24 @@ proc meet(a, b: Info): Info =
     result.arraySizeKnown = a.arraySizeKnown and b.arraySizeKnown and a.arraySize == b.arraySize
     result.arraySize = (if result.arraySizeKnown: a.arraySize else: -1)
 
+proc union(a, b: Info): Info =
+  # Union operation for control flow merging - covers all possible values from both branches
+  result = Info()
+  result.known = a.known and b.known and a.cval == b.cval
+  result.cval = (if result.known: a.cval else: 0)
+  result.minv = min(a.minv, b.minv)  # Minimum of both minimums
+  result.maxv = max(a.maxv, b.maxv)  # Maximum of both maximums
+  result.nonZero = a.nonZero and b.nonZero  # Only nonZero if both are nonZero
+  result.nonNil = a.nonNil and b.nonNil    # Only nonNil if both are nonNil
+  result.isBool = a.isBool and b.isBool
+  result.initialized = a.initialized and b.initialized
+  # Array info union - be conservative
+  result.isArray = a.isArray and b.isArray
+  if result.isArray:
+    # For union, if array sizes differ, we don't know the size
+    result.arraySizeKnown = a.arraySizeKnown and b.arraySizeKnown and a.arraySize == b.arraySize
+    result.arraySize = (if result.arraySizeKnown: a.arraySize else: -1)
+
 type ConditionResult = enum
   crUnknown, crAlwaysTrue, crAlwaysFalse
 
@@ -349,40 +367,35 @@ proc analyzeIndexExpr(e: Expr, env: Env, prog: Program): Info =
     raise newProverError(e.indexExpr.pos, &"array index cannot be negative: {indexInfo.cval}")
 
   # Comprehensive bounds checking when both array size and index are known
-  if arrayInfo.isArray and arrayInfo.arraySizeKnown and indexInfo.known:
+  if indexInfo.known and arrayInfo.isArray and arrayInfo.arraySizeKnown:
     if indexInfo.cval >= arrayInfo.arraySize:
       raise newProverError(e.indexExpr.pos, &"array index {indexInfo.cval} out of bounds [0, {arrayInfo.arraySize-1}]")
 
   # Range-based bounds checking when array size is known but index is in a range
   elif arrayInfo.isArray and arrayInfo.arraySizeKnown:
-    # Check if the minimum possible index is out of bounds
-    if indexInfo.minv >= arrayInfo.arraySize:
-      raise newProverError(e.indexExpr.pos, &"array index range [{indexInfo.minv}, {indexInfo.maxv}] entirely out of bounds [0, {arrayInfo.arraySize-1}]")
-    # Check if the maximum possible index could be out of bounds
-    elif indexInfo.maxv >= arrayInfo.arraySize:
-      # Generate runtime bounds check - this access might be unsafe
-      raise newProverError(e.indexExpr.pos, &"array index might be out of bounds: index range [{indexInfo.minv}, {indexInfo.maxv}] extends beyond array bounds [0, {arrayInfo.arraySize-1}]")
+    if indexInfo.minv >= arrayInfo.arraySize or indexInfo.maxv >= arrayInfo.arraySize:
+      raise newProverError(e.indexExpr.pos, &"array index range [{indexInfo.minv}, {indexInfo.maxv}] extends beyond array bounds [0, {arrayInfo.arraySize-1}]")
 
   # If array size is unknown but we have range info on index, check for negatives
   elif not (arrayInfo.isArray and arrayInfo.arraySizeKnown):
     if indexInfo.maxv < 0:
       raise newProverError(e.indexExpr.pos, &"array index range [{indexInfo.minv}, {indexInfo.maxv}] is entirely negative")
     elif indexInfo.minv < 0:
-      raise newProverError(e.indexExpr.pos, &"array index might be negative: index range [{indexInfo.minv}, {indexInfo.maxv}] includes negative values")
+      raise newProverError(e.indexExpr.pos, &"array index range [{indexInfo.minv}, {indexInfo.maxv}] includes negative values")
 
   # Determine the result type information for nested arrays
   # If the result type is also an array, we need to analyze the specific inner array size
   if e.typ != nil and e.typ.kind == tkArray:
     # The result is an array type - need to determine its size
     # Case 1: Direct indexing into array literal
-    if e.arrayExpr.kind == ekArray and indexInfo.known and 
+    if e.arrayExpr.kind == ekArray and indexInfo.known and
        indexInfo.cval >= 0 and indexInfo.cval < e.arrayExpr.elements.len:
       # We're indexing into an array literal with a known index
       let elementExpr = e.arrayExpr.elements[indexInfo.cval]
       if elementExpr.kind == ekArray:
         # The element is itself an array literal - return its specific size info
         return infoArray(elementExpr.elements.len.int64, sizeKnown = true)
-    
+
     # Case 2: Indexing into a variable that contains an array literal
     elif e.arrayExpr.kind == ekVar and indexInfo.known:
       # Look up the variable's original expression
@@ -396,10 +409,10 @@ proc analyzeIndexExpr(e: Expr, env: Env, prog: Program): Info =
             return infoArray(elementExpr.elements.len.int64, sizeKnown = true)
       # If we can't determine the exact size, return unknown array size
       return infoArray(-1, sizeKnown = false)
-      
-    # If we can't determine the exact size but know it's an array, return unknown array info  
+
+    # If we can't determine the exact size but know it's an array, return unknown array info
     return infoArray(-1, sizeKnown = false)
-      
+
   infoUnknown()
 
 proc analyzeSliceExpr(e: Expr, env: Env, prog: Program): Info =
@@ -633,11 +646,11 @@ proc proveStmt(s: Stmt; env: Env, prog: Program = nil, fnContext: string = "") =
           elif env.vals.hasKey(varName):
             infos.add(env.vals[varName])
 
-          # Compute meet of all info states
+          # Compute union of all info states
           if infos.len > 0:
             var mergedInfo = infos[0]
             for i in 1..<infos.len:
-              mergedInfo = meet(mergedInfo, infos[i])
+              mergedInfo = union(mergedInfo, infos[i])
             env.vals[varName] = mergedInfo
       else:
         # Only else branch executed, copy its results
@@ -738,11 +751,11 @@ proc proveStmt(s: Stmt; env: Env, prog: Program = nil, fnContext: string = "") =
       if not hasElseBranch and env.vals.hasKey(varName):
         infos.add(env.vals[varName])  # Include original state as potential path
 
-      # Compute meet (intersection) of all info states
+      # Compute union of all info states for control flow merging
       if infos.len > 0:
         var mergedInfo = infos[0]
         for i in 1..<infos.len:
-          mergedInfo = meet(mergedInfo, infos[i])
+          mergedInfo = union(mergedInfo, infos[i])
         env.vals[varName] = mergedInfo
   of skWhile:
     # Enhanced while loop analysis using symbolic execution
@@ -766,15 +779,15 @@ proc proveStmt(s: Stmt; env: Env, prog: Program = nil, fnContext: string = "") =
 
     # Try symbolic execution for precise loop analysis
     var symState = newSymbolicState()
-    
+
     # Convert current environment to symbolic state
     for varName, info in env.vals:
       let symVal = convertProverInfoToSymbolic(info)
       symState.setVariable(varName, symVal)
-    
+
     # Try to execute the loop symbolically
     let loopResult = symbolicExecuteWhile(s, symState, prog)
-    
+
     case loopResult
     of erContinue:
       # Loop executed completely with known values - use precise results
@@ -791,8 +804,8 @@ proc proveStmt(s: Stmt; env: Env, prog: Program = nil, fnContext: string = "") =
     of erRuntimeHit, erIterationLimit:
       # Fell back to conservative analysis - but we may have learned something
       # from the initial iterations that executed symbolically
-      
-      # Use hybrid approach: variables that were definitely initialized 
+
+      # Use hybrid approach: variables that were definitely initialized
       # in the symbolic portion are marked as initialized
       var originalVars = initTable[string, Info]()
       for k, v in env.vals:
