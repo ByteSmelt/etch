@@ -1,7 +1,7 @@
 # tester.nim
 # Etch testing framework: test discovery, execution, and result reporting
 
-import std/[os, strformat, strutils, algorithm, osproc, sequtils, tables]
+import std/[os, strformat, strutils, algorithm, osproc, sequtils]
 
 type
   TestResult* = object
@@ -171,12 +171,12 @@ proc runSingleTest*(testFile: string): TestResult =
     else:
       # Expected success - compare output
       result.actual = smartFilterOutput(execResult)
-      
+
       # Compare only the last N lines of actual output with expected output
       # This handles compile-time vs runtime output differences
       let actualLines = result.actual.splitLines().filterIt(it.strip().len > 0)
       let expectedLines = result.expected.splitLines().filterIt(it.strip().len > 0)
-      
+
       if expectedLines.len > 0 and actualLines.len >= expectedLines.len:
         let lastActualLines = actualLines[^expectedLines.len .. ^1]
         result.passed = expectedLines == lastActualLines
@@ -207,14 +207,14 @@ proc findTestFiles*(directory: string): seq[string] =
 
 proc runTests*(path: string = "examples"): int =
   ## Run tests - if path is a file, run single test; if directory, run all tests
-  
+
   # Check if path is a file or directory
   if fileExists(path):
     # Single file test
     echo fmt"Running single test: {path}"
-    
+
     let res = runSingleTest(path)
-    
+
     if res.passed:
       echo "✓ PASSED"
       return 0
@@ -229,7 +229,7 @@ proc runTests*(path: string = "examples"): int =
         for line in res.actual.splitLines:
           echo fmt"    {line}"
       return 1
-  
+
   elif dirExists(path):
     # Directory test (existing behavior)
     echo fmt"Running tests in directory: {path}"
@@ -278,7 +278,7 @@ proc runTests*(path: string = "examples"): int =
       return 1
 
     return 0
-  
+
   else:
     echo fmt"Error: Path '{path}' does not exist"
     return 1

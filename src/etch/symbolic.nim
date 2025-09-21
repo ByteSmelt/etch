@@ -474,8 +474,8 @@ proc executeSymbolically*(statements: seq[Stmt], initialState: SymbolicState = n
   let state = if initialState != nil: initialState else: newSymbolicState()
 
   for stmt in statements:
-    let result = symbolicExecuteStmt(stmt, state, prog)
-    case result
+    let res = symbolicExecuteStmt(stmt, state, prog)
+    case res
     of erContinue:
       continue
     of erComplete:
