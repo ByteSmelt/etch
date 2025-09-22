@@ -1,9 +1,12 @@
 # compiler.nim
 # Etch compiler: compilation and execution orchestration
 
-import std/[os, tables, times]
-import frontend/[ast, lexer, parser], typechecker/[core, types, statements, inference], interpreter/[vm, bytecode], comptime, globals, errors
-import prover/core
+import std/[os, tables, times, options]
+import frontend/[ast, lexer, parser]
+import typechecker/[core, types, statements, inference]
+import interpreter/[vm, bytecode]
+import prover/[core]
+import comptime, errors
 
 type
   CompilerResult* = object
@@ -59,6 +62,29 @@ proc ensureAllNonGenericInst(prog: Program) =
       if not prog.funInstances.hasKey(name):
         prog.funInstances[name] = FunDecl(
           name: name, typarams: @[], params: f.params, ret: f.ret, body: f.body)
+
+proc evaluateGlobalVariables(prog: Program): Table[string, V] =
+  ## Evaluate global variable initialization expressions using bytecode
+  ## Returns a table of evaluated global values for bytecode compilation
+  var globalVars = initTable[string, V]()
+
+  # Evaluate each global variable in order (supports dependencies)
+  for g in prog.globals:
+    if g.kind == skVar and g.vinit.isSome():
+      try:
+        # Evaluate the initialization expression with access to previous globals
+        let res = evalExprWithBytecode(prog, g.vinit.get(), globalVars)
+        # Store the evaluated value for subsequent globals
+        globalVars[g.vname] = res
+      except Exception as e:
+        # If evaluation fails, store default value (silently)
+        # The actual error will be caught by the compiler's type checker
+        globalVars[g.vname] = V(kind: tkInt, ival: 0)
+    elif g.kind == skVar:
+      # Default initialization for variables without initializers
+      globalVars[g.vname] = V(kind: tkInt, ival: 0)
+
+  return globalVars
 
 proc compileProgramWithGlobals(prog: Program, sourceHash: string, evaluatedGlobals: Table[string, V], sourceFile: string = ""): BytecodeProgram =
   ## Compile an AST program to bytecode with pre-evaluated global values
