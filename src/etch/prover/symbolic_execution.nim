@@ -2,7 +2,7 @@
 # Integrated symbolic execution for enhanced precision in safety analysis
 
 import std/[tables, options]
-import ../frontend/ast, ../vm
+import ../frontend/ast, ../interpreter/vm
 import types
 
 const MAX_LOOP_ITERATIONS* = 1000  # Prevent infinite symbolic execution

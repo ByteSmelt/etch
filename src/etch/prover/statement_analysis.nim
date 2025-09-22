@@ -2,7 +2,7 @@
 # Statement analysis and control flow for the safety prover
 
 import std/[strformat, tables, options, strutils]
-import ../frontend/ast, ../errors, ../vm
+import ../frontend/ast, ../errors, ../interpreter/vm
 import types, expression_analysis, symbolic_execution
 
 proc evaluateCondition*(cond: Expr, env: Env, prog: Program = nil): ConditionResult =

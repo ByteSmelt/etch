@@ -2,7 +2,7 @@
 # Expression analysis for the safety prover
 
 import std/[strformat, strutils, options, tables]
-import ../frontend/ast, ../errors, ../vm
+import ../frontend/ast, ../errors, ../interpreter/vm
 import types, binary_operations, function_evaluation
 
 # Forward declaration for mutual recursion
