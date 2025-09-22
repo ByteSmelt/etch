@@ -5,6 +5,28 @@ import std/[strformat, options, sequtils, tables, strutils]
 import ../frontend/ast, ../errors
 import types
 
+# Convert BinOp to operator symbol string for user-defined operator lookup
+proc binOpToString(bop: BinOp): string =
+  case bop
+  of boAdd: "+"
+  of boSub: "-"
+  of boMul: "*"
+  of boDiv: "/"
+  of boMod: "%"
+  of boEq: "=="
+  of boNe: "!="
+  of boLt: "<"
+  of boLe: "<="
+  of boGt: ">"
+  of boGe: ">="
+  of boAnd: "and"  # These remain keywords, not symbols
+  of boOr: "or"
+
+# Check if a function name represents an operator function (including mangled names)
+proc isOperatorFunction(name: string): bool =
+  let baseName = if "_" in name: name.split("_")[0] else: name
+  baseName in ["+", "-", "*", "/", "%", "==", "!=", "<", "<=", ">", ">="]
+
 proc inferExprTypes*(prog: Program; fd: FunDecl; sc: Scope; e: Expr; subst: var TySubst): EtchType
 
 # Builtin function type inference
@@ -247,6 +269,43 @@ proc inferExprTypes*(prog: Program; fd: FunDecl; sc: Scope; e: Expr; subst: var 
   of ekBin:
     let lt = inferExprTypes(prog, fd, sc, e.lhs, subst)
     let rt = inferExprTypes(prog, fd, sc, e.rhs, subst)
+
+    # Try user-defined operator overload first (except for logical operators)
+    # Skip operator overloading if we're currently inside an operator function to avoid infinite recursion
+    if e.bop notin {boAnd, boOr} and (fd == nil or not isOperatorFunction(fd.name)):
+      let opName = binOpToString(e.bop)
+      # Check if a user-defined operator exists for these argument types
+      for fname, fdecls in prog.funs:
+        if fname == opName:
+          for fdecl in fdecls:
+            if fdecl.params.len == 2:
+              # Try to match parameter types with our argument types
+              let param1Type = fdecl.params[0].typ
+              let param2Type = fdecl.params[1].typ
+
+              # Check if types match (simplified matching for now)
+              if param1Type.kind == lt.kind and param2Type.kind == rt.kind:
+                # Create function call expression
+                let callExpr = Expr(
+                  kind: ekCall,
+                  fname: opName,
+                  args: @[e.lhs, e.rhs],
+                  pos: e.pos
+                )
+
+                let resultType = inferCall(prog, sc, callExpr, subst)
+                # Replace this binary expression with a function call
+                e[] = Expr(
+                  kind: ekCall,
+                  fname: callExpr.fname,  # Use the mangled name from inferCall
+                  args: @[e.lhs, e.rhs],
+                  instTypes: callExpr.instTypes,
+                  typ: resultType,
+                  pos: e.pos
+                )[]
+                return resultType
+
+    # Built-in operator handling
     case e.bop
     of boAdd, boSub, boMul, boDiv, boMod:
       if lt.kind == tkInt and rt.kind == tkInt:

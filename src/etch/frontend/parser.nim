@@ -424,7 +424,16 @@ proc parseTyParams(p: Parser): seq[TyParam] =
 
 proc parseFn(p: Parser; prog: Program) =
   discard p.expect(tkKeyword, "fn")
-  let name = p.expect(tkIdent).lex
+  # Allow operator symbols as function names for operator overloading
+  let nameToken = p.cur
+  var name: string
+  if nameToken.kind == tkIdent:
+    name = p.eat().lex
+  elif nameToken.kind == tkSymbol and nameToken.lex in ["+", "-", "*", "/", "%", "==", "!=", "<", "<=", ">", ">="]:
+    name = p.eat().lex
+  else:
+    let actualName = friendlyTokenName(nameToken.kind, nameToken.lex)
+    raise newParseError(p.posOf(nameToken), &"expected function name or operator symbol, got {actualName}")
   let tps = p.parseTyParams()
   discard p.expect(tkSymbol, "(")
   var ps: seq[Param] = @[]
