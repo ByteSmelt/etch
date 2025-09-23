@@ -110,8 +110,7 @@ proc analyzeRandCall*(e: Expr, env: Env, prog: Program): Info =
       # Use range information even when not constant
       let actualMin = min(minInfo.minv, maxInfo.minv)
       let actualMax = max(minInfo.maxv, maxInfo.maxv)
-      return Info(known: false, minv: actualMin, maxv: actualMax,
-                 nonZero: actualMin > 0 or actualMax < 0, initialized: true)
+      return Info(known: false, minv: actualMin, maxv: actualMax, nonZero: actualMin > 0 or actualMax < 0, initialized: true)
   else:
     # Invalid rand call, return unknown
     return infoUnknown()
@@ -144,7 +143,7 @@ proc analyzeBuiltinCall*(e: Expr, env: Env, prog: Program): Info =
       discard analyzeExpr(e.args[0], env, prog)
     # parseInt can return any valid integer that fits in a string representation
     # The actual range should be based on realistic string parsing limits
-    return infoUnknown()
+    return Info(known: false, minv: IMin, maxv: IMax, nonZero: false, initialized: true)
   # Unknown builtin - just analyze arguments
   for arg in e.args: discard analyzeExpr(arg, env, prog)
   return infoUnknown()
