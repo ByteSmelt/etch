@@ -139,12 +139,20 @@ proc analyzeBinaryMultiplication*(e: Expr, a: Info, b: Info): Info =
   for (aVal, bVal) in corners:
     if aVal != 0 and bVal != 0:
       # Check if |aVal * bVal| would overflow: use the fact that |a * b| > IMax iff |a| > IMax / |b|
-      let absA = if aVal < 0: -aVal else: aVal
-      let absB = if bVal < 0: -bVal else: bVal
+      # Handle the special case of IMin which cannot be negated without overflow
+      let absA = if aVal == IMin: IMax else: (if aVal < 0: -aVal else: aVal)
+      let absB = if bVal == IMin: IMax else: (if bVal < 0: -bVal else: bVal)
 
       # Avoid division by zero and check overflow condition
-      if absB > 0 and absA > IMax div absB:
-        raise newProverError(e.pos, "multiplication range would overflow")
+      # Also protect against Nim integer overflow in our own calculations
+      if absB > 0:
+        try:
+          let maxAllowed = IMax div absB
+          if absA > maxAllowed:
+            raise newProverError(e.pos, "multiplication range would overflow")
+        except OverflowError:
+          # Even our division overflowed, this definitely would overflow
+          raise newProverError(e.pos, "multiplication range would overflow")
 
   # All corner products are safe, compute the actual range
   var products: seq[int64] = @[]

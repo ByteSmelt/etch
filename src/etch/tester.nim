@@ -96,7 +96,8 @@ proc smartFilterOutput(execResult: ExecutionResult): string =
        trimmed.startsWith("Using cached bytecode:") or
        trimmed.startsWith("Generated debug bytecode:") or
        (trimmed.startsWith("Warning:") and not foundProgramOutput) or
-       (trimmed.startsWith("Failed to") and not foundProgramOutput):
+       (trimmed.startsWith("Failed to open") and not foundProgramOutput) or
+       (trimmed.startsWith("Failed to compile") and not foundProgramOutput):
       continue
 
     # Once we find any output that looks like program output,

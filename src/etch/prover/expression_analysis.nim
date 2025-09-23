@@ -138,6 +138,13 @@ proc analyzeBuiltinCall*(e: Expr, env: Env, prog: Program): Info =
         return infoString(0, sizeKnown = false)
     else:
       return infoString(0, sizeKnown = false)
+  if e.fname == "parseInt":
+    # parseInt returns option[int] - analyze argument for safety
+    if e.args.len > 0:
+      discard analyzeExpr(e.args[0], env, prog)
+    # parseInt can return any valid integer that fits in a string representation
+    # The actual range should be based on realistic string parsing limits
+    return infoUnknown()
   # Unknown builtin - just analyze arguments
   for arg in e.args: discard analyzeExpr(arg, env, prog)
   return infoUnknown()
@@ -496,7 +503,8 @@ proc analyzeMatchExpr(e: Expr, env: Env, prog: Program): Info =
     case matchCase.pattern.kind:
     of pkSome, pkOk:
       # For some(x) and ok(x), bind the inner value
-      caseEnv.vals[matchCase.pattern.bindName] = matchedInfo
+      # Extract the range from the option/result container
+      caseEnv.vals[matchCase.pattern.bindName] = matchedInfo  # Use the same range as the container for now
       caseEnv.nils[matchCase.pattern.bindName] = false
     of pkErr:
       # For error(x), bind a string value
@@ -525,6 +533,12 @@ proc analyzeMatchExpr(e: Expr, env: Env, prog: Program): Info =
         # For other statement types, we'll skip detailed analysis
         # This is a limitation but avoids circular imports
         discard
+
+  # For simple match expressions with option types, we can infer the range
+  # If matching against an option[int], the extracted value has the same range as the option content
+  if e.matchExpr.typ != nil and e.matchExpr.typ.kind == tkOption and e.matchExpr.typ.inner != nil and e.matchExpr.typ.inner.kind == tkInt:
+    # The match result should have the same range as the option content
+    return matchedInfo
 
   return infoUnknown()  # match result is unknown without deeper analysis
 

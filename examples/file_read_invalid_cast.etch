@@ -12,7 +12,7 @@ fn main() -> void {
             "Successfully parsed";
         }
         none => {
-            print("Failed to parse number - invalid format");
+            print("Invalid format");
             "Parse failed";
         }
     };
