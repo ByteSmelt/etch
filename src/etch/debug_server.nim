@@ -238,8 +238,6 @@ proc handleDebugRequest*(server: DebugServer, request: JsonNode): JsonNode =
     if variablesReference > 0:
       if variablesReference == 1 and server.debugger.stackFrames.len > 0:
         # Current (top) stack frame variables - local variables and function parameters
-        let currentFrame = server.debugger.stackFrames[^1]
-
         let currentVars = vm.vmGetCurrentVariables(server.vm)
         for name, value in currentVars:
           variables.add(%*{
@@ -248,10 +246,6 @@ proc handleDebugRequest*(server: DebugServer, request: JsonNode): JsonNode =
             "variablesReference": 0  # 0 means no nested variables
           })
       elif variablesReference <= server.debugger.stackFrames.len:
-        # Variables for a specific stack frame (1-indexed)
-        let frameIndex = server.debugger.stackFrames.len - variablesReference
-        let frame = server.debugger.stackFrames[frameIndex]
-
         # For non-current frames, we'd need frame-specific variable lookup
         # For now, just show current variables
         let currentVars = vm.vmGetCurrentVariables(server.vm)
@@ -295,6 +289,30 @@ proc handleDebugRequest*(server: DebugServer, request: JsonNode): JsonNode =
       "success": false,
       "message": "Unknown command: " & command
     }
+
+proc sendCompilationError*(errorMsg: string) =
+  ## Send compilation error as JSON response for debug adapter
+  let errorResponse = %*{
+    "seq": 999,
+    "type": "event",
+    "event": "output",
+    "body": {
+      "category": "stderr",
+      "output": "Error: " & errorMsg & "\n"
+    }
+  }
+  echo $errorResponse
+  stdout.flushFile()
+
+  # Send terminated event to signal end of debugging session
+  let terminatedEvent = %*{
+    "seq": 1000,
+    "type": "event",
+    "event": "terminated",
+    "body": {}
+  }
+  echo $terminatedEvent
+  stdout.flushFile()
 
 proc sendDebugOutput(message: string, seq: int) =
   ## Send debug message as DAP output event

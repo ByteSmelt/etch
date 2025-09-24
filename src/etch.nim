@@ -1,9 +1,9 @@
 # etch_cli.nim
 # CLI for Etch: parse, typecheck, monomorphize on call, prove safety, run VM or emit C
 
-import std/[os, strutils, tables, json]
+import std/[os]
 import ./etch/[compiler, tester, debug_server]
-import ./etch/interpreter/[bytecode]
+import ./etch/interpreter/[bytecode, dump]
 
 
 proc usage() =
@@ -57,27 +57,7 @@ when isMainModule:
       runDebugServer(bytecodeProgram, sourceFile)
     except Exception as e:
       # Send compilation error as JSON response for debug adapter
-      let errorResponse = %*{
-        "seq": 999,
-        "type": "event",
-        "event": "output",
-        "body": {
-          "category": "stderr",
-          "output": "Error: " & e.msg & "\n"
-        }
-      }
-      echo $errorResponse
-      stdout.flushFile()
-
-      # Send terminated event to signal end of debugging session
-      let terminatedEvent = %*{
-        "seq": 1000,
-        "type": "event",
-        "event": "terminated",
-        "body": {}
-      }
-      echo $terminatedEvent
-      stdout.flushFile()
+      sendCompilationError(e.msg)
       quit 1
 
     quit 0
@@ -105,29 +85,8 @@ when isMainModule:
       let flags = CompilerFlags(verbose: false, debug: true)
       let bytecodeProgram = compileProgramWithGlobals(prog, sourceHash, evaluatedGlobals, sourceFile, flags)
 
-      # Dump bytecode with debug info
-      echo "=== BYTECODE DUMP FOR: ", sourceFile, " ==="
-      echo "Instructions: ", bytecodeProgram.instructions.len
-      echo "Constants: ", bytecodeProgram.constants.len
-      echo "Functions: ", len(bytecodeProgram.functions)
-      echo "Line-to-instruction map:"
-      for line, instrs in bytecodeProgram.lineToInstructionMap:
-        echo "  Line ", line, ": instructions ", instrs
-      echo ""
-
-      echo "=== INSTRUCTION LISTING ==="
-      for i, instr in bytecodeProgram.instructions:
-        let debugStr = if instr.debug.line > 0:
-          " [" & instr.debug.sourceFile & ":" & $instr.debug.line & ":" & $instr.debug.col & "]"
-        else:
-          ""
-        let argStr = if instr.sarg.len > 0:
-          " \"" & instr.sarg & "\""
-        elif instr.arg != 0:
-          " " & $instr.arg
-        else:
-          ""
-        echo ($i).align(3), ": ", instr.op, argStr, debugStr
+      # Use enhanced dump functionality
+      dumpBytecodeProgram(bytecodeProgram, sourceFile)
 
     except Exception as e:
       echo "Error: ", e.msg
