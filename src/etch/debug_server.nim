@@ -3,6 +3,7 @@
 
 import std/[json, sequtils, tables, strutils, os, algorithm]
 import interpreter/[vm, bytecode, debugger]
+import frontend/ast
 
 type
   DebugServer* = ref object
@@ -187,11 +188,12 @@ proc handleDebugRequest*(server: DebugServer, request: JsonNode): JsonNode =
     if server.debugger.paused and server.debugger.lastFile.len > 0 and server.debugger.lastLine > 0:
       # Create stack frames from debugger's stack frame tracking
       if server.debugger.stackFrames.len > 0:
-        # Show all stack frames, starting from the current (deepest) frame
-        for i, frame in server.debugger.stackFrames.reversed():
+        # Filter out built-in functions and show only user-defined functions
+        let userFrames = server.debugger.stackFrames.filterIt(not it.isBuiltIn).reversed()
+        for i, frame in userFrames:
           let stackFrame = %*{
             "id": i + 1,
-            "name": frame.functionName,
+            "name": functionNameFromSignature(frame.functionName),
             "source": {
               "name": server.debugger.lastFile.split("/")[^1],  # Just filename
               "path": server.debugger.lastFile.absolutePath()  # Convert to absolute path
@@ -425,6 +427,9 @@ proc runDebugServer*(program: BytecodeProgram, sourceFile: string) =
         # Start at main function like the VM does
         if server.vm.program.functions.hasKey("main"):
           server.vm.pc = server.vm.program.functions["main"]
+
+          # Create a stack frame for main function
+          server.debugger.pushStackFrame("main", sourceFile, 1, false)
 
         # Get the instruction at PC for debug info
         if server.vm.pc < server.vm.program.instructions.len:

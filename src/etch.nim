@@ -144,7 +144,7 @@ when isMainModule:
     let a = paramStr(i)
     if a == "--run": runVm = true
     elif a == "--verbose": verbose = true
-    elif a == "--debug": debug = true
+    elif a == "--release": debug = false
     else:
       files.add a
     inc i

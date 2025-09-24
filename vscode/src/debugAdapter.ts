@@ -39,6 +39,11 @@ class EtchDebugAdapter extends DebugSession {
     private currentFile: string = '';
     private currentLine: number = 0;
 
+    // Pending responses waiting for Etch server replies
+    private pendingStackTraceResponse: DebugProtocol.StackTraceResponse | undefined;
+    private pendingVariablesResponse: DebugProtocol.VariablesResponse | undefined;
+    private pendingScopesResponse: DebugProtocol.ScopesResponse | undefined;
+
     constructor() {
         super();
         log('EtchDebugAdapter created');
@@ -199,7 +204,65 @@ class EtchDebugAdapter extends DebugSession {
             }
         } else if (message.type === 'response') {
             log(`Received response from Etch: ${JSON.stringify(message)}`);
-            // For now, just log responses - we're testing with hardcoded stack traces
+            this.handleEtchResponse(message);
+        }
+    }
+
+    private handleEtchResponse(message: any): void {
+        if (!message.command) {
+            log('Warning: Received response without command field');
+            return;
+        }
+
+        switch (message.command) {
+            case 'stackTrace':
+                if (this.pendingStackTraceResponse && message.body) {
+                    // Convert Etch's stack frames to VS Code format
+                    const stackFrames = message.body.stackFrames?.map((frame: any, index: number) => {
+                        const source = new Source(frame.source.name, frame.source.path);
+                        return new StackFrame(frame.id, frame.name, source, frame.line, frame.column);
+                    }) || [];
+
+                    this.pendingStackTraceResponse.body = {
+                        stackFrames: stackFrames,
+                        totalFrames: message.body.totalFrames || stackFrames.length
+                    };
+
+                    log(`Forwarding ${stackFrames.length} stack frames to VS Code`);
+                    this.sendResponse(this.pendingStackTraceResponse);
+                    this.pendingStackTraceResponse = undefined;
+                }
+                break;
+
+            case 'variables':
+                if (this.pendingVariablesResponse && message.body) {
+                    // Forward variables directly
+                    this.pendingVariablesResponse.body = {
+                        variables: message.body.variables || []
+                    };
+
+                    log(`Forwarding ${message.body.variables?.length || 0} variables to VS Code`);
+                    this.sendResponse(this.pendingVariablesResponse);
+                    this.pendingVariablesResponse = undefined;
+                }
+                break;
+
+            case 'scopes':
+                if (this.pendingScopesResponse && message.body) {
+                    // Forward scopes directly
+                    this.pendingScopesResponse.body = {
+                        scopes: message.body.scopes || []
+                    };
+
+                    log(`Forwarding ${message.body.scopes?.length || 0} scopes to VS Code`);
+                    this.sendResponse(this.pendingScopesResponse);
+                    this.pendingScopesResponse = undefined;
+                }
+                break;
+
+            default:
+                log(`Unhandled response command: ${message.command}`);
+                break;
         }
     }
 
@@ -273,27 +336,32 @@ class EtchDebugAdapter extends DebugSession {
 
     protected stackTraceRequest(response: DebugProtocol.StackTraceResponse, args: DebugProtocol.StackTraceArguments): void {
         log(`Stack trace request for thread ${args.threadId}`);
-        log(`Current position: file=${this.currentFile}, line=${this.currentLine}`);
 
-        const frames: StackFrame[] = [];
+        // Store the response to send back when we get Etch's response
+        this.pendingStackTraceResponse = response;
 
-        // Only send stack frame if we have a valid position
-        if (this.currentFile && this.currentLine > 0) {
-            const source = new Source(path.basename(this.currentFile), this.currentFile);
-            const stackFrame = new StackFrame(0, 'main', source, this.currentLine);
-            frames.push(stackFrame);
-            log(`Created stack frame: line=${this.currentLine}, file=${this.currentFile}`);
-        } else {
-            log('No current position available for stack trace');
-        }
+        // Forward request to Etch debug server
+        this.sendToEtch('stackTrace', { threadId: args.threadId });
+    }
 
-        response.body = {
-            stackFrames: frames,
-            totalFrames: frames.length
-        };
+    protected scopesRequest(response: DebugProtocol.ScopesResponse, args: DebugProtocol.ScopesArguments): void {
+        log(`Scopes request for frame ${args.frameId}`);
 
-        log(`Sending stack trace with ${frames.length} frames`);
-        this.sendResponse(response);
+        // Store the response to send back when we get Etch's response
+        this.pendingScopesResponse = response;
+
+        // Forward request to Etch debug server
+        this.sendToEtch('scopes', { frameId: args.frameId });
+    }
+
+    protected variablesRequest(response: DebugProtocol.VariablesResponse, args: DebugProtocol.VariablesArguments): void {
+        log(`Variables request for variablesReference ${args.variablesReference}`);
+
+        // Store the response to send back when we get Etch's response
+        this.pendingVariablesResponse = response;
+
+        // Forward request to Etch debug server
+        this.sendToEtch('variables', { variablesReference: args.variablesReference });
     }
 
     protected threadsRequest(response: DebugProtocol.ThreadsResponse): void {
