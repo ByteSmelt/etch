@@ -1,21 +1,74 @@
 {
   "name": "etchlang",
   "displayName": "Etch Language Support",
-  "description": "Syntax highlighting for the Etch language",
-  "version": "0.0.1",
+  "description": "Syntax highlighting and debugging support for the Etch language",
+  "version": "0.0.2",
   "publisher": "kunitoki",
   "engines": {
-    "vscode": "^1.50.0"
+    "vscode": "^1.66.0"
   },
   "categories": [
-    "Programming Languages"
+    "Programming Languages",
+    "Debuggers"
   ],
+  "activationEvents": [
+    "onDebug",
+    "onDebugResolve:etch",
+    "onDebugDynamicConfigurations:etch",
+    "onDebugInitialConfigurations",
+    "onCommand:extension.etch-debug.getProgramName"
+  ],
+  "main": "./dist/extension.js",
+  "workspaceTrust": {
+    "request": "never"
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "lint": "eslint src --ext ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "esbuild-base": "esbuild ./src/extension.ts --bundle --tsconfig=./tsconfig.json --external:vscode --format=cjs --platform=node --outfile=dist/extension.js",
+    "watch": "npm run -S esbuild-base -- --sourcemap --sources-content=false --watch",
+    "build": "npm run -S esbuild-base -- --sourcemap --sources-content=false",
+    "package": "vsce package",
+    "publish": "vsce publish",
+    "publish-pre-release": "vsce publish --pre-release",
+    "vscode:prepublish": "rimraf dist && npm run -S esbuild-base -- --minify",
+    "test": "npm run typecheck"
+  },
+  "devDependencies": {
+    "@types/glob": "^7.2.0",
+    "@types/mocha": "^9.1.0",
+    "@types/node": "^14.14.37",
+    "@types/vscode": "^1.66.0",
+    "@typescript-eslint/eslint-plugin": "^5.17.0",
+    "@typescript-eslint/parser": "^5.17.0",
+    "@vscode/debugadapter": "^1.66.0",
+    "@vscode/debugadapter-testsupport": "^1.66.0",
+    "@vscode/vsce": "^2.15.0",
+    "await-notify": "^1.0.1",
+    "base64-js": "^1.5.1",
+    "esbuild": "^0.25.0",
+    "eslint": "^8.12.0",
+    "events": "^3.3.0",
+    "glob": "^7.2.0",
+    "mocha": "^11.7.2",
+    "path-browserify": "^1.0.1",
+    "rimraf": "^3.0.2",
+    "typescript": "^4.6.3",
+    "url": "^0.11.0"
+  },
   "contributes": {
     "languages": [
       {
         "id": "etchlang",
-        "aliases": ["EtchLang", "etchlang", "etch"],
-        "extensions": [".etch"],
+        "aliases": [
+          "EtchLang",
+          "etchlang",
+          "etch"
+        ],
+        "extensions": [
+          ".etch"
+        ],
         "configuration": "./language-configuration.json"
       }
     ],
@@ -25,6 +78,73 @@
         "scopeName": "source.etchlang",
         "path": "./syntaxes/etchlang.tmLanguage.json"
       }
+    ],
+    "breakpoints": [
+      {
+        "language": "etchlang"
+      }
+    ],
+    "commands": [
+      {
+        "command": "etch.test",
+        "title": "Test Etch Extension"
+      }
+    ],
+    "debuggers": [
+      {
+        "type": "etch",
+        "label": "Etch Debug",
+        "program": "./out/debugAdapter.js",
+        "configurationAttributes": {
+          "launch": {
+            "required": [
+              "program"
+            ],
+            "properties": {
+              "program": {
+                "type": "string",
+                "description": "Absolute path to the Etch program.",
+                "default": "${workspaceFolder}/${command:AskForProgramName}"
+              },
+              "stopOnEntry": {
+                "type": "boolean",
+                "description": "Automatically stop after launch.",
+                "default": true
+              },
+              "trace": {
+                "type": "boolean",
+                "description": "Enable logging of the Debug Adapter Protocol.",
+                "default": true
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "etch",
+            "request": "launch",
+            "name": "Launch Etch Program",
+            "program": "${workspaceFolder}/${command:AskForProgramName}",
+            "stopOnEntry": true
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "Etch Debug: Launch",
+            "description": "A new configuration for 'debugging' a user selected Etch file.",
+            "body": {
+              "type": "etch",
+              "request": "launch",
+              "name": "Launch Etch Program",
+              "program": "^\"\\${workspaceFolder}/\\${command:AskForProgramName}\"",
+              "stopOnEntry": true
+            }
+          }
+        ]
+      }
     ]
+  },
+  "dependencies": {
+    "@vscode/debugprotocol": "^1.68.0"
   }
 }

@@ -15,6 +15,7 @@ type
 
   CompilerFlags* = object
     verbose*: bool
+    debug*: bool
 
   DebugInfo* = object
     line*: int
@@ -65,7 +66,7 @@ type
 
 const
   BYTECODE_MAGIC = "ETCH"
-  BYTECODE_VERSION = 10
+  BYTECODE_VERSION = 11
 
 proc serializeToBinary*(prog: BytecodeProgram): string =
   ## Serialize bytecode program to binary format for storage
@@ -87,6 +88,8 @@ proc serializeToBinary*(prog: BytecodeProgram): string =
   var flags: uint8 = 0
   if prog.compilerFlags.verbose:
     flags = flags or 1
+  if prog.compilerFlags.debug:
+    flags = flags or 2
   stream.write(flags)
 
   # Source file name
@@ -155,12 +158,24 @@ proc serializeToBinary*(prog: BytecodeProgram): string =
     if sargLen > 0:
       stream.write(instr.sarg)
 
-    # Debug info (simplified - only line/col if present)
+    # Debug info (enhanced for debugging support)
     var hasDebug = uint8(if instr.debug.line > 0: 1 else: 0)
     stream.write(hasDebug)
     if hasDebug == 1:
       stream.write(uint32(instr.debug.line))
       stream.write(uint32(instr.debug.col))
+
+      # Source file path
+      var sourceFileLen = uint32(instr.debug.sourceFile.len)
+      stream.write(sourceFileLen)
+      if sourceFileLen > 0:
+        stream.write(instr.debug.sourceFile)
+
+      # Function name
+      var functionNameLen = uint32(instr.debug.functionName.len)
+      stream.write(functionNameLen)
+      if functionNameLen > 0:
+        stream.write(instr.debug.functionName)
 
   # Function debug info (parameter names are essential for execution)
   var funcDebugCount = uint32(prog.functionInfo.len)
@@ -210,7 +225,8 @@ proc deserializeFromBinary*(data: string): BytecodeProgram =
   # Read compiler flags
   let flags = stream.readUint8()
   result.compilerFlags = CompilerFlags(
-    verbose: (flags and 1) != 0
+    verbose: (flags and 1) != 0,
+    debug: (flags and 2) != 0
   )
 
   # Read source file
@@ -271,6 +287,14 @@ proc deserializeFromBinary*(data: string): BytecodeProgram =
     if hasDebug == 1:
       debug.line = int(stream.readUint32())
       debug.col = int(stream.readUint32())
+
+      # Source file path
+      let sourceFileLen = stream.readUint32()
+      debug.sourceFile = if sourceFileLen > 0: stream.readStr(int(sourceFileLen)) else: ""
+
+      # Function name
+      let functionNameLen = stream.readUint32()
+      debug.functionName = if functionNameLen > 0: stream.readStr(int(functionNameLen)) else: ""
 
     result.instructions.add(Instruction(
       op: op,

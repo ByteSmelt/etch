@@ -14,7 +14,7 @@ go file:
 
 # Build the project
 build:
-    nim c src/etch.nim
+    nim c -d:danger -o:etch src/etch.nim
 
 # Clean build artifacts
 clean:
@@ -27,5 +27,6 @@ clean:
 syntax:
     rm -f *.vsix
     -code --uninstall-extension kunitoki.etchlang
+    tsc -p ./
     vsce package --allow-missing-repository
     code --install-extension etchlang-*.vsix

@@ -1,7 +1,7 @@
 # lexer.nim
 # PEG (npeg) based tokenizer for Etch
 
-import std/[strformat, sequtils, strutils]
+import std/[sequtils, strutils]
 import ../errors, ast
 
 type

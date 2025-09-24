@@ -31,9 +31,25 @@ proc addConstant*(prog: var BytecodeProgram, value: string): int =
 proc emit*(prog: var BytecodeProgram, op: OpCode, arg: int64 = 0, sarg: string = "",
           pos: Pos = Pos(line: 0, col: 0, filename: ""), ctx: CompilationContext = CompilationContext()) =
   ## Emit a bytecode instruction
-  let debug = DebugInfo()
+  let debug = if prog.compilerFlags.debug:
+    DebugInfo(
+      line: pos.line,
+      col: pos.col,
+      sourceFile: if pos.filename.len > 0: pos.filename else: ctx.sourceFile,
+      functionName: ctx.currentFunction,
+      localVars: ctx.localVars
+    )
+  else:
+    DebugInfo()  # Empty debug info when not debugging
+
   let instr = Instruction(op: op, arg: arg, sarg: sarg, debug: debug)
   prog.instructions.add(instr)
+
+  # Build line-to-instruction mapping for debugging only when debug flag is set
+  if prog.compilerFlags.debug and pos.line > 0:
+    if not prog.lineToInstructionMap.hasKey(pos.line):
+      prog.lineToInstructionMap[pos.line] = @[]
+    prog.lineToInstructionMap[pos.line].add(prog.instructions.high)
 
 proc compileBinOp*(prog: var BytecodeProgram, op: BinOp, pos: Pos, ctx: CompilationContext) =
   case op

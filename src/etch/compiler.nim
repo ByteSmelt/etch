@@ -23,6 +23,7 @@ type
     sourceFile*: string
     runVM*: bool
     verbose*: bool
+    debug*: bool
 
 proc getBytecodeFileName*(sourceFile: string): string =
   ## Get the .etcx filename for a source file in __etch__ subfolder
@@ -44,7 +45,7 @@ proc shouldRecompile*(sourceFile, bytecodeFile: string, options: CompilerOptions
   # Check source hash + compiler flags
   try:
     let sourceContent = readFile(sourceFile)
-    let flags = CompilerFlags(verbose: options.verbose)
+    let flags = CompilerFlags(verbose: options.verbose, debug: options.debug)
     let currentHash = hashSourceAndFlags(sourceContent, flags)
     let prog = loadBytecode(bytecodeFile)
     return prog.sourceHash != currentHash
@@ -105,7 +106,7 @@ proc evaluateGlobalVariables(prog: Program): Table[string, V] =
 
   return globalVars
 
-proc compileProgramWithGlobals(prog: Program, sourceHash: string, evaluatedGlobals: Table[string, V], sourceFile: string = "", flags: CompilerFlags = CompilerFlags()): BytecodeProgram =
+proc compileProgramWithGlobals*(prog: Program, sourceHash: string, evaluatedGlobals: Table[string, V], sourceFile: string = "", flags: CompilerFlags = CompilerFlags(verbose: false, debug: false)): BytecodeProgram =
   ## Compile an AST program to bytecode with pre-evaluated global values
   # Start with standard compilation
   result = compileProgram(prog, sourceHash, sourceFile, flags)

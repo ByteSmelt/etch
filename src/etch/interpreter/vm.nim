@@ -1,10 +1,11 @@
 # vm.nim
 # Simple AST interpreter acting as Etch VM (used both at runtime and for comptime eval)
 
-import std/[tables, strformat, strutils, random]
-import ../frontend/ast, bytecode
+import std/[tables, strformat, strutils, random, json]
+import ../frontend/ast, bytecode, debugger
 
 type
+
   V* = object
     kind*: TypeKind
     ival*: int64
@@ -41,6 +42,9 @@ type
     pc*: int  # Program counter
     globals*: Table[string, V]
     mode*: VMMode
+
+    # Debugger support (optional - zero cost when nil)
+    debugger*: EtchDebugger
 
   VMMode* = enum
     vmAST,      # AST interpretation mode
@@ -481,13 +485,22 @@ proc opCallImpl(vm: VM, instr: Instruction): bool =
   # Handle builtin functions using enhanced AST interpreter built-ins
   if funcName == "print":
     let arg = vm.pop()
-    case arg.kind
-    of tkString: echo arg.sval
-    of tkChar: echo arg.cval
-    of tkInt: echo arg.ival
-    of tkFloat: echo arg.fval
-    of tkBool: echo if arg.bval: "true" else: "false"
-    else: echo "<ref>"
+    let output = case arg.kind:
+      of tkString: arg.sval
+      of tkChar: $arg.cval
+      of tkInt: $arg.ival
+      of tkFloat: $arg.fval
+      of tkBool:
+        if arg.bval: "true" else: "false"
+      else: "<ref>"
+
+    # When debugging, send output to stderr to avoid corrupting DAP protocol on stdout
+    if vm.debugger != nil:
+      stderr.writeLine(output)
+      stderr.flushFile()
+    else:
+      echo output
+
     vm.push(V(kind: tkVoid))
     return true
 
@@ -670,10 +683,82 @@ proc opCallImpl(vm: VM, instr: Instruction): bool =
   vm.pc = vm.program.functions[funcName]
   return true
 
+# Debugger implementation functions
+proc vmDebuggerBeforeInstruction*(vm: VM) =
+  ## Called before each instruction execution
+  if vm.pc > 0 and vm.pc <= vm.program.instructions.len:
+    let instr = vm.program.instructions[vm.pc - 1]
+
+    # Update call depth tracking for step operations
+    case instr.op:
+    of opCall:
+      vm.debugger.callDepth += 1
+    of opReturn:
+      vm.debugger.callDepth -= 1
+    else:
+      discard
+
+proc vmDebuggerShouldBreak*(vm: VM): bool =
+  ## Check if execution should break at current instruction
+  if vm.debugger.paused:
+    return true
+
+  if vm.pc > 0 and vm.pc <= vm.program.instructions.len:
+    let instr = vm.program.instructions[vm.pc - 1]
+    let currentFile = instr.debug.sourceFile
+    let currentLine = instr.debug.line
+
+    # Check breakpoints
+    if vm.debugger.hasBreakpoint(currentFile, currentLine):
+      return true
+
+    # Check step modes
+    case vm.debugger.stepMode:
+    of smContinue:
+      return false
+    of smStepInto:
+      # Break on any instruction (but not on the same line we just stepped from)
+      return currentLine != vm.debugger.lastLine or currentFile != vm.debugger.lastFile
+    of smStepOver:
+      # Break if we're at same call depth or returned
+      return vm.debugger.callDepth <= vm.debugger.stepCallDepth and
+             (currentLine != vm.debugger.lastLine or currentFile != vm.debugger.lastFile)
+    of smStepOut:
+      # Break if we've returned from current function
+      return vm.debugger.callDepth < vm.debugger.stepCallDepth
+
+  return false
+
+proc vmDebuggerOnBreak*(vm: VM) =
+  ## Called when execution breaks
+  vm.debugger.paused = true
+  vm.debugger.stepMode = smContinue
+
+  if vm.pc > 0 and vm.pc <= vm.program.instructions.len:
+    let instr = vm.program.instructions[vm.pc - 1]
+    vm.debugger.lastFile = instr.debug.sourceFile
+    vm.debugger.lastLine = instr.debug.line
+
+  # Send stopped event to debug adapter if callback is set
+  if vm.debugger.onDebugEvent != nil:
+    let event = %*{
+      "reason": "breakpoint",
+      "threadId": 1,
+      "file": vm.debugger.lastFile,
+      "line": vm.debugger.lastLine
+    }
+    vm.debugger.onDebugEvent("stopped", event)
+
 proc executeInstruction*(vm: VM): bool =
   ## Execute a single bytecode instruction. Returns false when program should halt.
   if vm.pc >= vm.program.instructions.len:
     return false
+
+  # Zero-cost debug hook - optimized away when debugger is nil
+  if vm.debugger != nil:
+    vmDebuggerBeforeInstruction(vm)
+    if vmDebuggerShouldBreak(vm):
+      vmDebuggerOnBreak(vm)
 
   let instr = vm.program.instructions[vm.pc]
   vm.pc += 1
@@ -780,7 +865,21 @@ proc newBytecodeVM*(program: BytecodeProgram): VM =
     callStack: @[],
     program: program,
     pc: 0,
-    globals: initTable[string, V]()
+    globals: initTable[string, V](),
+    debugger: nil  # No debugger by default - zero cost
+  )
+
+proc newBytecodeVMWithDebugger*(program: BytecodeProgram, debugger: EtchDebugger): VM =
+  ## Create a new bytecode VM instance with debugger attached
+  VM(
+    mode: vmBytecode,
+    stack: @[],
+    heap: @[],
+    callStack: @[],
+    program: program,
+    pc: 0,
+    globals: initTable[string, V](),
+    debugger: debugger
   )
 
 proc convertVMValueToGlobalValue*(val: V): GlobalValue =
