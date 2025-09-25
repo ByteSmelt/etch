@@ -9,7 +9,7 @@ import ../common/types
 type
   TypeKind* = enum
     tkInt, tkFloat, tkString, tkChar, tkBool, tkVoid, tkRef, tkGeneric, tkArray, tkOption, tkResult,
-    tkUserDefined, tkDistinct, tkObject
+    tkUserDefined, tkDistinct, tkObject, tkInferred
 
   ObjectField* = object
     name*: string
@@ -196,6 +196,7 @@ proc tChar*(): EtchType = EtchType(kind: tkChar)
 proc tInt*(): EtchType = EtchType(kind: tkInt)
 proc tFloat*(): EtchType = EtchType(kind: tkFloat)
 proc tString*(): EtchType = EtchType(kind: tkString)
+proc tInferred*(): EtchType = EtchType(kind: tkInferred)
 proc tArray*(inner: EtchType): EtchType = EtchType(kind: tkArray, inner: inner)
 proc tRef*(inner: EtchType): EtchType = EtchType(kind: tkRef, inner: inner)
 proc tGeneric*(name: string): EtchType = EtchType(kind: tkGeneric, name: name)
@@ -222,6 +223,7 @@ proc `$`*(t: EtchType): string =
   of tkUserDefined: t.name
   of tkDistinct: t.name
   of tkObject: t.name
+  of tkInferred: "<inferred>"
 
 
 proc `$`*(t: ExprKind): string =
@@ -243,7 +245,14 @@ proc `$`*(t: ExprKind): string =
   of ekArrayLen: "array length"
   of ekCast: "type cast"
   of ekNil: "nil literal"
-  else: "unknown kind"
+  of ekFieldAccess: "field access"
+  of ekOptionSome: "option some"
+  of ekOptionNone: "option none"
+  of ekResultOk: "result ok"
+  of ekResultErr: "result error"
+  of ekMatch: "match expression"
+  of ekObjectLiteral: "object literal"
+  of ekNew: "new expression"
 
 
 proc `$`*(bop: BinOp): string =
@@ -279,6 +288,7 @@ proc copyType*(t: EtchType): EtchType =
   of tkUserDefined: tUserDefined(t.name)
   of tkDistinct: tDistinct(t.name, if t.inner != nil: copyType(t.inner) else: nil)
   of tkObject: tObject(t.name, t.fields)  # Fields are shared - this is intentional for type definitions
+  of tkInferred: tInferred()
 
 
 # Function overload management helpers
@@ -320,6 +330,7 @@ proc generateOverloadSignature*(funDecl: FunDecl): string =
     of tkUserDefined: return "U" & $t.name.len & t.name
     of tkDistinct: return "D" & $t.name.len & t.name
     of tkObject: return "T" & $t.name.len & t.name
+    of tkInferred: return "I"  # Inferred type (shouldn't appear in function signatures)
 
   # Encode parameters
   for param in funDecl.params:

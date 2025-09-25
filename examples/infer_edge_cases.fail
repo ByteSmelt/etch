@@ -1,0 +1,5 @@
+examples/infer_edge_cases.etch:6:9: error: cannot infer type for variable 'empty', please provide explicit type annotation
+  5 |     // Empty arrays - cannot infer element type
+  6 |     let empty = [];                 // Should fail
+              ^
+  7 |

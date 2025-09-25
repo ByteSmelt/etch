@@ -14,4 +14,7 @@ fn main() {
     print(@p.age);
     print(test(p));
     print(p.test());
+
+    let x = p.name;
+    print(x);
 }

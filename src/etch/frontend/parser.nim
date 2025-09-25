@@ -2,7 +2,8 @@
 # Pratt parser for Etch using tokens from lexer
 
 import std/[strformat, tables, options, strutils]
-import ast, lexer, ../common/[errors, types], ../typechecker/core
+import ast, lexer, ../common/[errors, types]
+import ../typechecker/types
 
 type
   Parser* = ref object
@@ -456,7 +457,8 @@ proc parseVarDecl(p: Parser; vflag: VarFlag): Stmt =
     if ty == nil:
       ty = inferTypeFromExpr(ini.get())
       if ty == nil:
-          raise newParseError(p.posOf(tname), &"cannot infer type for variable '{tname.lex}', please provide explicit type annotation")
+          # Use deferred inference for complex expressions that need type checker context
+          ty = tInferred()
   elif ty == nil:
     # No type annotation and no initializer
     raise newParseError(p.posOf(tname), &"variable '{tname.lex}' requires either type annotation or initializer for type inference")

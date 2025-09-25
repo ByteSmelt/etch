@@ -14,6 +14,16 @@ proc typecheckVar(prog: Program; fd: FunDecl; sc: Scope; s: Stmt; subst: var TyS
   if s.vtype.kind == tkGeneric:
     raise newTypecheckError(s.pos, "generic variable type not allowed at runtime scope")
 
+  # Handle deferred type inference
+  if s.vtype.kind == tkInferred:
+    if s.vinit.isNone():
+      raise newTypecheckError(s.pos, &"variable '{s.vname}' with inferred type must have an initializer")
+    # Infer type from initializer expression with current scope context
+    let inferredType = inferTypeFromExpr(s.vinit.get(), sc)
+    if inferredType == nil:
+      raise newTypecheckError(s.pos, &"cannot infer type for variable '{s.vname}', please provide explicit type annotation")
+    s.vtype = inferredType
+
   # Resolve user-defined types (including nested ones in references, arrays, etc.)
   var resolvedVtype = s.vtype
   resolvedVtype = resolveNestedUserTypes(sc, resolvedVtype, s.pos)

@@ -732,8 +732,8 @@ proc analyzeExpr*(e: Expr; env: Env, ctx: ProverContext): Info =
       if e.objectExpr.refExpr.kind == ekVar and env.nils.hasKey(e.objectExpr.refExpr.vname) and env.nils[e.objectExpr.refExpr.vname]:
         raise newProverError(e.pos, &"potential null dereference: dereferencing variable '{e.objectExpr.refExpr.vname}' that may be nil")
 
-    # Field access result is unknown for now
-    return Info(known: false, cval: 0)
+    # Field access result is unknown for now but considered initialized
+    return Info(known: false, cval: 0, initialized: true)
   of ekNew:
     # new(value) or new[Type]{value} - analyze initialization expression if present
     if e.initExpr.isSome:
