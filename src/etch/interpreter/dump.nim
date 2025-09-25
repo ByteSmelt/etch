@@ -12,53 +12,6 @@ proc alignLeft*(s: string, width: int, fillChar: char = ' '): string =
   let padding = max(0, width - s.len)
   result = s & repeat(fillChar, padding)
 
-proc formatOpCode*(op: OpCode): string =
-  case op
-  of opLoadInt: "LOAD_INT"
-  of opLoadFloat: "LOAD_FLOAT"
-  of opLoadString: "LOAD_STRING"
-  of opLoadChar: "LOAD_CHAR"
-  of opLoadBool: "LOAD_BOOL"
-  of opLoadVar: "LOAD_VAR"
-  of opStoreVar: "STORE_VAR"
-  of opAdd: "ADD"
-  of opSub: "SUB"
-  of opMul: "MUL"
-  of opDiv: "DIV"
-  of opMod: "MOD"
-  of opNeg: "NEG"
-  of opNot: "NOT"
-  of opEq: "EQ"
-  of opNe: "NE"
-  of opLt: "LT"
-  of opLe: "LE"
-  of opGt: "GT"
-  of opGe: "GE"
-  of opAnd: "AND"
-  of opOr: "OR"
-  of opJump: "JUMP"
-  of opJumpIfFalse: "JUMP_IF_FALSE"
-  of opCall: "CALL"
-  of opReturn: "RETURN"
-  of opPop: "POP"
-  of opDup: "DUP"
-  of opNewRef: "NEW_REF"
-  of opDeref: "DEREF"
-  of opMakeArray: "MAKE_ARRAY"
-  of opArrayGet: "ARRAY_GET"
-  of opArraySlice: "ARRAY_SLICE"
-  of opArrayLen: "ARRAY_LEN"
-  of opCast: "CAST"
-  of opLoadNil: "LOAD_NIL"
-  of opMakeOptionSome: "MAKE_OPTION_SOME"
-  of opMakeOptionNone: "MAKE_OPTION_NONE"
-  of opMakeResultOk: "MAKE_RESULT_OK"
-  of opMakeResultErr: "MAKE_RESULT_ERR"
-  of opMatchValue: "MATCH_VALUE"
-  of opExtractSome: "EXTRACT_SOME"
-  of opExtractOk: "EXTRACT_OK"
-  of opExtractErr: "EXTRACT_ERR"
-
 proc formatArgument*(instr: Instruction): string =
   if instr.sarg.len > 0:
     return &" \"{instr.sarg}\""
@@ -152,7 +105,7 @@ proc dumpInstructionsSummary*(prog: BytecodeProgram) =
   sortedOps.sort(proc(a, b: tuple[op: OpCode, count: int]): int = cmp(b.count, a.count))
 
   for (op, count) in sortedOps:
-    echo &"  {formatOpCode(op):20} {count:4} times"
+    echo &"  {op} {count:4} times"
 
 proc dumpInstructionsByFunctions*(prog: BytecodeProgram, showDebug: bool = true, maxInstructions: int = -1) =
   echo ""
@@ -196,7 +149,7 @@ proc dumpInstructionsByFunctions*(prog: BytecodeProgram, showDebug: bool = true,
       for i in funcStart..<funcEnd:
         let instr = prog.instructions[i]
         let indexStr = ($i).alignRight(4)
-        let opAndArg = formatOpCode(instr.op) & formatArgument(instr)
+        let opAndArg = $instr.op & formatArgument(instr)
         let opAndArgPadded = opAndArg.alignLeft(24)  # Left-align operands and args
 
         let debugStr = if showDebug:
@@ -224,7 +177,7 @@ proc dumpInstructionsByFunctions*(prog: BytecodeProgram, showDebug: bool = true,
     for i in currentIdx..<limit:
       let instr = prog.instructions[i]
       let indexStr = ($i).alignRight(4)
-      let opAndArg = formatOpCode(instr.op) & formatArgument(instr)
+      let opAndArg = $instr.op & formatArgument(instr)
       let opAndArgPadded = opAndArg.alignLeft(24)
 
       let debugStr = if showDebug:

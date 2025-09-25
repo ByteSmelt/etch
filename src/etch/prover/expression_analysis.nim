@@ -3,7 +3,7 @@
 
 
 import std/[strformat, options, tables, strutils]
-import ../frontend/ast, ../common/errors
+import ../frontend/ast, ../common/errors, ../common/types
 import ../common/logging
 import types, binary_operations, function_evaluation, symbolic_execution
 
@@ -12,6 +12,8 @@ proc proveStmt*(s: Stmt; env: Env, ctx: ProverContext)
 proc analyzeExpr*(e: Expr; env: Env, ctx: ProverContext): Info
 proc analyzeBinaryExpr*(e: Expr, env: Env, ctx: ProverContext): Info
 proc analyzeCallExpr*(e: Expr, env: Env, ctx: ProverContext): Info
+proc checkUnusedVariables*(env: Env, ctx: ProverContext, scopeName: string = "", excludeGlobals: bool = false)
+proc checkUnusedGlobalVariables*(env: Env, ctx: ProverContext)
 
 
 proc evaluateCondition*(cond: Expr, env: Env, ctx: ProverContext): ConditionResult =
@@ -101,6 +103,8 @@ proc analyzeVarExpr*(e: Expr, env: Env): Info =
     let info = env.vals[e.vname]
     if not info.initialized:
       raise newProverError(e.pos, &"use of uninitialized variable '{e.vname}' - variable may not be initialized in all control flow paths")
+    # Mark variable as used (read)
+    env.vals[e.vname].used = true
     return info
   raise newProverError(e.pos, &"use of undeclared variable '{e.vname}'")
 
@@ -707,6 +711,8 @@ proc analyzeFunctionBody*(statements: seq[Stmt], env: Env, ctx: ProverContext) =
 
 proc proveVar(s: Stmt; env: Env, ctx: ProverContext) =
   logProver(ctx.flags, "Declaring variable: " & s.vname)
+  # Store declaration position for error reporting
+  env.declPos[s.vname] = s.pos
   if s.vinit.isSome():
     logProver(ctx.flags, "Variable " & s.vname & " has initializer")
     let info = analyzeExpr(s.vinit.get(), env, ctx)
@@ -1177,3 +1183,46 @@ proc proveStmt*(s: Stmt; env: Env, ctx: ProverContext) =
   of skExpr: proveExpr(s, env, ctx)
   of skReturn: proveReturn(s, env, ctx)
   of skComptime: proveComptime(s, env, ctx)
+
+
+proc checkUnusedVariables*(env: Env, ctx: ProverContext, scopeName: string = "", excludeGlobals: bool = false) =
+  ## Check for unused variables in the current scope
+  logProver(ctx.flags, "Checking for unused variables" & (if scopeName != "": " in " & scopeName else: ""))
+
+  for varName, info in env.vals:
+    if info.initialized and not info.used:
+      # Skip global variables if excludeGlobals is true
+      if excludeGlobals and ctx.prog != nil:
+        var isGlobal = false
+        for g in ctx.prog.globals:
+          if g.kind == skVar and g.vname == varName:
+            isGlobal = true
+            break
+        if isGlobal:
+          continue
+
+      # Use the stored declaration position for accurate error reporting
+      let pos = if env.declPos.hasKey(varName):
+                  env.declPos[varName]
+                else:
+                  Pos(line: 1, col: 1)  # fallback position
+
+      raise newProverError(pos, &"unused variable '{varName}'")
+
+
+proc checkUnusedGlobalVariables*(env: Env, ctx: ProverContext) =
+  ## Check for unused global variables specifically
+  logProver(ctx.flags, "Checking for unused global variables")
+
+  if ctx.prog != nil:
+    for g in ctx.prog.globals:
+      if g.kind == skVar and env.vals.hasKey(g.vname):
+        let info = env.vals[g.vname]
+        if info.initialized and not info.used:
+          # Use the stored declaration position for accurate error reporting
+          let pos = if env.declPos.hasKey(g.vname):
+                      env.declPos[g.vname]
+                    else:
+                      g.pos
+
+          raise newProverError(pos, &"unused variable '{g.vname}'")

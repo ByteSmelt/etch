@@ -26,6 +26,11 @@ const
   GLOBAL_INIT_FUNC_NAME* = "__global_init__"
   GLOBAL_FINI_FUNC_NAME* = "__global_fini__"
 
+# Bytecode serialization constants
+const
+  BYTECODE_MAGIC* = "ETCH"
+  BYTECODE_VERSION* = 12
+
 # Runtime constants
 const
   DEFAULT_HEAP_SIZE* = 1024

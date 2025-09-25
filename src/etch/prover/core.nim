@@ -4,14 +4,14 @@
 
 import std/[tables]
 import ../frontend/ast, ../common/errors, ../interpreter/serialize
-import ../common/[constants, logging]
+import ../common/[constants, logging, types]
 import types, expression_analysis
 
 
 proc prove*(prog: Program, filename: string = "<unknown>", flags: CompilerFlags = CompilerFlags()) =
   logProver(flags, "Starting safety proof analysis for " & filename)
   errors.loadSourceLines(filename)
-  var env = Env(vals: initTable[string, Info](), nils: initTable[string, bool](), exprs: initTable[string, Expr]())
+  var env = Env(vals: initTable[string, Info](), nils: initTable[string, bool](), exprs: initTable[string, Expr](), declPos: initTable[string, Pos]())
 
   logProver(flags, "Initializing environment with " & $prog.globals.len & " global variables")
 
@@ -31,16 +31,25 @@ proc prove*(prog: Program, filename: string = "<unknown>", flags: CompilerFlags 
       logProver(flags, "Proving global variable: " & g.vname)
     proveStmt(g, env, globalCtx)
 
+  # Note: We'll check for unused global variables after main analysis
+  # so globals used in main are properly marked as used
+
   # Analyze main function directly (it's the entry point)
   if prog.funInstances.hasKey(MAIN_FUNCTION_NAME):
     logProver(flags, "Analyzing main function")
     let mainFn = prog.funInstances[MAIN_FUNCTION_NAME]
-    var mainEnv = Env(vals: env.vals, nils: env.nils, exprs: env.exprs) # copy global environment
+    var mainEnv = Env(vals: env.vals, nils: env.nils, exprs: env.exprs, declPos: env.declPos) # copy global environment
     logProver(flags, "Main function has " & $mainFn.body.len & " statements")
     let mainCtx = newProverContext(MAIN_FUNCTION_NAME, flags, prog)
     for i, stmt in mainFn.body:
       logProver(flags, "Proving main statement " & $(i + 1) & "/" & $mainFn.body.len)
       proveStmt(stmt, mainEnv, mainCtx)
+
+    # Check for unused local variables in main function (exclude globals)
+    checkUnusedVariables(mainEnv, mainCtx, "main function", excludeGlobals = true)
+
+    # Now check for unused global variables (after main analysis)
+    checkUnusedGlobalVariables(mainEnv, globalCtx)
   else:
     logProver(flags, "No main function found to analyze")
 

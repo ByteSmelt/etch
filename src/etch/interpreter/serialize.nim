@@ -2,7 +2,9 @@
 # Bytecode serialization and deserialization for Etch programs
 
 import std/[tables, streams, strutils]
+import ../common/constants
 import ../frontend/ast
+
 
 type
   GlobalValue* = object
@@ -64,9 +66,6 @@ type
     lineToInstructionMap*: Table[int, seq[int]]
     compilerFlags*: CompilerFlags
 
-const
-  BYTECODE_MAGIC = "ETCH"
-  BYTECODE_VERSION = 12
 
 proc serializeToBinary*(prog: BytecodeProgram): string =
   ## Serialize bytecode program to binary format for storage
@@ -195,6 +194,7 @@ proc serializeToBinary*(prog: BytecodeProgram): string =
   stream.setPosition(0)
   result = stream.readAll()
   stream.close()
+
 
 proc deserializeFromBinary*(data: string): BytecodeProgram =
   ## Deserialize bytecode program from binary format
@@ -325,12 +325,62 @@ proc deserializeFromBinary*(data: string): BytecodeProgram =
 
   stream.close()
 
+
 proc saveBytecode*(prog: BytecodeProgram, filename: string) =
   ## Save bytecode program to .etcx file
   let binaryData = prog.serializeToBinary()
   writeFile(filename, binaryData)
 
+
 proc loadBytecode*(filename: string): BytecodeProgram =
   ## Load bytecode program from .etcx file
   let binaryData = readFile(filename)
   deserializeFromBinary(binaryData)
+
+
+proc `$`*(op: OpCode): string =
+  case op
+  of opLoadInt: "LOAD_INT"
+  of opLoadFloat: "LOAD_FLOAT"
+  of opLoadString: "LOAD_STRING"
+  of opLoadChar: "LOAD_CHAR"
+  of opLoadBool: "LOAD_BOOL"
+  of opLoadVar: "LOAD_VAR"
+  of opStoreVar: "STORE_VAR"
+  of opAdd: "ADD"
+  of opSub: "SUB"
+  of opMul: "MUL"
+  of opDiv: "DIV"
+  of opMod: "MOD"
+  of opNeg: "NEG"
+  of opNot: "NOT"
+  of opEq: "EQ"
+  of opNe: "NE"
+  of opLt: "LT"
+  of opLe: "LE"
+  of opGt: "GT"
+  of opGe: "GE"
+  of opAnd: "AND"
+  of opOr: "OR"
+  of opJump: "JUMP"
+  of opJumpIfFalse: "JUMP_IF_FALSE"
+  of opCall: "CALL"
+  of opReturn: "RETURN"
+  of opPop: "POP"
+  of opDup: "DUP"
+  of opNewRef: "NEW_REF"
+  of opDeref: "DEREF"
+  of opMakeArray: "MAKE_ARRAY"
+  of opArrayGet: "ARRAY_GET"
+  of opArraySlice: "ARRAY_SLICE"
+  of opArrayLen: "ARRAY_LEN"
+  of opCast: "CAST"
+  of opLoadNil: "LOAD_NIL"
+  of opMakeOptionSome: "MAKE_OPTION_SOME"
+  of opMakeOptionNone: "MAKE_OPTION_NONE"
+  of opMakeResultOk: "MAKE_RESULT_OK"
+  of opMakeResultErr: "MAKE_RESULT_ERR"
+  of opMatchValue: "MATCH_VALUE"
+  of opExtractSome: "EXTRACT_SOME"
+  of opExtractOk: "EXTRACT_OK"
+  of opExtractErr: "EXTRACT_ERR"

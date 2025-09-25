@@ -2,7 +2,7 @@
 # Type definitions and basic constructors for the safety prover
 
 import std/[tables]
-import ../frontend/ast, ../interpreter/serialize
+import ../frontend/ast, ../interpreter/serialize, ../common/types
 
 const IMin* = low(int64)
 const IMax* = high(int64)
@@ -19,6 +19,7 @@ type
     nonNil*: bool
     isBool*: bool
     initialized*: bool
+    used*: bool  # Track if variable has been used
 
     # Array/String size tracking (strings are array[char])
     isArray*: bool
@@ -30,6 +31,7 @@ type Env* = ref object
   vals*: Table[string, Info]
   nils*: Table[string, bool]
   exprs*: Table[string, Expr]  # Track original expressions for variables
+  declPos*: Table[string, Pos]  # Track declaration positions for error reporting
 
 type ConditionResult* = enum
   crUnknown, crAlwaysTrue, crAlwaysFalse
@@ -43,23 +45,23 @@ proc newProverContext*(fnContext: string = "", flags: CompilerFlags = CompilerFl
   ProverContext(fnContext: fnContext, flags: flags, prog: prog)
 
 proc infoConst*(v: int64): Info =
-  Info(known: true, cval: v, minv: v, maxv: v, nonZero: v != 0, isBool: false, initialized: true)
+  Info(known: true, cval: v, minv: v, maxv: v, nonZero: v != 0, isBool: false, initialized: true, used: false)
 
 proc infoBool*(b: bool): Info =
-  Info(known: true, cval: (if b: 1 else: 0), minv: 0, maxv: 1, nonZero: b, isBool: true, initialized: true)
+  Info(known: true, cval: (if b: 1 else: 0), minv: 0, maxv: 1, nonZero: b, isBool: true, initialized: true, used: false)
 
-proc infoUnknown*(): Info = Info(known: false, minv: IMin, maxv: IMax, initialized: true)
+proc infoUnknown*(): Info = Info(known: false, minv: IMin, maxv: IMax, initialized: true, used: false)
 
-proc infoUninitialized*(): Info = Info(known: false, minv: IMin, maxv: IMax, initialized: false)
+proc infoUninitialized*(): Info = Info(known: false, minv: IMin, maxv: IMax, initialized: false, used: false)
 
 proc infoArray*(size: int64, sizeKnown: bool = true): Info =
-  Info(known: false, minv: IMin, maxv: IMax, initialized: true, isArray: true, arraySize: size, arraySizeKnown: sizeKnown)
+  Info(known: false, minv: IMin, maxv: IMax, initialized: true, isArray: true, arraySize: size, arraySizeKnown: sizeKnown, used: false)
 
 proc infoString*(length: int64, sizeKnown: bool = true): Info =
-  Info(known: false, minv: IMin, maxv: IMax, initialized: true, isString: true, arraySize: length, arraySizeKnown: sizeKnown)
+  Info(known: false, minv: IMin, maxv: IMax, initialized: true, isString: true, arraySize: length, arraySizeKnown: sizeKnown, used: false)
 
 proc infoRange*(minv, maxv: int64): Info =
-  Info(known: false, minv: minv, maxv: maxv, initialized: true, nonZero: minv > 0 or maxv < 0)
+  Info(known: false, minv: minv, maxv: maxv, initialized: true, nonZero: minv > 0 or maxv < 0, used: false)
 
 proc union*(a, b: Info): Info =
   # Union operation for control flow merging - covers all possible values from both branches
@@ -72,6 +74,7 @@ proc union*(a, b: Info): Info =
   result.nonNil = a.nonNil and b.nonNil    # Only nonNil if both are nonNil
   result.isBool = a.isBool and b.isBool
   result.initialized = a.initialized and b.initialized
+  result.used = a.used or b.used  # Variable is used if it's used in either branch
   # Array/String info union - be conservative
   result.isArray = a.isArray and b.isArray
   result.isString = a.isString and b.isString
