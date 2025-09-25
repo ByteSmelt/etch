@@ -8,6 +8,10 @@ proc alignRight*(s: string, width: int, fillChar: char = ' '): string =
   let padding = max(0, width - s.len)
   result = repeat(fillChar, padding) & s
 
+proc alignLeft*(s: string, width: int, fillChar: char = ' '): string =
+  let padding = max(0, width - s.len)
+  result = s & repeat(fillChar, padding)
+
 proc formatOpCode*(op: OpCode): string =
   case op
   of opLoadInt: "LOAD_INT"
@@ -116,15 +120,8 @@ proc dumpFunctions*(prog: BytecodeProgram) =
 
     for i, funcTuple in funcList:
       let (name, address) = funcTuple
-      let info = if prog.functionInfo.hasKey(name):
-        let finfo = prog.functionInfo[name]
-        if finfo.parameterNames.len > 0:
-          &"({finfo.parameterNames.join(\", \")})"
-        else:
-          "()"
-      else:
-        "(unknown signature)"
-      echo &"  [{i:3}] {name}{info} @ instruction {address}"
+      let demangledName = demangleFunctionSignature(name)
+      echo &"  [{i:3}] {demangledName} @ instruction {address}"
 
 proc dumpLineMapping*(prog: BytecodeProgram) =
   echo ""
@@ -157,23 +154,101 @@ proc dumpInstructionsSummary*(prog: BytecodeProgram) =
   for (op, count) in sortedOps:
     echo &"  {formatOpCode(op):20} {count:4} times"
 
-proc dumpInstructionsDetailed*(prog: BytecodeProgram, showDebug: bool = true, maxInstructions: int = -1) =
+proc dumpInstructionsByFunctions*(prog: BytecodeProgram, showDebug: bool = true, maxInstructions: int = -1) =
   echo ""
-  echo "=== DETAILED INSTRUCTION LISTING ==="
+  echo "=== BYTECODE INSTRUCTIONS BY FUNCTION ==="
 
-  let limit = if maxInstructions > 0: min(maxInstructions, prog.instructions.len) else: prog.instructions.len
+  # Create a list of functions sorted by their address
+  type FuncEntry = tuple[name: string, address: int]
+  var funcList: seq[FuncEntry] = @[]
+  for name, address in prog.functions:
+    funcList.add((name, address))
+  funcList.sort(proc(a, b: FuncEntry): int = cmp(a.address, b.address))
 
-  for i in 0..<limit:
-    let instr = prog.instructions[i]
-    let indexStr = ($i).alignRight(4)
-    let opStr = formatOpCode(instr.op).alignLeft(16)
-    let argStr = formatArgument(instr)
-    let debugStr = if showDebug: " " & formatDebugInfo(instr.debug, showDetails = true) else: ""
+  # Add a synthetic entry for instructions after the last function (if any)
+  let totalInstructions = prog.instructions.len
+  let limit = if maxInstructions > 0: min(maxInstructions, totalInstructions) else: totalInstructions
 
-    echo &"{indexStr}: {opStr}{argStr}{debugStr}"
+  var currentIdx = 0
+  for funcIdx, funcEntry in funcList:
+    let (funcName, funcAddress) = funcEntry
 
-  if maxInstructions > 0 and prog.instructions.len > maxInstructions:
-    echo &"... ({prog.instructions.len - maxInstructions} more instructions)"
+    # Skip if we've reached the instruction limit
+    if currentIdx >= limit:
+      break
+
+    # Print function header
+    echo ""
+    let demangledName = demangleFunctionSignature(funcName)
+    echo &"--- Function: {demangledName} (starts at instruction {funcAddress}) ---"
+
+    # Determine the end address for this function
+    let nextFuncAddress = if funcIdx + 1 < funcList.len:
+      funcList[funcIdx + 1].address
+    else:
+      totalInstructions
+
+    # Print instructions for this function
+    let funcStart = max(funcAddress, currentIdx)
+    let funcEnd = min(nextFuncAddress, limit)
+
+    if funcStart < funcEnd:
+      for i in funcStart..<funcEnd:
+        let instr = prog.instructions[i]
+        let indexStr = ($i).alignRight(4)
+        let opAndArg = formatOpCode(instr.op) & formatArgument(instr)
+        let opAndArgPadded = opAndArg.alignLeft(24)  # Left-align operands and args
+
+        let debugStr = if showDebug:
+          let debug = instr.debug
+          if debug.line > 0:
+            let fileInfo = &"[{debug.sourceFile}:{debug.line}:{debug.col}]"
+            let localVarsInfo = if debug.localVars.len > 0:
+              &" locals: {debug.localVars.join(\", \")}"
+            else:
+              ""
+            fileInfo & localVarsInfo
+          else:
+            ""
+        else:
+          ""
+
+        echo &"{indexStr}: {opAndArgPadded} {debugStr}"
+
+    currentIdx = funcEnd
+
+  # Handle any remaining instructions that don't belong to a function
+  if currentIdx < limit:
+    echo ""
+    echo "--- Instructions outside functions ---"
+    for i in currentIdx..<limit:
+      let instr = prog.instructions[i]
+      let indexStr = ($i).alignRight(4)
+      let opAndArg = formatOpCode(instr.op) & formatArgument(instr)
+      let opAndArgPadded = opAndArg.alignLeft(24)
+
+      let debugStr = if showDebug:
+        let debug = instr.debug
+        if debug.line > 0:
+          let fileInfo = &"[{debug.sourceFile}:{debug.line}:{debug.col}]"
+          let localVarsInfo = if debug.localVars.len > 0:
+            &" locals: {debug.localVars.join(\", \")}"
+          else:
+            ""
+          fileInfo & localVarsInfo
+        else:
+          ""
+      else:
+        ""
+
+      echo &"{indexStr}: {opAndArgPadded} {debugStr}"
+
+  if maxInstructions > 0 and totalInstructions > maxInstructions:
+    echo &"... ({totalInstructions - maxInstructions} more instructions)"
+
+proc dumpInstructionsDetailed*(prog: BytecodeProgram, showDebug: bool = true, maxInstructions: int = -1) =
+  # Use the new function-grouped format
+  dumpInstructionsByFunctions(prog, showDebug, maxInstructions)
 
 proc dumpControlFlow*(prog: BytecodeProgram) =
   echo ""
