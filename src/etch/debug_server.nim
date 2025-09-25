@@ -1,7 +1,7 @@
 # debug_server.nim
 # Debug server for communicating with VSCode Debug Adapter Protocol
 
-import std/[json, sequtils, tables, strutils, os, algorithm]
+import std/[json, sequtils, tables, strutils, os, algorithm, hashes]
 import interpreter/[vm, bytecode, debugger]
 import frontend/ast
 import common/constants
@@ -11,6 +11,9 @@ type
     vm*: vm.VM
     debugger*: debugger.EtchDebugger
     running*: bool
+    # Store variable references for expandable variables
+    variableRefs*: Table[int, string]  # variablesReference -> variable name
+    nextVarRef*: int
 
 proc newDebugServer*(program: bytecode.BytecodeProgram): DebugServer =
   ## Create a new debug server instance
@@ -20,7 +23,9 @@ proc newDebugServer*(program: bytecode.BytecodeProgram): DebugServer =
   result = DebugServer(
     vm: vmInstance,
     debugger: debuggerInstance,
-    running: false
+    running: false,
+    variableRefs: initTable[int, string](),
+    nextVarRef: 2  # Start at 2, since 1 is reserved for local scope
   )
 
   # Set up debug event handler to communicate with VSCode
@@ -235,25 +240,61 @@ proc handleDebugRequest*(server: DebugServer, request: JsonNode): JsonNode =
 
     var variables: seq[JsonNode] = @[]
 
-
     if variablesReference > 0:
-      if variablesReference == 1 and server.debugger.stackFrames.len > 0:
-        # Current (top) stack frame variables - local variables and function parameters
+      if variablesReference == 1:
+        # Main scope - show all current variables
         let currentVars = vm.vmGetCurrentVariables(server.vm)
         for name, value in currentVars:
+          # Check if this variable is an array and provide expandable reference
+          var varRef = 0
+          try:
+            let varValue = vm.vmGetVariableValue(server.vm, name)
+            if varValue.kind == tkArray and varValue.aval.len > 0:
+              # Create a unique reference for this array variable
+              varRef = server.nextVarRef
+              server.variableRefs[varRef] = name
+              server.nextVarRef += 1
+          except:
+            varRef = 0
+
           variables.add(%*{
             "name": name,
             "value": value,
-            "variablesReference": 0  # 0 means no nested variables
+            "variablesReference": varRef
           })
-      elif variablesReference <= server.debugger.stackFrames.len:
-        # For non-current frames, we'd need frame-specific variable lookup
-        # For now, just show current variables
-        let currentVars = vm.vmGetCurrentVariables(server.vm)
-        for name, value in currentVars:
+      elif server.variableRefs.hasKey(variablesReference):
+        # This is an array expansion request
+        let arrayName = server.variableRefs[variablesReference]
+        try:
+          let arrayValue = vm.vmGetVariableValue(server.vm, arrayName)
+          if arrayValue.kind == tkArray:
+            let maxElements = min(arrayValue.aval.len, 100)  # Limit to prevent performance issues
+            for i in 0..<maxElements:
+              # Create a simple string representation for the array element
+              let elementValue = case arrayValue.aval[i].kind:
+                of tkInt: $arrayValue.aval[i].ival
+                of tkFloat: $arrayValue.aval[i].fval
+                of tkString: "\"" & arrayValue.aval[i].sval & "\""
+                of tkChar: "'" & $arrayValue.aval[i].cval & "'"
+                of tkBool:
+                  if arrayValue.aval[i].bval: "true" else: "false"
+                else:
+                  "<" & $arrayValue.aval[i].kind & ">"
+              variables.add(%*{
+                "name": "[" & $i & "]",
+                "value": elementValue,
+                "variablesReference": 0
+              })
+            if arrayValue.aval.len > maxElements:
+              variables.add(%*{
+                "name": "...",
+                "value": "(" & $(arrayValue.aval.len - maxElements) & " more elements)",
+                "variablesReference": 0
+              })
+        except Exception as e:
           variables.add(%*{
-            "name": name,
-            "value": value,
+            "name": "Error",
+            "value": "Failed to expand array: " & e.msg,
             "variablesReference": 0
           })
 
@@ -438,6 +479,10 @@ proc runDebugServer*(program: BytecodeProgram, sourceFile: string) =
         }
         echo $response
         stdout.flushFile()
+
+        # Reset variable references for new debugging session
+        server.variableRefs.clear()
+        server.nextVarRef = 2
 
         # Initialize debugger state for entry
         server.debugger.paused = true

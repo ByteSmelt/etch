@@ -134,6 +134,7 @@ proc updateStackFrameVariables*(debugger: EtchDebugger, variables: Table[string,
   if debugger.stackFrames.len > 0:
     debugger.stackFrames[^1].variables = variables
 
+
 proc step*(debugger: EtchDebugger, mode: StepMode) =
   ## Set up step operation
   debugger.stepMode = mode

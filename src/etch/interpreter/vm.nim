@@ -695,7 +695,7 @@ proc opCallImpl(vm: VM, instr: Instruction): bool =
   vm.pc = vm.program.functions[funcName]
   return true
 
-proc vmValueToDisplayString(value: V): string =
+proc vmValueToDisplayString(value: V, maxArrayElements: int = 10): string =
   ## Convert a VM value to a display string for debugger
   case value.kind
   of tkInt: return $value.ival
@@ -704,6 +704,42 @@ proc vmValueToDisplayString(value: V): string =
   of tkChar: return "'" & $value.cval & "'"
   of tkBool: return if value.bval: "true" else: "false"
   of tkVoid: return "(void)"
+  of tkArray:
+    if value.aval.len == 0:
+      return "[]"
+    var res = "["
+    let elementsToShow = min(value.aval.len, maxArrayElements)
+    for i in 0..<elementsToShow:
+      if i > 0: res.add(", ")
+      res.add(vmValueToDisplayString(value.aval[i], maxArrayElements))
+    if value.aval.len > maxArrayElements:
+      res.add(", ...")
+    res.add("]")
+    return res & " (length: " & $value.aval.len & ")"
+  of tkOption:
+    if value.hasValue:
+      if value.wrappedVal != nil:
+        return "Some(" & vmValueToDisplayString(value.wrappedVal[], maxArrayElements) & ")"
+      else:
+        return "Some(<invalid>)"
+    else:
+      return "None"
+  of tkResult:
+    if value.hasValue:
+      if value.wrappedVal != nil:
+        return "Ok(" & vmValueToDisplayString(value.wrappedVal[], maxArrayElements) & ")"
+      else:
+        return "Ok(<invalid>)"
+    else:
+      if value.wrappedVal != nil:
+        return "Err(" & vmValueToDisplayString(value.wrappedVal[], maxArrayElements) & ")"
+      else:
+        return "Err(<invalid>)"
+  of tkRef:
+    if value.refId == -1:
+      return "nil"
+    else:
+      return "ref#" & $value.refId
   else: return "<" & $value.kind & ">"
 
 proc vmGetCurrentVariables*(vm: VM): Table[string, string] =
@@ -723,6 +759,93 @@ proc vmGetCurrentVariables*(vm: VM): Table[string, string] =
       variables[name] = vmValueToDisplayString(value)
 
   return variables
+
+proc vmGetVariableValue*(vm: VM, name: string): V =
+  ## Get a variable value by name for debugger inspection
+  # Check current call frame first
+  if vm.callStack.len > 0:
+    let currentFrame = vm.callStack[^1]
+    if currentFrame.vars.hasKey(name):
+      return currentFrame.vars[name]
+
+  # Check globals
+  if vm.globals.hasKey(name):
+    return vm.globals[name]
+
+  raise newException(ValueError, &"Variable '{name}' not found")
+
+proc vmInspectArrayElement*(vm: VM, arrayName: string, index: int): string =
+  ## Inspect a specific array element for debugger
+  try:
+    let arrayValue = vmGetVariableValue(vm, arrayName)
+    case arrayValue.kind:
+    of tkArray:
+      if index < 0 or index >= arrayValue.aval.len:
+        return &"Index {index} out of bounds (array length: {arrayValue.aval.len})"
+      return &"{arrayName}[{index}] = " & vmValueToDisplayString(arrayValue.aval[index])
+    of tkString:
+      if index < 0 or index >= arrayValue.sval.len:
+        return &"Index {index} out of bounds (string length: {arrayValue.sval.len})"
+      return &"{arrayName}[{index}] = '" & $arrayValue.sval[index] & "'"
+    else:
+      return &"Variable '{arrayName}' is not an array or string (type: {arrayValue.kind})"
+  except Exception as e:
+    return &"Error inspecting {arrayName}[{index}]: {e.msg}"
+
+proc vmInspectArraySlice*(vm: VM, arrayName: string, startIdx, endIdx: int): string =
+  ## Inspect a slice of an array for debugger
+  try:
+    let arrayValue = vmGetVariableValue(vm, arrayName)
+    case arrayValue.kind:
+    of tkArray:
+      let actualStart = max(0, min(startIdx, arrayValue.aval.len))
+      let actualEnd = max(actualStart, min(endIdx, arrayValue.aval.len))
+      if actualStart >= actualEnd:
+        return &"{arrayName}[{startIdx}..{endIdx}] = [] (empty slice)"
+      let slice = arrayValue.aval[actualStart..<actualEnd]
+      let sliceArray = V(kind: tkArray, aval: slice)
+      return &"{arrayName}[{startIdx}..{endIdx}] = " & vmValueToDisplayString(sliceArray)
+    of tkString:
+      let actualStart = max(0, min(startIdx, arrayValue.sval.len))
+      let actualEnd = max(actualStart, min(endIdx, arrayValue.sval.len))
+      if actualStart >= actualEnd:
+        return &"{arrayName}[{startIdx}..{endIdx}] = \"\" (empty slice)"
+      let slice = arrayValue.sval[actualStart..<actualEnd]
+      return &"{arrayName}[{startIdx}..{endIdx}] = \"" & slice & "\""
+    else:
+      return &"Variable '{arrayName}' is not an array or string (type: {arrayValue.kind})"
+  except Exception as e:
+    return &"Error inspecting {arrayName}[{startIdx}..{endIdx}]: {e.msg}"
+
+proc vmGetArrayInfo*(vm: VM, arrayName: string): string =
+  ## Get comprehensive array information for debugger
+  try:
+    let arrayValue = vmGetVariableValue(vm, arrayName)
+    case arrayValue.kind:
+    of tkArray:
+      var info = &"Array '{arrayName}': length={arrayValue.aval.len}, type=array"
+      if arrayValue.aval.len > 0:
+        info.add(&", elements:")
+        let maxShow = min(20, arrayValue.aval.len)  # Show more elements in detailed view
+        for i in 0..<maxShow:
+          info.add(&"\n  [{i}] = " & vmValueToDisplayString(arrayValue.aval[i]))
+        if arrayValue.aval.len > maxShow:
+          info.add(&"\n  ... and {arrayValue.aval.len - maxShow} more elements")
+      return info
+    of tkString:
+      var info = &"String '{arrayName}': length={arrayValue.sval.len}, type=string"
+      if arrayValue.sval.len > 0:
+        info.add(&", characters:")
+        let maxShow = min(50, arrayValue.sval.len)  # Show more chars for strings
+        for i in 0..<maxShow:
+          info.add(&"\n  [{i}] = '" & $arrayValue.sval[i] & "'")
+        if arrayValue.sval.len > maxShow:
+          info.add(&"\n  ... and {arrayValue.sval.len - maxShow} more characters")
+      return info
+    else:
+      return &"Variable '{arrayName}' is not an array or string (type: {arrayValue.kind})"
+  except Exception as e:
+    return &"Error getting array info for '{arrayName}': {e.msg}"
 
 # Debugger implementation functions
 proc vmDebuggerBeforeInstruction*(vm: VM) =
