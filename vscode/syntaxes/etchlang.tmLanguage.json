@@ -14,7 +14,7 @@
     "keywords": {
       "patterns": [
         {
-          "match": "\\b(fn|let|var|while|for|in|break|if|else|return|match|comptime)\\b",
+          "match": "\\b(fn|let|var|while|for|in|break|if|else|return|match|comptime|type|distinct|object)\\b",
           "name": "keyword.control.etchlang"
         }
       ]
@@ -22,7 +22,7 @@
     "types": {
       "patterns": [
         {
-          "match": "\\b(void|bool|char|int|float|string|array|ref|option|result)\\b",
+          "match": "\\b(nil|void|bool|char|int|float|string|array|ref|option|result)\\b",
           "name": "storage.type.etchlang"
         }
       ]

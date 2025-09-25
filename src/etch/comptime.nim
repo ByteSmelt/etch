@@ -255,6 +255,9 @@ proc foldStmt(prog: Program, s: var Stmt) =
 
     # Replace the comptime body with the injected variables
     s.cbody = injectedVars
+  of skTypeDecl:
+    # Type declarations don't need folding
+    discard
 
 
 proc foldComptime*(prog: Program, root: var Program) =

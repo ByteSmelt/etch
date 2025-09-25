@@ -1,6 +1,7 @@
 fn main() -> void {
     // Test readFile type inference
     var content = readFile("nonexistent.txt");
+    print(content); // Should be of type string
     print("File reading attempted");
 
     // Test new type inference

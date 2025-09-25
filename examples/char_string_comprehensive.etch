@@ -36,8 +36,6 @@ fn main() -> void {
   print(empty_slice);
 
   // Test char literals with escapes
-  let newline: char = '\n';
-  let tab: char = '\t';
   let quote: char = '\'';
   print(quote);
 }

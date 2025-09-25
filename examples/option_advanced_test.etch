@@ -12,5 +12,8 @@ fn main() -> void {
     let result1: string = processValue(validInt);
     let result2: string = processValue(invalidInt);
 
+    print(result1); // Expected: "Processed option value"
+    print(result2); // Expected: "Processed option value"
+
     print("Option function parameter test passed");
 }

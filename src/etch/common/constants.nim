@@ -29,7 +29,7 @@ const
 # Bytecode serialization constants
 const
   BYTECODE_MAGIC* = "ETCH"
-  BYTECODE_VERSION* = 12
+  BYTECODE_VERSION* = 13  # Bumped for type system support
 
 # Runtime constants
 const

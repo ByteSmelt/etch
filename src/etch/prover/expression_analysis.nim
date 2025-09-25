@@ -354,6 +354,12 @@ proc analyzeUserDefinedCall*(e: Expr, env: Env, ctx: ProverContext): Info =
 
   logProver(ctx.flags, &"Function {fnContext} analysis completed successfully")
 
+  # Copy back global variable usage information from function call environment
+  for k, callInfo in callEnv.vals:
+    if k notin paramNames and env.vals.hasKey(k):
+      # This is a global variable - copy back usage information
+      env.vals[k].used = env.vals[k].used or callInfo.used
+
   # Try to determine return value information by looking at return statements
   # This is a simplified approach - a more complete implementation would track
   # all possible return paths and merge their info
@@ -700,6 +706,21 @@ proc analyzeExpr*(e: Expr; env: Env, ctx: ProverContext): Info =
   of ekResultOk: return analyzeResultOkExpr(e, env, ctx)
   of ekResultErr: return analyzeResultErrExpr(e, env, ctx)
   of ekMatch: return analyzeMatchExpr(e, env, ctx)
+  of ekObjectLiteral:
+    # Object literals are properly initialized values
+    # Analyze all field initializations for safety
+    for field in e.fieldInits:
+      discard analyzeExpr(field.value, env, ctx)
+    return Info(known: false, initialized: true, nonNil: true)
+  of ekFieldAccess:
+    # Field access is unknown for now
+    return Info(known: false, cval: 0)
+  of ekNew:
+    # new(value) or new[Type]{value} - analyze initialization expression if present
+    if e.initExpr.isSome:
+      discard analyzeExpr(e.initExpr.get, env, ctx)
+    # new always returns an initialized, non-nil reference
+    Info(known: false, nonNil: true, initialized: true)
 
 
 proc analyzeFunctionBody*(statements: seq[Stmt], env: Env, ctx: ProverContext) =
@@ -1169,7 +1190,8 @@ proc proveStmt*(s: Stmt; env: Env, ctx: ProverContext) =
     of skBreak: "break statement"
     of skExpr: "expression statement"
     of skReturn: "return statement"
-    else: $s.kind
+    of skComptime: "comptime block"
+    of skTypeDecl: "type declaration"
 
   logProver(ctx.flags, "Analyzing " & stmtKindStr & (if ctx.fnContext != "": " in " & ctx.fnContext else: ""))
 
@@ -1183,6 +1205,9 @@ proc proveStmt*(s: Stmt; env: Env, ctx: ProverContext) =
   of skExpr: proveExpr(s, env, ctx)
   of skReturn: proveReturn(s, env, ctx)
   of skComptime: proveComptime(s, env, ctx)
+  of skTypeDecl:
+    # Type declarations don't need proving
+    discard
 
 
 proc checkUnusedVariables*(env: Env, ctx: ProverContext, scopeName: string = "", excludeGlobals: bool = false) =

@@ -12,4 +12,5 @@ fn main() -> void {
   let large_a: int = rand(2000000000);  // Range: [0, 2B]
   let large_b: int = rand(1000000000);  // Range: [0, 1B]
   let overflow_risk: int = large_a + large_b;  // Safe: no potential overflow on int64
+  print(overflow_risk);
 }

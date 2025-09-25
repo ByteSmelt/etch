@@ -8,12 +8,21 @@ import ../common/types
 
 type
   TypeKind* = enum
-    tkInt, tkFloat, tkString, tkChar, tkBool, tkVoid, tkRef, tkGeneric, tkArray, tkOption, tkResult
+    tkInt, tkFloat, tkString, tkChar, tkBool, tkVoid, tkRef, tkGeneric, tkArray, tkOption, tkResult,
+    tkUserDefined, tkDistinct, tkObject
+
+  ObjectField* = object
+    name*: string
+    fieldType*: EtchType
+    defaultValue*: Option[Expr]
+    generationalRef*: bool  # Whether this field uses generational references
 
   EtchType* = ref object
     kind*: TypeKind
-    name*: string           # for tkGeneric
-    inner*: EtchType        # for tkRef and tkArray
+    name*: string           # for tkGeneric, tkUserDefined, tkDistinct, tkObject
+    inner*: EtchType        # for tkRef and tkArray, base type for tkDistinct
+    fields*: seq[ObjectField]  # for tkObject
+    generation*: uint32     # for generational reference tracking
 
   TypeEnv* = Table[string, EtchType]
 
@@ -45,7 +54,8 @@ type
   ExprKind* = enum
     ekBool, ekChar, ekInt, ekFloat, ekString, ekVar, ekBin, ekUn,
     ekCall, ekNewRef, ekDeref, ekArray, ekIndex, ekSlice, ekArrayLen, ekCast, ekNil,
-    ekOptionSome, ekOptionNone, ekResultOk, ekResultErr, ekMatch
+    ekOptionSome, ekOptionNone, ekResultOk, ekResultErr, ekMatch,
+    ekObjectLiteral, ekFieldAccess, ekNew
 
   Expr* = ref object
     pos*: Pos
@@ -105,9 +115,18 @@ type
     of ekMatch:
       matchExpr*: Expr        # expression to match against
       cases*: seq[MatchCase]  # pattern cases
+    of ekObjectLiteral:
+      objectType*: EtchType   # type of the object being created
+      fieldInits*: seq[tuple[name: string, value: Expr]]  # field initializers
+    of ekFieldAccess:
+      objectExpr*: Expr       # object being accessed
+      fieldName*: string      # name of field
+    of ekNew:
+      newType*: EtchType      # type to create on heap (for ref[X])
+      initExpr*: Option[Expr] # optional initialization expression
 
   StmtKind* = enum
-    skVar, skAssign, skIf, skWhile, skFor, skBreak, skExpr, skReturn, skComptime
+    skVar, skAssign, skIf, skWhile, skFor, skBreak, skExpr, skReturn, skComptime, skTypeDecl
 
   VarFlag* = enum
     vfLet, vfVar
@@ -144,6 +163,11 @@ type
       re*: Option[Expr]
     of skComptime:
       cbody*: seq[Stmt]
+    of skTypeDecl:
+      typeName*: string       # name of the type being declared
+      typeKind*: string       # "alias", "distinct", or "object"
+      aliasTarget*: EtchType  # target type for alias/distinct
+      objectFields*: seq[ObjectField]  # fields for object types
     of skBreak:
       discard
 
@@ -163,6 +187,7 @@ type
     globals*: seq[Stmt]                   # global let/var with init allowed
     funs*: Table[string, seq[FunDecl]]    # generic templates (supports overloads)
     funInstances*: Table[string, FunDecl] # monomorphized instances
+    types*: Table[string, EtchType]       # user-defined types
 
 
 proc tVoid*(): EtchType = EtchType(kind: tkVoid)
@@ -176,6 +201,9 @@ proc tRef*(inner: EtchType): EtchType = EtchType(kind: tkRef, inner: inner)
 proc tGeneric*(name: string): EtchType = EtchType(kind: tkGeneric, name: name)
 proc tOption*(inner: EtchType): EtchType = EtchType(kind: tkOption, inner: inner)
 proc tResult*(inner: EtchType): EtchType = EtchType(kind: tkResult, inner: inner)
+proc tUserDefined*(name: string): EtchType = EtchType(kind: tkUserDefined, name: name)
+proc tDistinct*(name: string, base: EtchType): EtchType = EtchType(kind: tkDistinct, name: name, inner: base)
+proc tObject*(name: string, fields: seq[ObjectField]): EtchType = EtchType(kind: tkObject, name: name, fields: fields)
 
 
 proc `$`*(t: EtchType): string =
@@ -191,6 +219,9 @@ proc `$`*(t: EtchType): string =
   of tkGeneric: t.name
   of tkOption: "option[" & $t.inner & "]"
   of tkResult: "result[" & $t.inner & "]"
+  of tkUserDefined: t.name
+  of tkDistinct: t.name
+  of tkObject: t.name
 
 
 proc `$`*(t: ExprKind): string =
@@ -228,6 +259,9 @@ proc copyType*(t: EtchType): EtchType =
   of tkGeneric: tGeneric(t.name)
   of tkOption: tOption(copyType(t.inner))
   of tkResult: tResult(copyType(t.inner))
+  of tkUserDefined: tUserDefined(t.name)
+  of tkDistinct: tDistinct(t.name, if t.inner != nil: copyType(t.inner) else: nil)
+  of tkObject: tObject(t.name, t.fields)  # Fields are shared - this is intentional for type definitions
 
 
 # Function overload management helpers
@@ -252,20 +286,23 @@ proc generateOverloadSignature*(funDecl: FunDecl): string =
   ## Format: funcName__paramTypes_returnType (inspired by JNI/C++ mangling but simplified)
   result = funDecl.name & "__"
 
-  # Compact type encoding: v=void, b=bool, c=char, i=int, f=float, s=string, A=array, R=ref, O=option, E=result
+  # Compact type encoding: v=void, b=bool, c=char, i=int, f=float, s=string, A=array, R=ref, O=option, E=result, U=user-defined, D=distinct, T=object
   proc encodeType(t: EtchType): string =
     case t.kind
-    of tkVoid: "v"
-    of tkBool: "b"
-    of tkChar: "c"
-    of tkInt: "i"
-    of tkFloat: "f"
-    of tkString: "s"
-    of tkArray: "A" & encodeType(t.inner)
-    of tkRef: "R" & encodeType(t.inner)
-    of tkGeneric: "G" & $t.name.len & t.name
-    of tkOption: "O" & encodeType(t.inner)
-    of tkResult: "E" & encodeType(t.inner)
+    of tkVoid: return "v"
+    of tkBool: return "b"
+    of tkChar: return "c"
+    of tkInt: return "i"
+    of tkFloat: return "f"
+    of tkString: return "s"
+    of tkArray: return "A" & encodeType(t.inner)
+    of tkRef: return "R" & encodeType(t.inner)
+    of tkGeneric: return "G" & $t.name.len & t.name
+    of tkOption: return "O" & encodeType(t.inner)
+    of tkResult: return "E" & encodeType(t.inner)
+    of tkUserDefined: return "U" & $t.name.len & t.name
+    of tkDistinct: return "D" & $t.name.len & t.name
+    of tkObject: return "T" & $t.name.len & t.name
 
   # Encode parameters
   for param in funDecl.params:
@@ -340,6 +377,22 @@ proc demangleFunctionSignature*(mangledName: string): string =
       let nameLen = parseInt(lenStr)
       if pos + nameLen > encoded.len:
         return "generic"
+      let name = encoded[pos..<pos + nameLen]
+      pos += nameLen
+      name
+    of 'U', 'D', 'T':
+      # User-defined, distinct, or object type: <letter><length><name>
+      if pos >= encoded.len:
+        return "usertype"
+      var lenStr = ""
+      while pos < encoded.len and encoded[pos].isDigit:
+        lenStr.add(encoded[pos])
+        pos += 1
+      if lenStr.len == 0:
+        return "usertype"
+      let nameLen = parseInt(lenStr)
+      if pos + nameLen > encoded.len:
+        return "usertype"
       let name = encoded[pos..<pos + nameLen]
       pos += nameLen
       name

@@ -75,8 +75,22 @@ proc ensureAllNonGenericInst(prog: Program, flags: CompilerFlags) =
         if flags.verbose:
           echo &"[COMPILER] Creating function instance: {key} for {f.name}"
         if not prog.funInstances.hasKey(key):
+          # Resolve user-defined types in parameters and return type
+          var resolvedParams: seq[Param] = @[]
+          for param in f.params:
+            var resolvedType = param.typ
+            if resolvedType.kind == tkUserDefined:
+              if prog.types.hasKey(resolvedType.name):
+                resolvedType = prog.types[resolvedType.name]
+            resolvedParams.add(Param(name: param.name, typ: resolvedType, defaultValue: param.defaultValue))
+
+          var resolvedRet = f.ret
+          if resolvedRet != nil and resolvedRet.kind == tkUserDefined:
+            if prog.types.hasKey(resolvedRet.name):
+              resolvedRet = prog.types[resolvedRet.name]
+
           prog.funInstances[key] = FunDecl(
-            name: key, typarams: @[], params: f.params, ret: f.ret, body: f.body)
+            name: key, typarams: @[], params: resolvedParams, ret: resolvedRet, body: f.body)
 
 # Forward declarations
 proc hasImpureCall(expr: Expr): bool
@@ -218,10 +232,12 @@ proc parseAndTypecheck*(options: CompilerOptions): (Program, string, Table[strin
   for name, overloads in prog.funs:
     for f in overloads:
       if f.typarams.len == 0 and f.ret == nil:
-        var sc = Scope(types: initTable[string, EtchType]())
+        var sc = Scope(types: initTable[string, EtchType](), flags: initTable[string, VarFlag](), userTypes: prog.types)
         for p in f.params: sc.types[p.name] = p.typ
         for v in prog.globals:
-          if v.kind == skVar: sc.types[v.vname] = v.vtype
+          if v.kind == skVar:
+            sc.types[v.vname] = v.vtype
+            sc.flags[v.vname] = v.vflag
         let returnTypes = collectReturnTypes(prog, f, sc, f.body, subst)
         f.ret = inferReturnType(returnTypes)
 
@@ -231,10 +247,12 @@ proc parseAndTypecheck*(options: CompilerOptions): (Program, string, Table[strin
 
   for k in instanceKeys:
     let f = prog.funInstances[k]
-    var sc = Scope(types: initTable[string, EtchType]())
+    var sc = Scope(types: initTable[string, EtchType](), flags: initTable[string, VarFlag](), userTypes: prog.types)
     for p in f.params: sc.types[p.name] = p.typ
     for v in prog.globals:
-      if v.kind == skVar: sc.types[v.vname] = v.vtype
+      if v.kind == skVar:
+        sc.types[v.vname] = v.vtype
+        sc.flags[v.vname] = v.vflag
 
     # If return type is not specified, infer it from return statements
     if f.ret == nil:

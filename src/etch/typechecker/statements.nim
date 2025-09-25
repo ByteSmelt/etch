@@ -13,13 +13,23 @@ proc inferMatchExpr*(prog: Program; fd: FunDecl; sc: Scope; e: Expr; subst: var 
 proc typecheckVar(prog: Program; fd: FunDecl; sc: Scope; s: Stmt; subst: var TySubst) =
   if s.vtype.kind == tkGeneric:
     raise newTypecheckError(s.pos, "generic variable type not allowed at runtime scope")
+
+  # Resolve user-defined types
+  var resolvedVtype = s.vtype
+  if s.vtype.kind == tkUserDefined:
+    let userType = resolveUserType(sc, s.vtype.name)
+    if userType == nil:
+      raise newTypecheckError(s.pos, &"unknown type '{s.vtype.name}'")
+    resolvedVtype = userType
+    # Update the statement's type to the resolved type for later use
+    s.vtype = resolvedVtype
   if s.vinit.isSome():
     # Two-phase approach: First check type compatibility assuming all variables exist,
     # then check for undeclared variables if type check passes
 
     # Phase 1: Create temporary scope with self-reference to check type compatibility
-    var tempScope = Scope(types: sc.types, flags: sc.flags)
-    tempScope.types[s.vname] = s.vtype  # Allow self-reference for type checking
+    var tempScope = Scope(types: sc.types, flags: sc.flags, userTypes: sc.userTypes)
+    tempScope.types[s.vname] = resolvedVtype  # Allow self-reference for type checking
 
     var tempSubst = subst
     let t0 = try:
@@ -28,7 +38,7 @@ proc typecheckVar(prog: Program; fd: FunDecl; sc: Scope; s: Stmt; subst: var TyS
         # TODO: Pass expected type to inferMatchExpr when it supports it
         inferMatchExpr(prog, fd, tempScope, s.vinit.get(), tempSubst)
       else:
-        inferExprTypes(prog, fd, tempScope, s.vinit.get(), tempSubst, s.vtype)
+        inferExprTypes(prog, fd, tempScope, s.vinit.get(), tempSubst, resolvedVtype)
     except EtchError as e:
       # If we get an error during type inference, check if it's specifically about
       # the variable being initialized (circular reference) vs other issues
@@ -39,13 +49,13 @@ proc typecheckVar(prog: Program; fd: FunDecl; sc: Scope; s: Stmt; subst: var TyS
         raise
 
     # Phase 2: Check type compatibility
-    if not typeEq(t0, s.vtype):
+    if not canAssignDistinct(resolvedVtype, t0):
       if t0.kind == tkVoid:
-        raise newTypecheckError(s.pos, &"cannot assign void function result to variable '{s.vname}' of type {s.vtype}")
+        raise newTypecheckError(s.pos, &"cannot assign void function result to variable '{s.vname}' of type {resolvedVtype}")
       else:
-        raise newTypecheckError(s.pos, &"initialization type mismatch: {t0} vs {s.vtype}")
+        raise newTypecheckError(s.pos, &"initialization type mismatch: {t0} vs {resolvedVtype}")
 
-  sc.types[s.vname] = s.vtype
+  sc.types[s.vname] = resolvedVtype
   sc.flags[s.vname] = s.vflag
 
 
@@ -64,24 +74,24 @@ proc typecheckAssign(prog: Program; fd: FunDecl; sc: Scope; s: Stmt; subst: var 
 proc typecheckIf(prog: Program; fd: FunDecl; sc: Scope; s: Stmt; subst: var TySubst) =
   let ct = inferExprTypes(prog, fd, sc, s.cond, subst)
   if ct.kind != tkBool: raise newTypecheckError(s.pos, "if condition must be bool")
-  var sThen = Scope(types: sc.types, flags: sc.flags) # shallow copy ok
+  var sThen = Scope(types: sc.types, flags: sc.flags, userTypes: sc.userTypes) # shallow copy ok
   for st in s.thenBody: typecheckStmt(prog, fd, sThen, st, subst)
 
   # Typecheck elif chain
   for elifBranch in s.elifChain:
     let elifCondType = inferExprTypes(prog, fd, sc, elifBranch.cond, subst)
     if elifCondType.kind != tkBool: raise newTypecheckError(s.pos, "elif condition must be bool")
-    var sElif = Scope(types: sc.types, flags: sc.flags)
+    var sElif = Scope(types: sc.types, flags: sc.flags, userTypes: sc.userTypes)
     for st in elifBranch.body: typecheckStmt(prog, fd, sElif, st, subst)
 
-  var sElse = Scope(types: sc.types, flags: sc.flags)
+  var sElse = Scope(types: sc.types, flags: sc.flags, userTypes: sc.userTypes)
   for st in s.elseBody: typecheckStmt(prog, fd, sElse, st, subst)
 
 
 proc typecheckWhile(prog: Program; fd: FunDecl; sc: Scope; s: Stmt; subst: var TySubst) =
   let ct = inferExprTypes(prog, fd, sc, s.wcond, subst)
   if ct.kind != tkBool: raise newTypecheckError(s.pos, "while condition must be bool")
-  var sBody = Scope(types: sc.types, flags: sc.flags)
+  var sBody = Scope(types: sc.types, flags: sc.flags, userTypes: sc.userTypes)
   for st in s.wbody: typecheckStmt(prog, fd, sBody, st, subst)
 
 
@@ -97,7 +107,7 @@ proc typecheckReturn(prog: Program; fd: FunDecl; sc: Scope; s: Stmt; subst: var 
 
 proc typecheckComptime(prog: Program; fd: FunDecl; sc: Scope; s: Stmt; subst: var TySubst) =
   # Typecheck comptime block statements and add injected variables to main scope
-  var ctScope = Scope(types: sc.types, flags: sc.flags)
+  var ctScope = Scope(types: sc.types, flags: sc.flags, userTypes: sc.userTypes)
   for stmt in s.cbody:
     typecheckStmt(prog, fd, ctScope, stmt, subst)
     # If this is a variable declaration, add it to the main scope (injected variables)
@@ -107,7 +117,7 @@ proc typecheckComptime(prog: Program; fd: FunDecl; sc: Scope; s: Stmt; subst: va
 
 proc typecheckFor(prog: Program; fd: FunDecl; sc: Scope; s: Stmt; subst: var TySubst) =
   # Create new scope for loop body with loop variable
-  var loopScope = Scope(types: sc.types, flags: sc.flags)
+  var loopScope = Scope(types: sc.types, flags: sc.flags, userTypes: sc.userTypes)
 
   if s.farray.isSome():
     # Array iteration: for x in array
@@ -189,7 +199,7 @@ proc inferMatchExpr*(prog: Program; fd: FunDecl; sc: Scope; e: Expr; subst: var 
       discard
 
     # Create scope for pattern bindings
-    var caseScope = Scope(types: initTable[string, EtchType](), flags: initTable[string, VarFlag]())
+    var caseScope = Scope(types: initTable[string, EtchType](), flags: initTable[string, VarFlag](), userTypes: sc.userTypes)
     # Copy parent scope
     for k, v in sc.types: caseScope.types[k] = v
     for k, v in sc.flags: caseScope.flags[k] = v
@@ -239,3 +249,7 @@ proc typecheckStmt*(prog: Program; fd: FunDecl; sc: Scope; s: Stmt; subst: var T
       discard inferExprTypes(prog, fd, sc, s.sexpr, subst)
   of skReturn: typecheckReturn(prog, fd, sc, s, subst)
   of skComptime: typecheckComptime(prog, fd, sc, s, subst)
+  of skTypeDecl:
+    # Type declarations are processed during program initialization
+    # No runtime type checking needed here
+    discard

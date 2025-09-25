@@ -13,4 +13,6 @@ fn doNothing() {
 fn main() -> void {
     let sum: int = add(3, 4);
     let msg: string = greet();
+    print(sum);
+    print(msg);
 }

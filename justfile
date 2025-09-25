@@ -22,6 +22,10 @@ clean:
     find . -name "*.exe" -delete
     find . -name "nimcache" -type d -exec rm -rf {} + 2>/dev/null || true
 
+# Handle performance
+perf:
+    hyperfine --warmup 3 './etch --run --release performance/for_loop_print.etch' 'python3 performance/for_loop_print.py'
+
 # Deal with VSCode extension packaging and installation
 [working-directory: 'vscode']
 syntax:

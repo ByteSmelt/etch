@@ -9,6 +9,7 @@ type
     toks*: seq[Token]
     i*: int
     filename*: string
+    genericParams*: seq[string]  # Track generic type parameters in current scope
 
 proc posOf(p: Parser, t: Token): Pos = Pos(line: t.line, col: t.col, filename: p.filename)
 
@@ -77,9 +78,13 @@ proc parseType(p: Parser): EtchType =
       let inner = p.parseType()
       discard p.expect(tkSymbol, "]")
       return tResult(inner)
-    # generic type name
+    # Check if it's a generic type parameter
+    if t.lex in p.genericParams:
+      discard p.eat
+      return tGeneric(t.lex)
+    # user-defined type name (could be alias, distinct, or object)
     discard p.eat
-    return tGeneric(t.lex)
+    return tUserDefined(t.lex)
   let actualName = friendlyTokenName(t.kind, t.lex)
   raise newParseError(p.posOf(t), &"expected type, got {actualName}")
 
@@ -138,10 +143,28 @@ proc parseBuiltinKeywordExpr(p: Parser; t: Token): Expr =
   of "false": return Expr(kind: ekBool, bval: false, pos: p.posOf(t))
   of "nil": return Expr(kind: ekNil, pos: p.posOf(t))
   of "new":
-    discard p.expect(tkSymbol, "(")
-    let e = p.parseExpr()
-    discard p.expect(tkSymbol, ")")
-    return Expr(kind: ekNewRef, init: e, pos: p.posOf(t))
+    # Check for new[Type] or new[Type]{value} syntax
+    if p.cur.kind == tkSymbol and p.cur.lex == "[":
+      discard p.eat()  # consume "["
+      let typeExpr = p.parseType()  # Parse the type
+      discard p.expect(tkSymbol, "]")
+
+      var initExpr = none(Expr)
+      # Check for optional {value} initialization
+      if p.cur.kind == tkSymbol and p.cur.lex == "{":
+        discard p.eat()  # consume "{"
+        initExpr = some(p.parseExpr())
+        discard p.expect(tkSymbol, "}")
+
+      return Expr(kind: ekNew, newType: typeExpr, initExpr: initExpr, pos: p.posOf(t))
+    else:
+      # Old syntax: new(value) - infer type from value
+      discard p.expect(tkSymbol, "(")
+      let valueExpr = p.parseExpr()
+      discard p.expect(tkSymbol, ")")
+
+      # Create new expression with type inference marker
+      return Expr(kind: ekNew, newType: nil, initExpr: some(valueExpr), pos: p.posOf(t))
   of "some":
     discard p.expect(tkSymbol, "(")
     let e = p.parseExpr()
@@ -290,6 +313,27 @@ proc parseSymbolExpr(p: Parser; t: Token): Expr =
   of "#":
     let e = p.parseExpr(6)
     return Expr(kind: ekArrayLen, lenExpr: e, pos: p.posOf(t))
+  of "{":
+    # Object literal: { field1: expr1, field2: expr2 }
+    var fieldInits: seq[tuple[name: string, value: Expr]] = @[]
+    if not (p.cur.kind == tkSymbol and p.cur.lex == "}"):
+      while true:
+        let fieldName = p.expect(tkIdent).lex
+        discard p.expect(tkSymbol, ":")
+        let fieldValue = p.parseExpr()
+        fieldInits.add((name: fieldName, value: fieldValue))
+
+        if p.cur.kind == tkSymbol and p.cur.lex == ",":
+          discard p.eat()
+        elif p.cur.kind == tkSymbol and p.cur.lex == "}":
+          break
+        else:
+          let current = p.cur
+          let actualName = friendlyTokenName(current.kind, current.lex)
+          raise newParseError(p.posOf(current), &"expected ',' or '}}', got {actualName}")
+    discard p.expect(tkSymbol, "}")
+    # Object type will be inferred during type checking
+    return Expr(kind: ekObjectLiteral, objectType: nil, fieldInits: fieldInits, pos: p.posOf(t))
   else:
     let actualName = friendlyTokenName(t.kind, t.lex)
     raise newEtchError(&"unexpected {actualName}")
@@ -340,14 +384,14 @@ proc parseArrayAccessOrSlice(p: Parser; left: Expr; t: Token): Expr =
       return Expr(kind: ekIndex, arrayExpr: left, indexExpr: firstExpr, pos: p.posOf(t))
 
 proc parseUFCSCall(p: Parser; obj: Expr; t: Token): Expr =
-  ## Parses UFCS method calls: obj.method() or obj.method
-  ## Transforms into method(obj, args...)
-  let methodName = p.expect(tkIdent).lex
+  ## Parses UFCS method calls: obj.method() or field access: obj.field
+  let fieldOrMethodName = p.expect(tkIdent).lex
 
-  var args: seq[Expr] = @[obj]  # object becomes first argument
-
-  # Check if followed by parentheses for arguments
+  # Check if followed by parentheses (method call) or not (field access)
   if p.cur.kind == tkSymbol and p.cur.lex == "(":
+    # Method call: obj.method(args...)
+    # Transform into method(obj, args...)
+    var args: seq[Expr] = @[obj]  # object becomes first argument
     discard p.eat()  # consume "("
     if not (p.cur.kind == tkSymbol and p.cur.lex == ")"):
       args.add p.parseExpr()
@@ -355,8 +399,10 @@ proc parseUFCSCall(p: Parser; obj: Expr; t: Token): Expr =
         discard p.eat()
         args.add p.parseExpr()
     discard p.expect(tkSymbol, ")")
-
-  return Expr(kind: ekCall, fname: methodName, args: args, pos: p.posOf(t))
+    return Expr(kind: ekCall, fname: fieldOrMethodName, args: args, pos: p.posOf(t))
+  else:
+    # Field access: obj.field
+    return Expr(kind: ekFieldAccess, objectExpr: obj, fieldName: fieldOrMethodName, pos: p.posOf(t))
 
 proc parseInfixExpr(p: Parser; left: Expr; t: Token): Expr =
   ## Parses infix expressions (left denotation - expressions that need a left operand)
@@ -516,6 +562,70 @@ proc parseTyParams(p: Parser): seq[TyParam] =
       discard p.expect(tkSymbol, "]")
       break
 
+proc parseTypeDecl(p: Parser): Stmt =
+  let start = p.expect(tkKeyword, "type")
+  let typeName = p.expect(tkIdent).lex
+  discard p.expect(tkSymbol, "=")
+
+  # Check if it's a distinct type
+  var typeKind = "alias"
+  var aliasTarget: EtchType = nil
+  var objectFields: seq[ObjectField] = @[]
+
+  if p.cur.kind == tkKeyword and p.cur.lex == "distinct":
+    discard p.eat()  # consume "distinct"
+    typeKind = "distinct"
+    aliasTarget = p.parseType()
+  elif p.cur.kind == tkKeyword and p.cur.lex == "object":
+    discard p.eat()  # consume "object"
+    typeKind = "object"
+
+    # Parse object body
+    discard p.expect(tkSymbol, "{")
+    while p.cur.kind != tkSymbol or p.cur.lex != "}":
+      let fieldName = p.expect(tkIdent).lex
+      discard p.expect(tkSymbol, ":")
+      let fieldType = p.parseType()
+
+      # Check for default value
+      var defaultValue = none(Expr)
+      if p.cur.kind == tkSymbol and p.cur.lex == "=":
+        discard p.eat()  # consume "="
+        defaultValue = some(p.parseExpr())
+
+      objectFields.add(ObjectField(
+        name: fieldName,
+        fieldType: fieldType,
+        defaultValue: defaultValue,
+        generationalRef: fieldType.kind == tkRef  # Enable generational refs for ref types
+      ))
+
+      # Handle field separator
+      if p.cur.kind == tkSymbol and p.cur.lex == ";":
+        discard p.eat()
+      elif p.cur.kind == tkSymbol and p.cur.lex == "}":
+        break
+      else:
+        let t = p.cur
+        let actualName = friendlyTokenName(t.kind, t.lex)
+        raise newParseError(p.posOf(t), &"expected ';' or '}}', got {actualName}")
+
+    discard p.expect(tkSymbol, "}")
+  else:
+    # Type alias
+    aliasTarget = p.parseType()
+
+  discard p.expect(tkSymbol, ";")
+
+  return Stmt(
+    kind: skTypeDecl,
+    typeName: typeName,
+    typeKind: typeKind,
+    aliasTarget: aliasTarget,
+    objectFields: objectFields,
+    pos: p.posOf(start)
+  )
+
 proc parseFn(p: Parser; prog: Program) =
   discard p.expect(tkKeyword, "fn")
   # Allow operator symbols as function names for operator overloading
@@ -529,6 +639,9 @@ proc parseFn(p: Parser; prog: Program) =
     let actualName = friendlyTokenName(nameToken.kind, nameToken.lex)
     raise newParseError(p.posOf(nameToken), &"expected function name or operator symbol, got {actualName}")
   let tps = p.parseTyParams()
+  # Track generic parameters for type parsing
+  for tp in tps:
+    p.genericParams.add(tp.name)
   discard p.expect(tkSymbol, "(")
   var ps: seq[Param] = @[]
   if not (p.cur.kind == tkSymbol and p.cur.lex == ")"):
@@ -558,6 +671,8 @@ proc parseFn(p: Parser; prog: Program) =
   let body = p.parseBlock()
   let fd = FunDecl(name: name, typarams: tps, params: ps, ret: rt, body: body)
   prog.addFunction(fd)
+  # Clear generic parameters after parsing the function
+  p.genericParams.setLen(0)
 
 proc parseStmt*(p: Parser): Stmt =
   if p.cur.kind == tkKeyword:
@@ -574,15 +689,17 @@ proc parseStmt*(p: Parser): Stmt =
     of "break": return p.parseBreak()
     of "return": return p.parseReturn()
     of "comptime": return p.parseComptime()
+    of "type": return p.parseTypeDecl()
     else: discard # fallthrough to simple
   return p.parseSimpleStmt()
 
 proc parseProgram*(toks: seq[Token], filename: string = "<unknown>"): Program =
-  var p = Parser(toks: toks, i: 0, filename: filename)
+  var p = Parser(toks: toks, i: 0, filename: filename, genericParams: @[])
   result = Program(
     funs: initTable[string, seq[FunDecl]](),
     funInstances: initTable[string, FunDecl](),
-    globals: @[]
+    globals: @[],
+    types: initTable[string, EtchType]()
   )
 
   while p.cur.kind != tkEof:
@@ -591,6 +708,19 @@ proc parseProgram*(toks: seq[Token], filename: string = "<unknown>"): Program =
     elif p.cur.kind == tkKeyword and (p.cur.lex == "let" or p.cur.lex == "var"):
       let st = p.parseStmt()
       result.globals.add st
+    elif p.cur.kind == tkKeyword and p.cur.lex == "type":
+      let typeDecl = p.parseTypeDecl()
+      # Process the type declaration and add to types table
+      case typeDecl.typeKind
+      of "alias":
+        result.types[typeDecl.typeName] = typeDecl.aliasTarget
+      of "distinct":
+        result.types[typeDecl.typeName] = tDistinct(typeDecl.typeName, typeDecl.aliasTarget)
+      of "object":
+        result.types[typeDecl.typeName] = tObject(typeDecl.typeName, typeDecl.objectFields)
+      else:
+        let pos = typeDecl.pos
+        raise newParseError(pos, &"unknown type kind: {typeDecl.typeKind}")
     else:
       # top-level expr stmt not allowed, give error
       let t = p.cur

@@ -21,6 +21,8 @@ type
     # Option/Result represented as wrapped value with presence flag
     hasValue*: bool        # true for Some/Ok, false for None/Err
     wrappedVal*: ref V     # the actual value for Some/Ok, or error msg for Err
+    # Object represented as field name -> value mapping
+    oval*: Table[string, V]
 
   HeapCell = ref object
     alive: bool
@@ -53,6 +55,7 @@ proc vChar(x: char): V = V(kind: tkChar, cval: x)
 proc vBool(x: bool): V = V(kind: tkBool, bval: x)
 proc vRef(id: int): V = V(kind: tkRef, refId: id)
 proc vArray(elements: seq[V]): V = V(kind: tkArray, aval: elements)
+proc vObject(fields: Table[string, V]): V = V(kind: tkObject, oval: fields)
 
 proc vOptionSome(val: V): V =
   var refVal = new(V)
@@ -508,6 +511,32 @@ proc opExtractErrImpl(vm: VM, instr: Instruction) =
     vm.push(result.wrappedVal[])
   else:
     vm.raiseRuntimeError("extractErr: not an Err value")
+
+proc opMakeObjectImpl(vm: VM, instr: Instruction) =
+  # arg contains number of field pairs on stack
+  # Stack format: value1, "field1", value2, "field2", ... (top of stack has last pair)
+  let numFields = int(instr.arg)
+  var fields = initTable[string, V]()
+
+  # Pop field-value pairs from stack (in reverse order)
+  for i in 0..<numFields:
+    let fieldName = vm.pop().sval  # Field name
+    let fieldValue = vm.pop()      # Field value
+    fields[fieldName] = fieldValue
+
+  vm.push(vObject(fields))
+
+proc opObjectGetImpl(vm: VM, instr: Instruction) =
+  let fieldName = instr.sarg  # Field name is stored in instruction
+  let obj = vm.pop()          # Object to access
+
+  if obj.kind != tkObject:
+    vm.raiseRuntimeError(&"field access requires object type, got '{obj.kind}'")
+
+  if not obj.oval.hasKey(fieldName):
+    vm.raiseRuntimeError(&"object has no field '{fieldName}'")
+
+  vm.push(obj.oval[fieldName])
 
 proc opJumpImpl(vm: VM, instr: Instruction) =
   vm.pc = int(instr.arg)
@@ -1036,6 +1065,8 @@ proc executeInstruction*(vm: VM): bool =
   of opExtractSome: vm.opExtractSomeImpl(instr)
   of opExtractOk: vm.opExtractOkImpl(instr)
   of opExtractErr: vm.opExtractErrImpl(instr)
+  of opMakeObject: vm.opMakeObjectImpl(instr)
+  of opObjectGet: vm.opObjectGetImpl(instr)
   of opJump: vm.opJumpImpl(instr)
   of opJumpIfFalse: vm.opJumpIfFalseImpl(instr)
   of opCall:

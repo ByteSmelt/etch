@@ -141,6 +141,13 @@ proc inferCall(prog: Program; sc: Scope; e: Expr; subst: var TySubst): EtchType 
       of tkRef:
         if got.kind != tkRef: raise newTypecheckError(e.pos, "expected Ref[...]")
         unify(pat.inner, got.inner)
+      of tkUserDefined:
+        # Resolve user-defined type before comparison
+        let resolvedPat = resolveUserType(sc, pat.name)
+        if resolvedPat == nil:
+          raise newTypecheckError(e.pos, &"unknown type '{pat.name}'")
+        if not typeEq(resolvedPat, got):
+          raise newTypecheckError(e.pos, &"type mismatch: expected {resolvedPat}, got {got}")
       else:
         if not typeEq(pat, got): raise newTypecheckError(e.pos, &"type mismatch: expected {pat}, got {got}")
     unify(pt, ta)
@@ -376,6 +383,12 @@ proc inferExprTypes*(prog: Program; fd: FunDecl; sc: Scope; e: Expr; subst: var 
        (fromType.kind == tkInt and toType.kind == tkString) or
        (fromType.kind == tkFloat and toType.kind == tkString):
       castAllowed = true
+    # Allow casting from distinct types to their base type
+    elif fromType.kind == tkDistinct and typeEq(fromType.inner, toType):
+      castAllowed = true
+    # Allow casting from base type to distinct type
+    elif toType.kind == tkDistinct and typeEq(fromType, toType.inner):
+      castAllowed = true
 
     if not castAllowed:
       raise newTypecheckError(e.pos, &"invalid cast from {fromType} to {toType}")
@@ -414,3 +427,85 @@ proc inferExprTypes*(prog: Program; fd: FunDecl; sc: Scope; e: Expr; subst: var 
       return tVoid()  # Placeholder
     else:
       return e.typ
+  of ekObjectLiteral:
+    # Object literal: try to infer type from expected type or error
+    if expectedTy != nil and expectedTy.kind == tkObject:
+      # Verify all required fields are provided and types match
+      let objType = expectedTy
+      var providedFields: seq[string] = @[]
+      for fieldInit in e.fieldInits:
+        providedFields.add(fieldInit.name)
+
+        # Find field in object type
+        var fieldType: EtchType = nil
+        for objField in objType.fields:
+          if objField.name == fieldInit.name:
+            fieldType = objField.fieldType
+            break
+
+        if fieldType == nil:
+          raise newTypecheckError(e.pos, &"object type '{objType.name}' has no field '{fieldInit.name}'")
+
+        # Type check the field value
+        let valueType = inferExprTypes(prog, fd, sc, fieldInit.value, subst, fieldType)
+        if not canAssignDistinct(fieldType, valueType):
+          raise newTypecheckError(e.pos, &"field '{fieldInit.name}' expects type '{fieldType}', got '{valueType}'")
+
+      # Check that all required fields are provided (those without defaults)
+      for objField in objType.fields:
+        if objField.defaultValue.isNone and objField.name notin providedFields:
+          raise newTypecheckError(e.pos, &"missing required field '{objField.name}' in object literal")
+
+      e.typ = objType
+      e.objectType = objType
+      return objType
+    else:
+      raise newTypecheckError(e.pos, "object literal requires explicit type annotation")
+  of ekFieldAccess:
+    # obj.field - get type of object and look up field type
+    let objType = inferExprTypes(prog, fd, sc, e.objectExpr, subst)
+
+    # Handle reference types - dereference automatically
+    var actualObjType = objType
+    if objType.kind == tkRef:
+      actualObjType = objType.inner
+
+    if actualObjType.kind == tkObject:
+      # Look up field in object type
+      for field in actualObjType.fields:
+        if field.name == e.fieldName:
+          e.typ = field.fieldType
+          return field.fieldType
+      raise newTypecheckError(e.pos, &"object type '{actualObjType.name}' has no field '{e.fieldName}'")
+    else:
+      raise newTypecheckError(e.pos, &"field access requires object type, got '{objType}'")
+  of ekNew:
+    # new(Type) or new(Type, initExpr) or new(value) with type inference - returns ref[Type]
+    let targetType = e.newType
+    var resolvedType: EtchType
+
+    if targetType == nil:
+      # Type inference from initialization expression: new(42) -> ref[int]
+      if e.initExpr.isNone:
+        raise newTypecheckError(e.pos, "new() requires either a type or initialization value for type inference")
+      let initType = inferExprTypes(prog, fd, sc, e.initExpr.get, subst)
+      resolvedType = initType
+    else:
+      # Explicit type provided: new[int] or new[int]{42}
+      resolvedType = targetType
+    # Resolve user-defined types
+    if resolvedType.kind == tkUserDefined:
+      let userType = resolveUserType(sc, resolvedType.name)
+      if userType == nil:
+        raise newTypecheckError(e.pos, &"unknown type '{resolvedType.name}'")
+      resolvedType = userType
+
+    # If there's an initialization expression, type check it
+    if e.initExpr.isSome:
+      let initType = inferExprTypes(prog, fd, sc, e.initExpr.get, subst, resolvedType)
+      if not canAssignDistinct(resolvedType, initType):
+        raise newTypecheckError(e.pos, &"cannot initialize '{resolvedType}' with '{initType}'")
+
+    let refType = tRef(resolvedType)
+    e.typ = refType
+    return refType

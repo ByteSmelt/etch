@@ -2,5 +2,5 @@ fn main() -> void {
     comptime {
         inject("test_var", "string", "hello world");
     }
-    print(123);
+    print(test_var);
 }

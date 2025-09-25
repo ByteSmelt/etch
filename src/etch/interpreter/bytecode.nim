@@ -241,6 +241,23 @@ proc compileResultErrExpr(prog: var BytecodeProgram, e: Expr, ctx: var Compilati
   prog.compileExpr(e.errExpr, ctx)
   prog.emit(opMakeResultErr, pos = e.pos, ctx = ctx)
 
+proc compileObjectLiteralExpr(prog: var BytecodeProgram, e: Expr, ctx: var CompilationContext) =
+  # Compile object literal: { field1: value1, field2: value2, ... }
+  # Stack layout: value1, "field1", value2, "field2", ...
+  for field in e.fieldInits:
+    # Push field value first, then field name (reverse order for stack)
+    prog.compileExpr(field.value, ctx)
+    let fieldNameIndex = prog.addConstant(field.name)
+    prog.emit(opLoadString, fieldNameIndex, pos = e.pos, ctx = ctx)
+
+  # Create object with specified number of fields
+  prog.emit(opMakeObject, e.fieldInits.len, pos = e.pos, ctx = ctx)
+
+proc compileFieldAccessExpr(prog: var BytecodeProgram, e: Expr, ctx: var CompilationContext) =
+  # Compile field access: obj.field
+  prog.compileExpr(e.objectExpr, ctx)  # Compile the object expression
+  prog.emit(opObjectGet, 0, e.fieldName, e.pos, ctx)  # Field name as string argument
+
 
 proc compileExpr*(prog: var BytecodeProgram, e: Expr, ctx: var CompilationContext) =
   case e.kind
@@ -266,6 +283,32 @@ proc compileExpr*(prog: var BytecodeProgram, e: Expr, ctx: var CompilationContex
   of ekResultOk: prog.compileResultOkExpr(e, ctx)
   of ekResultErr: prog.compileResultErrExpr(e, ctx)
   of ekMatch: prog.compileMatchExpr(e, ctx)
+  of ekObjectLiteral:
+    prog.compileObjectLiteralExpr(e, ctx)
+  of ekFieldAccess:
+    prog.compileFieldAccessExpr(e, ctx)
+  of ekNew:
+    # Compile new expression: new(value) or new[Type]{value}
+    if e.initExpr.isSome:
+      # Initialize with provided value
+      prog.compileExpr(e.initExpr.get, ctx)
+    else:
+      # Initialize with default value based on type
+      if e.newType.kind == tkInt:
+        prog.emit(opLoadInt, 0, pos = e.pos, ctx = ctx)
+      elif e.newType.kind == tkFloat:
+        prog.emit(opLoadFloat, 0, pos = e.pos, ctx = ctx)
+      elif e.newType.kind == tkBool:
+        prog.emit(opLoadBool, 0, pos = e.pos, ctx = ctx)
+      elif e.newType.kind == tkString:
+        let emptyStrIndex = prog.addConstant("")
+        prog.emit(opLoadString, emptyStrIndex, pos = e.pos, ctx = ctx)
+      else:
+        # Default to zero for unknown types
+        prog.emit(opLoadInt, 0, pos = e.pos, ctx = ctx)
+
+    # Create reference (allocate on heap)
+    prog.emit(opNewRef, pos = e.pos, ctx = ctx)
 
 proc compileStmt*(prog: var BytecodeProgram, s: Stmt, ctx: var CompilationContext)
 
@@ -499,6 +542,9 @@ proc compileStmt*(prog: var BytecodeProgram, s: Stmt, ctx: var CompilationContex
   of skExpr: prog.compileExprStmt(s, ctx)
   of skReturn: prog.compileReturnStmt(s, ctx)
   of skComptime: prog.compileComptimeStmt(s, ctx)
+  of skTypeDecl:
+    # Type declarations don't generate runtime code
+    discard
 
 proc compileMatchExpr(prog: var BytecodeProgram, e: Expr, ctx: var CompilationContext) =
   # Compile the expression to be matched

@@ -40,6 +40,7 @@ type
     opCast
     opMakeOptionSome, opMakeOptionNone, opMakeResultOk, opMakeResultErr
     opMatchValue, opExtractSome, opExtractOk, opExtractErr
+    opMakeObject, opObjectGet
 
   Instruction* = object
     op*: OpCode
@@ -384,3 +385,5 @@ proc `$`*(op: OpCode): string =
   of opExtractSome: "EXTRACT_SOME"
   of opExtractOk: "EXTRACT_OK"
   of opExtractErr: "EXTRACT_ERR"
+  of opMakeObject: "MAKE_OBJECT"
+  of opObjectGet: "OBJECT_GET"

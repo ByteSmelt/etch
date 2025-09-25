@@ -1,7 +1,7 @@
 # core.nim
 # Main type checker core functions and unified type inference
 
-import std/[tables]
+import std/[tables, options]
 import ../frontend/ast
 import types, statements
 
@@ -9,15 +9,23 @@ import types, statements
 proc typecheck*(prog: Program) =
   var subst: TySubst
   # globals - first pass: collect all variable declarations for forward references
-  var gscope = Scope(types: initTable[string, EtchType](), flags: initTable[string, VarFlag]())
+  var gscope = Scope(
+    types: initTable[string, EtchType](),
+    flags: initTable[string, VarFlag](),
+    userTypes: initTable[string, EtchType]()
+  )
 
-  # First pass: add all global variable types to scope (without checking initializers)
+  # First pass: add all user-defined types to scope
+  for typeName, typeDecl in prog.types:
+    gscope.userTypes[typeName] = typeDecl
+
+  # Second pass: add all global variable types to scope (without checking initializers)
   for g in prog.globals:
     if g.kind == skVar:
       gscope.types[g.vname] = g.vtype
       gscope.flags[g.vname] = g.vflag
 
-  # Second pass: typecheck all global statements with complete scope
+  # Third pass: typecheck all global statements with complete scope
   for g in prog.globals:
     typecheckStmt(prog, nil, gscope, g, subst)
 
@@ -121,6 +129,25 @@ proc inferTypeFromExpr*(expr: Expr): EtchType =
   of ekResultErr:
     # error(msg) cannot be type-inferred without context - requires type annotation
     return nil
+  of ekObjectLiteral:
+    # Object literals need type checking context to resolve their type
+    return nil
+  of ekFieldAccess:
+    # Field access needs context to determine object type
+    return nil
+  of ekNew:
+    # new[Type] or new(value) returns ref[Type]
+    if expr.newType != nil:
+      return tRef(expr.newType)
+    elif expr.initExpr.isSome:
+      # Type inference from initialization: new(42) -> ref[int]
+      let innerType = inferTypeFromExpr(expr.initExpr.get)
+      if innerType != nil:
+        return tRef(innerType)
+      else:
+        return nil
+    else:
+      return nil
   else:
     # For other expressions (variables, etc.), we cannot infer the type
     # without a type checker - return nil to indicate type annotation is required
