@@ -16,7 +16,7 @@ def array_sum(arr):
 
 def main():
     random.seed(42)
-    result = 0
+    res = 0
 
     # Function call overhead benchmark
     for i in range(10000):
@@ -24,16 +24,16 @@ def main():
         b = random.randint(1, 100)
 
         # Test simple function calls
-        result = result + simple_math(a, b)
+        res = res + simple_math(a, b)
 
         # Test array function calls
         arr = [a, b, a + b, a - b, a * 2]
-        result = result + array_sum(arr)
+        res = res + array_sum(arr)
 
         # Test recursive calls (small numbers to avoid stack overflow)
         if i % 1000 == 0:
-            result = result + fibonacci(a % 10)
+            res = res + fibonacci(a % 10)
 
-    print(result)
+    print(res)
 
 main()

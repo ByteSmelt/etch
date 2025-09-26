@@ -4,9 +4,8 @@
 
 import std/[strformat, options, tables, strutils]
 import ../frontend/ast, ../common/errors, ../common/types
-import ../common/logging
+import ../common/[constants, logging]
 import types, binary_operations, function_evaluation, symbolic_execution
-
 
 proc proveStmt*(s: Stmt; env: Env, ctx: ProverContext)
 proc analyzeExpr*(e: Expr; env: Env, ctx: ProverContext): Info
@@ -222,6 +221,21 @@ proc analyzeUserDefinedCall*(e: Expr, env: Env, ctx: ProverContext): Info =
 
   logProver(ctx.flags, &"Analyzing user-defined function call: {e.fname}")
 
+  # Check for recursion to prevent infinite analysis loops
+  if e.fname in ctx.callStack:
+    logProver(ctx.flags, &"Recursive call detected for {e.fname}, using conservative analysis")
+    # Still analyze arguments to mark variables as used
+    for arg in e.args:
+      discard analyzeExpr(arg, env, ctx)
+    return Info(known: false, minv: IMin, maxv: IMax, nonZero: false, initialized: true)
+
+  if ctx.callStack.len >= MAX_RECURSION_DEPTH:
+    logProver(ctx.flags, &"Maximum recursion depth reached, using conservative analysis for {e.fname}")
+    # Still analyze arguments to mark variables as used
+    for arg in e.args:
+      discard analyzeExpr(arg, env, ctx)
+    return Info(known: false, minv: IMin, maxv: IMax, nonZero: false, initialized: true)
+
   # Analyze arguments to get their safety information
   var argInfos: seq[Info] = @[]
   for i, arg in e.args:
@@ -253,6 +267,10 @@ proc analyzeUserDefinedCall*(e: Expr, env: Env, ctx: ProverContext): Info =
     if evalResult.isSome:
       logProver(ctx.flags, &"Function evaluated at compile-time to: {evalResult.get}")
       return infoConst(evalResult.get)
+
+  # Add function to call stack before comprehensive analysis
+  var newCtx = ctx
+  newCtx.callStack = ctx.callStack & @[e.fname]
 
   # Create function call environment with parameter mappings
   # Start with global environment but override with parameter mappings
@@ -439,11 +457,29 @@ proc analyzeCastExpr*(e: Expr, env: Env, ctx: ProverContext): Info =
 
 
 proc analyzeArrayExpr*(e: Expr, env: Env, ctx: ProverContext): Info =
-  # Array literal - analyze all elements for safety and track size
+  # Array literal - analyze all elements for safety and track size and element ranges
+  var minElementValue = int64.high
+  var maxElementValue = int64.low
+  var allKnown = true
+
   for elem in e.elements:
-    discard analyzeExpr(elem, env, ctx)
-  # Return info with known array size
-  infoArray(e.elements.len.int64, sizeKnown = true)
+    let elemInfo = analyzeExpr(elem, env, ctx)
+    if elemInfo.initialized:
+      minElementValue = min(minElementValue, elemInfo.minv)
+      maxElementValue = max(maxElementValue, elemInfo.maxv)
+    else:
+      allKnown = false
+
+  # Return info with known array size and element range information
+  var result = infoArray(e.elements.len.int64, sizeKnown = true)
+
+  # If all elements have valid ranges, store the overall element range
+  if e.elements.len > 0 and minElementValue != int64.high:
+    result.minv = minElementValue
+    result.maxv = maxElementValue
+    result.initialized = true
+
+  return result
 
 
 proc analyzeIndexExpr*(e: Expr, env: Env, ctx: ProverContext): Info =

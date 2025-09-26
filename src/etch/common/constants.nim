@@ -34,6 +34,7 @@ const
 # Runtime constants
 const
   MAX_LOOP_ITERATIONS* = 1_000_000
+  MAX_RECURSION_DEPTH* = 1000
 
 # VM Optimization constants
 const

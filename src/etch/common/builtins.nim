@@ -28,12 +28,48 @@ let builtinFunctions: BuiltinRegistry = {
 ]#
 
 
+# Builtin function indices for ultra-fast VM dispatch
+type
+  BuiltinFuncId* = enum
+    bfPrint = 0, bfNew, bfDeref, bfRand, bfSeed, bfReadFile,
+    bfParseInt, bfParseFloat, bfParseBool, bfToString,
+    bfIsSome, bfIsNone, bfIsOk, bfIsErr
+    # Note: inject is excluded as it's a compiler directive, not a runtime function
+
+# Builtin function name to ID mapping for fast lookup
+const BUILTIN_NAMES*: array[BuiltinFuncId, string] = [
+  bfPrint: "print",
+  bfNew: "new",
+  bfDeref: "deref",
+  bfRand: "rand",
+  bfSeed: "seed",
+  bfReadFile: "readFile",
+  bfParseInt: "parseInt",
+  bfParseFloat: "parseFloat",
+  bfParseBool: "parseBool",
+  bfToString: "toString",
+  bfIsSome: "isSome",
+  bfIsNone: "isNone",
+  bfIsOk: "isOk",
+  bfIsErr: "isErr"
+]
+
+# Get builtin ID from function name (for bytecode generation)
+proc getBuiltinId*(funcName: string): BuiltinFuncId =
+  ## Get the builtin function ID for a function name, raises if not found
+  for id, name in BUILTIN_NAMES:
+    if name == funcName:
+      return id
+  raise newException(ValueError, "Unknown builtin function: " & funcName)
+
 # Simple function to check if a name is a builtin function
 proc isBuiltin*(name: string): bool =
   case name
-  of "print", "new", "deref", "rand", "readFile", "inject", "seed",
+  of "print", "new", "deref", "rand", "readFile", "seed",
      "parseInt", "parseFloat", "parseBool", "toString", "isSome", "isNone", "isOk", "isErr":
     return true
+  of "inject":
+    return false  # inject is a compiler directive, not a runtime function
   else:
     return false
 

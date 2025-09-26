@@ -9,9 +9,9 @@ fn simple_math(a: int, b: int) -> int {
     return a * b + a - b;
 }
 
-fn array_sum(arr: [int]) -> int {
+fn array_sum(arr: array[int]) -> int {
     var sum = 0;
-    for i in 0..<arr.len() {
+    for i in 0 ..< #arr {
         sum = sum + arr[i];
     }
     return sum;
@@ -19,25 +19,25 @@ fn array_sum(arr: [int]) -> int {
 
 fn main() {
     seed(42);
-    var result = 0;
+    var res = 0;
 
     // Function call overhead benchmark
-    for i in 0..<10000 {
+    for i in 0 ..< 10000 {
         var a = rand(100, 1);
         var b = rand(100, 1);
 
         // Test simple function calls
-        result = result + simple_math(a, b);
+        res = res + simple_math(a, b);
 
         // Test array function calls
         var arr = [a, b, a + b, a - b, a * 2];
-        result = result + array_sum(arr);
+        res = res + array_sum(arr);
 
         // Test recursive calls (small numbers to avoid stack overflow)
         if i % 1000 == 0 {
-            result = result + fibonacci(a % 10);
+            res = res + fibonacci(a % 10);
         }
     }
 
-    print(result);
+    print(res);
 }

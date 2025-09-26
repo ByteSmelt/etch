@@ -3,7 +3,7 @@
 
 import std/[tables, options, hashes, sequtils, strformat, strutils]
 import ../frontend/ast, serialize
-import ../common/[logging, types, constants]
+import ../common/[logging, types, constants, builtins]
 export serialize
 
 type
@@ -174,11 +174,33 @@ proc compileCallExpr(prog: var BytecodeProgram, e: Expr, ctx: var CompilationCon
     for i in countdown(e.args.high, 0):
       prog.compileExpr(e.args[i], ctx)
 
-  # Debug output for function resolution
+  # Check if this is a builtin function call for optimized dispatch
+  let isBuiltinFunc = isBuiltin(e.fname)
   if prog.compilerFlags.verbose:
-    echo &"[BYTECODE] Function call: {e.fname} -> {resolvedFunctionName} (args: {totalArgCount})"
+    echo &"[BYTECODE] Function {e.fname}: isBuiltin={isBuiltinFunc}"
 
-  prog.emit(opCall, totalArgCount, resolvedFunctionName, e.pos, ctx)
+  if isBuiltinFunc:
+    try:
+      let builtinId = getBuiltinId(e.fname)
+      # Pack builtin ID and arg count into single integer for ultra-fast dispatch
+      let packedArg = (int64(builtinId) shl 16) or int64(totalArgCount)
+
+      # Debug output for builtin optimization
+      if prog.compilerFlags.verbose:
+        echo &"[BYTECODE] Builtin call optimization: {e.fname} -> opCallBuiltin(id={int(builtinId)}, args={totalArgCount})"
+
+      prog.emit(opCallBuiltin, packedArg, pos = e.pos, ctx = ctx)
+    except ValueError as ex:
+      # Fallback to regular call if builtin ID lookup fails
+      if prog.compilerFlags.verbose:
+        echo &"[BYTECODE] Failed builtin optimization for {e.fname}: {ex.msg}, using opCall"
+      prog.emit(opCall, totalArgCount, resolvedFunctionName, e.pos, ctx)
+  else:
+    # Regular user-defined function call
+    if prog.compilerFlags.verbose:
+      echo &"[BYTECODE] User function call: {e.fname} -> {resolvedFunctionName} (args: {totalArgCount})"
+
+    prog.emit(opCall, totalArgCount, resolvedFunctionName, e.pos, ctx)
 
 proc compileNewRefExpr(prog: var BytecodeProgram, e: Expr, ctx: var CompilationContext) =
   prog.compileExpr(e.init, ctx)

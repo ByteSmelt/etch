@@ -3,25 +3,19 @@
 
 import std/[tables, strformat, strutils, random, json]
 import ../frontend/ast, bytecode, debugger
-import ../common/[constants, errors, types]
-
-# Branch prediction hints for performance optimization
-template likely(cond: untyped): untyped =
-  when defined(gcc) or defined(clang):
-    {.emit: "__builtin_expect((" & astToStr(cond) & "), 1)".}
-    cond
-  else:
-    cond
-
-template unlikely(cond: untyped): untyped =
-  when defined(gcc) or defined(clang):
-    {.emit: "__builtin_expect((" & astToStr(cond) & "), 0)".}
-    cond
-  else:
-    cond
+import ../common/[constants, errors, types, builtins]
 
 
 type
+  # Forward declaration for jump table
+  VM* = ref VMObj
+
+  # Instruction handler function type - returns false to halt execution
+  InstructionHandler = proc(vm: VM, instr: Instruction): bool {.nimcall.}
+
+  # Fast builtin function handler type
+  BuiltinHandler = proc(vm: VM, argCount: int): bool {.nimcall.}
+
   V* = object
     kind*: TypeKind
     ival*: int64
@@ -51,7 +45,7 @@ type
     fastVarNames*: array[VM_FAST_SLOTS_COUNT, string]
     fastVarCount*: int  # Number of fast slots currently used
 
-  VM* = ref object
+  VMObj* = object
     # AST interpreter state
     heap*: seq[HeapCell]
     funs*: Table[string, FunDecl]
@@ -64,18 +58,13 @@ type
     pc*: int  # Program counter
     globals*: Table[string, V]
 
+    # Jump table for fast instruction dispatch - initialized once per VM
+    jumpTable*: array[OpCode, InstructionHandler]
+    # Fast builtin function dispatch
+    builtinTable*: array[BuiltinFuncId, BuiltinHandler]
+
     # Debugger support (optional - zero cost when nil)
     debugger*: EtchDebugger
-
-# Optimized value constructors with inline pragma for performance
-proc vInt(x: int64): V {.inline.} = V(kind: tkInt, ival: x)
-proc vFloat(x: float64): V {.inline.} = V(kind: tkFloat, fval: x)
-proc vString(x: string): V {.inline.} = V(kind: tkString, sval: x)
-proc vChar(x: char): V {.inline.} = V(kind: tkChar, cval: x)
-proc vBool(x: bool): V {.inline.} = V(kind: tkBool, bval: x)
-proc vRef(id: int): V {.inline.} = V(kind: tkRef, refId: id)
-proc vArray(elements: seq[V]): V {.inline.} = V(kind: tkArray, aval: elements)
-proc vObject(fields: Table[string, V]): V {.inline.} = V(kind: tkObject, oval: fields)
 
 # Pre-allocated common values to reduce allocation overhead
 let
@@ -88,6 +77,16 @@ let
   vEmptyString* = V(kind: tkString, sval: "")
   vNilRef* = V(kind: tkRef, refId: -1)
   vVoidValue* = V(kind: tkVoid)
+
+# Optimized value constructors with inline pragma for performance
+proc vInt(x: int64): V {.inline.} = V(kind: tkInt, ival: x)
+proc vFloat(x: float64): V {.inline.} = V(kind: tkFloat, fval: x)
+proc vString(x: string): V {.inline.} = V(kind: tkString, sval: x)
+proc vChar(x: char): V {.inline.} = V(kind: tkChar, cval: x)
+proc vBool(x: bool): V {.inline.} = V(kind: tkBool, bval: x)
+proc vRef(id: int): V {.inline.} = V(kind: tkRef, refId: id)
+proc vArray(elements: seq[V]): V {.inline.} = V(kind: tkArray, aval: elements)
+proc vObject(fields: Table[string, V]): V {.inline.} = V(kind: tkObject, oval: fields)
 
 # Fast constructors that use pre-allocated values when beneficial
 proc vIntFast*(x: int64): V {.inline.} =
@@ -108,24 +107,25 @@ proc vStringFast*(x: string): V {.inline.} =
   if x.len == 0: vEmptyString
   else: V(kind: tkString, sval: x)
 
-proc vOptionSome(val: V): V =
+proc vOptionSome(val: V): V {.inline.} =
   var refVal = new(V)
   refVal[] = val
   V(kind: tkOption, hasValue: true, wrappedVal: refVal)
 
-proc vOptionNone(): V = V(kind: tkOption, hasValue: false)
+proc vOptionNone(): V {.inline.} =
+  V(kind: tkOption, hasValue: false)
 
-proc vResultOk(val: V): V =
+proc vResultOk(val: V): V {.inline.}  =
   var refVal = new(V)
   refVal[] = val
   V(kind: tkResult, hasValue: true, wrappedVal: refVal)
 
-proc vResultErr(err: V): V =
+proc vResultErr(err: V): V {.inline.}  =
   var refVal = new(V)
   refVal[] = err
   V(kind: tkResult, hasValue: false, wrappedVal: refVal)
 
-proc alloc(vm: VM; v: V): V =
+proc alloc(vm: VM; v: V): V {.inline.}  =
   vm.heap.add HeapCell(alive: true, val: v)
   vRef(vm.heap.high)
 
@@ -154,18 +154,17 @@ proc raiseRuntimeError(vm: VM, msg: string) =
 
 # Optimized bytecode VM functionality with inlined operations
 proc push(vm: VM; val: V) {.inline.} =
+  # Trust compiler safety verification - no bounds checking needed
   vm.stack.add(val)
 
 proc pop(vm: VM): V {.inline.} =
-  let len = vm.stack.len
-  if len == 0:
-    vm.raiseRuntimeError("Stack underflow")
-  result = vm.stack[len - 1]
-  vm.stack.setLen(len - 1)
+  # Fast stack pop - trust compiler verification, no underflow checks
+  let lastIndex = vm.stack.len - 1
+  result = vm.stack[lastIndex]
+  vm.stack.setLen(lastIndex)
 
 proc peek(vm: VM): V {.inline.} =
-  if vm.stack.len == 0:
-    vm.raiseRuntimeError("Stack empty")
+  # Fast peek - trust compiler verification
   vm.stack[^1]
 
 # Optimized variable access with fast slot caching
@@ -212,81 +211,147 @@ proc setVar(vm: VM, name: string, value: V) =
   else:
     vm.globals[name] = value
 
-# Optimized individual operation functions with inline pragma and fast constructors
-proc opLoadIntImpl(vm: VM, instr: Instruction) {.inline.} = vm.push(vIntFast(instr.arg))
-proc opLoadFloatImpl(vm: VM, instr: Instruction) {.inline.} = vm.push(vFloatFast(parseFloat(vm.program.constants[instr.arg])))
-proc opLoadStringImpl(vm: VM, instr: Instruction) {.inline.} = vm.push(vStringFast(vm.program.constants[instr.arg]))
-proc opLoadCharImpl(vm: VM, instr: Instruction) {.inline.} = vm.push(vChar(vm.program.constants[instr.arg][0]))
-proc opLoadBoolImpl(vm: VM, instr: Instruction) {.inline.} = vm.push(vBoolFast(instr.arg != 0))
-proc opLoadVarImpl(vm: VM, instr: Instruction) {.inline.} = vm.push(vm.getVar(instr.sarg))
-proc opStoreVarImpl(vm: VM, instr: Instruction) {.inline.} = vm.setVar(instr.sarg, vm.pop())
-proc opLoadNilImpl(vm: VM, instr: Instruction) {.inline.} = vm.push(vNilRef)
-proc opPopImpl(vm: VM, instr: Instruction) {.inline.} = discard vm.pop()
-proc opDupImpl(vm: VM, instr: Instruction) {.inline.} = vm.push(vm.peek())
+# Optimized individual operation functions for jump table dispatch
+# All functions return bool: true to continue execution, false to halt
+proc opLoadIntImpl(vm: VM, instr: Instruction): bool =
+  vm.push(vIntFast(instr.arg))
+  return true
 
-proc opAddImpl(vm: VM, instr: Instruction) {.inline.} =
+proc opLoadFloatImpl(vm: VM, instr: Instruction): bool =
+  vm.push(vFloatFast(parseFloat(vm.program.constants[instr.arg])))
+  return true
+
+proc opLoadStringImpl(vm: VM, instr: Instruction): bool =
+  vm.push(vStringFast(vm.program.constants[instr.arg]))
+  return true
+
+proc opLoadCharImpl(vm: VM, instr: Instruction): bool =
+  vm.push(vChar(vm.program.constants[instr.arg][0]))
+  return true
+
+proc opLoadBoolImpl(vm: VM, instr: Instruction): bool =
+  vm.push(vBoolFast(instr.arg != 0))
+  return true
+
+proc opLoadVarImpl(vm: VM, instr: Instruction): bool =
+  vm.push(vm.getVar(instr.sarg))
+  return true
+
+proc opStoreVarImpl(vm: VM, instr: Instruction): bool =
+  vm.setVar(instr.sarg, vm.pop())
+  return true
+
+proc opLoadNilImpl(vm: VM, instr: Instruction): bool =
+  vm.push(vNilRef)
+  return true
+
+proc opPopImpl(vm: VM, instr: Instruction): bool =
+  discard vm.pop()
+  return true
+
+proc opDupImpl(vm: VM, instr: Instruction): bool =
+  vm.push(vm.peek())
+  return true
+
+proc opAddImpl(vm: VM, instr: Instruction): bool =
+  # Unboxed arithmetic optimization - avoid V object field access when possible
   let b = vm.pop()
   let a = vm.pop()
 
+  # Fast path for integer addition (most common case in benchmarks)
+  if likely(a.kind == tkInt and b.kind == tkInt):
+    # Direct unboxed computation - no V object manipulation during calculation
+    let computedResult = V(kind: tkInt, ival: a.ival + b.ival)
+    vm.stack.add(computedResult)
+    return true
+
+  # Fast path for float addition
+  if a.kind == tkFloat and b.kind == tkFloat:
+    let computedResult = V(kind: tkFloat, fval: a.fval + b.fval)
+    vm.stack.add(computedResult)
+    return true
+
+  # Slower paths for other types (string concat, array concat)
   case a.kind:
-  of tkInt:
-    vm.push(vInt(a.ival + b.ival))
-  of tkFloat:
-    vm.push(vFloat(a.fval + b.fval))
   of tkString:
     vm.push(vString(a.sval & b.sval))
   of tkArray:
     vm.push(vArray(a.aval & b.aval))
   else:
     vm.raiseRuntimeError("Unsupported types in addition")
+  return true
 
-proc opSubImpl(vm: VM, instr: Instruction) {.inline.} =
+proc opSubImpl(vm: VM, instr: Instruction): bool =
   let b = vm.pop()
   let a = vm.pop()
 
-  case a.kind:
-  of tkInt:
-    vm.push(vInt(a.ival - b.ival))
-  of tkFloat:
-    vm.push(vFloat(a.fval - b.fval))
-  else:
-    vm.raiseRuntimeError("Subtraction requires numeric types")
+  # Fast unboxed integer subtraction
+  if likely(a.kind == tkInt and b.kind == tkInt):
+    let computedResult = V(kind: tkInt, ival: a.ival - b.ival)
+    vm.stack.add(computedResult)
+    return true
 
-proc opMulImpl(vm: VM, instr: Instruction) {.inline.} =
+  # Fast unboxed float subtraction
+  if a.kind == tkFloat and b.kind == tkFloat:
+    let computedResult = V(kind: tkFloat, fval: a.fval - b.fval)
+    vm.stack.add(computedResult)
+    return true
+
+  vm.raiseRuntimeError("Subtraction requires numeric types")
+  return true
+
+proc opMulImpl(vm: VM, instr: Instruction): bool =
   let b = vm.pop()
   let a = vm.pop()
 
-  case a.kind:
-  of tkInt:
-    vm.push(vInt(a.ival * b.ival))
-  of tkFloat:
-    vm.push(vFloat(a.fval * b.fval))
-  else:
-    vm.raiseRuntimeError("Multiplication requires numeric types")
+  # Fast unboxed integer multiplication
+  if likely(a.kind == tkInt and b.kind == tkInt):
+    let computedResult = V(kind: tkInt, ival: a.ival * b.ival)
+    vm.stack.add(computedResult)
+    return true
 
-proc opDivImpl(vm: VM, instr: Instruction) {.inline.} =
+  # Fast unboxed float multiplication
+  if a.kind == tkFloat and b.kind == tkFloat:
+    let computedResult = V(kind: tkFloat, fval: a.fval * b.fval)
+    vm.stack.add(computedResult)
+    return true
+
+  vm.raiseRuntimeError("Multiplication requires numeric types")
+  return true
+
+proc opDivImpl(vm: VM, instr: Instruction): bool =
   let b = vm.pop()
   let a = vm.pop()
 
-  case a.kind:
-  of tkInt:
-    vm.push(vInt(a.ival div b.ival))
-  of tkFloat:
-    vm.push(vFloat(a.fval / b.fval))
-  else:
-    vm.raiseRuntimeError("Division requires numeric types")
+  # Fast unboxed integer division
+  if likely(a.kind == tkInt and b.kind == tkInt):
+    let computedResult = V(kind: tkInt, ival: a.ival div b.ival)
+    vm.stack.add(computedResult)
+    return true
 
-proc opModImpl(vm: VM, instr: Instruction) {.inline.} =
+  # Fast unboxed float division
+  if a.kind == tkFloat and b.kind == tkFloat:
+    let computedResult = V(kind: tkFloat, fval: a.fval / b.fval)
+    vm.stack.add(computedResult)
+    return true
+
+  vm.raiseRuntimeError("Division requires numeric types")
+  return true
+
+proc opModImpl(vm: VM, instr: Instruction): bool =
   let b = vm.pop()
   let a = vm.pop()
 
-  case a.kind:
-  of tkInt:
-    vm.push(vInt(a.ival mod b.ival))
-  else:
-    vm.raiseRuntimeError("Modulo requires integer types")
+  # Fast unboxed integer modulo
+  if likely(a.kind == tkInt and b.kind == tkInt):
+    let computedResult = V(kind: tkInt, ival: a.ival mod b.ival)
+    vm.stack.add(computedResult)
+    return true
 
-proc opNegImpl(vm: VM, instr: Instruction) {.inline.} =
+  vm.raiseRuntimeError("Modulo requires integer types")
+  return true
+
+proc opNegImpl(vm: VM, instr: Instruction): bool =
   let a = vm.pop()
 
   case a.kind:
@@ -296,27 +361,40 @@ proc opNegImpl(vm: VM, instr: Instruction) {.inline.} =
     vm.push(vFloat(-a.fval))
   else:
     vm.raiseRuntimeError("Negation requires numeric type")
+  return true
 
-proc opEqImpl(vm: VM, instr: Instruction) {.inline.} =
+proc opEqImpl(vm: VM, instr: Instruction): bool =
   let b = vm.pop()
   let a = vm.pop()
 
-  let result = case a.kind:
-  of tkInt: a.ival == b.ival
-  of tkFloat: a.fval == b.fval
+  # Fast unboxed integer comparison (most common in loops)
+  if likely(a.kind == tkInt and b.kind == tkInt):
+    let computedResult = V(kind: tkBool, bval: a.ival == b.ival)
+    vm.stack.add(computedResult)
+    return true
+
+  # Fast unboxed float comparison
+  if a.kind == tkFloat and b.kind == tkFloat:
+    let computedResult = V(kind: tkBool, bval: a.fval == b.fval)
+    vm.stack.add(computedResult)
+    return true
+
+  # Slower paths for other types
+  let compareResult = case a.kind:
   of tkString: a.sval == b.sval
   of tkChar: a.cval == b.cval
   of tkBool: a.bval == b.bval
   of tkRef: a.refId == b.refId
   else: false
 
-  vm.push(vBool(result))
+  vm.push(vBool(compareResult))
+  return true
 
-proc opNeImpl(vm: VM, instr: Instruction) {.inline.} =
+proc opNeImpl(vm: VM, instr: Instruction): bool =
   let b = vm.pop()
   let a = vm.pop()
 
-  let result = case a.kind:
+  let compareResult = case a.kind:
   of tkInt: a.ival != b.ival
   of tkFloat: a.fval != b.fval
   of tkString: a.sval != b.sval
@@ -325,73 +403,90 @@ proc opNeImpl(vm: VM, instr: Instruction) {.inline.} =
   of tkRef: a.refId != b.refId
   else: true
 
-  vm.push(vBool(result))
+  vm.push(vBool(compareResult))
+  return true
 
-proc opLtImpl(vm: VM, instr: Instruction) {.inline.} =
+proc opLtImpl(vm: VM, instr: Instruction): bool =
   let b = vm.pop()
   let a = vm.pop()
 
-  let result = case a.kind:
-  of tkInt: a.ival < b.ival
-  of tkFloat: a.fval < b.fval
-  else: false
+  # Fast unboxed integer less-than (critical for loop conditions)
+  if likely(a.kind == tkInt and b.kind == tkInt):
+    let computedResult = V(kind: tkBool, bval: a.ival < b.ival)
+    vm.stack.add(computedResult)
+    return true
 
-  vm.push(vBool(result))
+  # Fast unboxed float less-than
+  if a.kind == tkFloat and b.kind == tkFloat:
+    let computedResult = V(kind: tkBool, bval: a.fval < b.fval)
+    vm.stack.add(computedResult)
+    return true
 
-proc opLeImpl(vm: VM, instr: Instruction) {.inline.} =
+  # Fallback for unsupported types
+  vm.push(vBoolFalse)
+  return true
+
+proc opLeImpl(vm: VM, instr: Instruction): bool =
   let b = vm.pop()
   let a = vm.pop()
 
-  let result = case a.kind:
+  let compareResult = case a.kind:
   of tkInt: a.ival <= b.ival
   of tkFloat: a.fval <= b.fval
   else: false
 
-  vm.push(vBool(result))
+  vm.push(vBool(compareResult))
+  return true
 
-proc opGtImpl(vm: VM, instr: Instruction) {.inline.} =
+proc opGtImpl(vm: VM, instr: Instruction): bool =
   let b = vm.pop()
   let a = vm.pop()
 
-  let result = case a.kind:
+  let compareResult = case a.kind:
   of tkInt: a.ival > b.ival
   of tkFloat: a.fval > b.fval
   else: false
 
-  vm.push(vBool(result))
+  vm.push(vBool(compareResult))
+  return true
 
-proc opGeImpl(vm: VM, instr: Instruction) {.inline.} =
+proc opGeImpl(vm: VM, instr: Instruction): bool =
   let b = vm.pop()
   let a = vm.pop()
 
-  let result = case a.kind:
+  let compareResult = case a.kind:
   of tkInt: a.ival >= b.ival
   of tkFloat: a.fval >= b.fval
   else: false
 
-  vm.push(vBool(result))
+  vm.push(vBool(compareResult))
+  return true
 
-proc opAndImpl(vm: VM, instr: Instruction) {.inline.} =
+proc opAndImpl(vm: VM, instr: Instruction): bool =
   let b = vm.pop()
   let a = vm.pop()
   vm.push(vBool(a.bval and b.bval))
+  return true
 
-proc opOrImpl(vm: VM, instr: Instruction) {.inline.} =
+proc opOrImpl(vm: VM, instr: Instruction): bool =
   let b = vm.pop()
   let a = vm.pop()
   vm.push(vBool(a.bval or b.bval))
+  return true
 
-proc opNotImpl(vm: VM, instr: Instruction) =
+proc opNotImpl(vm: VM, instr: Instruction): bool =
   let a = vm.pop()
   if a.kind != tkBool:
     vm.raiseRuntimeError("Logical NOT requires bool")
   vm.push(vBool(not a.bval))
+  return true
 
-proc opNewRefImpl(vm: VM, instr: Instruction) =
+proc opNewRefImpl(vm: VM, instr: Instruction): bool =
   let value = vm.pop()
   vm.push(vm.alloc(value))
+  return true
 
-proc opDerefImpl(vm: VM, instr: Instruction) =
+proc opDerefImpl(vm: VM, instr: Instruction): bool =
   let refVal = vm.pop()
   if refVal.kind != tkRef:
     vm.raiseRuntimeError("Deref expects reference")
@@ -401,29 +496,37 @@ proc opDerefImpl(vm: VM, instr: Instruction) =
   if not cell.alive:
     vm.raiseRuntimeError("Dereferencing dead reference")
   vm.push(cell.val)
+  return true
 
-proc opMakeArrayImpl(vm: VM, instr: Instruction) {.inline.} =
+proc opMakeArrayImpl(vm: VM, instr: Instruction): bool =
   let count = instr.arg
   # Optimize: pre-allocate array and fill in reverse order to avoid inserts
   var elements: seq[V] = newSeq[V](count)
   for i in countdown(count-1, 0):
     elements[i] = vm.pop()
   vm.push(vArray(elements))
+  return true
 
-proc opArrayGetImpl(vm: VM, instr: Instruction) {.inline.} =
+proc opArrayGetImpl(vm: VM, instr: Instruction): bool =
   let index = vm.pop()
   let array = vm.pop()
 
-  # Trust compile-time safety prover - bounds and types are verified
-  case array.kind
-  of tkArray:
-    vm.push(array.aval[index.ival])
-  of tkString:
-    vm.push(vChar(array.sval[index.ival]))
-  else:
-    vm.raiseRuntimeError("Indexing requires array or string type")
+  # Fast unboxed array access (critical for array benchmarks)
+  if likely(array.kind == tkArray and index.kind == tkInt):
+    # Direct stack push - avoid function call overhead
+    vm.stack.add(array.aval[index.ival])
+    return true
 
-proc opArraySliceImpl(vm: VM, instr: Instruction) {.inline.} =
+  # Fast unboxed string indexing
+  if array.kind == tkString and index.kind == tkInt:
+    let computedResult = V(kind: tkChar, cval: array.sval[index.ival])
+    vm.stack.add(computedResult)
+    return true
+
+  vm.raiseRuntimeError("Indexing requires array or string type")
+  return true
+
+proc opArraySliceImpl(vm: VM, instr: Instruction): bool =
   let endVal = vm.pop()
   let startVal = vm.pop()
   let array = vm.pop()
@@ -447,8 +550,9 @@ proc opArraySliceImpl(vm: VM, instr: Instruction) {.inline.} =
       vm.push(vStringFast(array.sval[actualStart..<actualEnd]))
   else:
     vm.raiseRuntimeError("Slicing requires array or string type")
+  return true
 
-proc opArrayLenImpl(vm: VM, instr: Instruction) {.inline.} =
+proc opArrayLenImpl(vm: VM, instr: Instruction): bool =
   let array = vm.pop()
   case array.kind
   of tkArray:
@@ -457,8 +561,9 @@ proc opArrayLenImpl(vm: VM, instr: Instruction) {.inline.} =
     vm.push(vIntFast(array.sval.len.int64))
   else:
     vm.raiseRuntimeError("Length operator requires array or string type")
+  return true
 
-proc opCastImpl(vm: VM, instr: Instruction) =
+proc opCastImpl(vm: VM, instr: Instruction): bool =
   let source = vm.pop()
   case instr.arg:
   of 1:
@@ -478,23 +583,28 @@ proc opCastImpl(vm: VM, instr: Instruction) =
     else: vm.raiseRuntimeError("invalid cast to string")
   else:
     vm.raiseRuntimeError("unsupported cast type")
+  return true
 
-proc opMakeOptionSomeImpl(vm: VM, instr: Instruction) =
+proc opMakeOptionSomeImpl(vm: VM, instr: Instruction): bool =
   let value = vm.pop()
   vm.push(vOptionSome(value))
+  return true
 
-proc opMakeOptionNoneImpl(vm: VM, instr: Instruction) =
+proc opMakeOptionNoneImpl(vm: VM, instr: Instruction): bool =
   vm.push(vOptionNone())
+  return true
 
-proc opMakeResultOkImpl(vm: VM, instr: Instruction) =
+proc opMakeResultOkImpl(vm: VM, instr: Instruction): bool =
   let value = vm.pop()
   vm.push(vResultOk(value))
+  return true
 
-proc opMakeResultErrImpl(vm: VM, instr: Instruction) =
+proc opMakeResultErrImpl(vm: VM, instr: Instruction): bool =
   let errValue = vm.pop()
   vm.push(vResultErr(errValue))
+  return true
 
-proc opMatchValueImpl(vm: VM, instr: Instruction) =
+proc opMatchValueImpl(vm: VM, instr: Instruction): bool =
   let value = vm.peek() # Don't pop yet, just peek
   case instr.arg:
   of 0: # check for None
@@ -519,29 +629,33 @@ proc opMatchValueImpl(vm: VM, instr: Instruction) =
       vm.push(vBool(false))
   else:
     vm.push(vBool(false))
+  return true
 
-proc opExtractSomeImpl(vm: VM, instr: Instruction) =
+proc opExtractSomeImpl(vm: VM, instr: Instruction): bool =
   let option = vm.pop()
   if option.kind == tkOption and option.hasValue and option.wrappedVal != nil:
     vm.push(option.wrappedVal[])
   else:
     vm.raiseRuntimeError("extractSome: not a Some value")
+  return true
 
-proc opExtractOkImpl(vm: VM, instr: Instruction) =
-  let result = vm.pop()
-  if result.kind == tkResult and result.hasValue and result.wrappedVal != nil:
-    vm.push(result.wrappedVal[])
+proc opExtractOkImpl(vm: VM, instr: Instruction): bool =
+  let resultValue = vm.pop()
+  if resultValue.kind == tkResult and resultValue.hasValue and resultValue.wrappedVal != nil:
+    vm.push(resultValue.wrappedVal[])
   else:
     vm.raiseRuntimeError("extractOk: not an Ok value")
+  return true
 
-proc opExtractErrImpl(vm: VM, instr: Instruction) =
-  let result = vm.pop()
-  if result.kind == tkResult and not result.hasValue and result.wrappedVal != nil:
-    vm.push(result.wrappedVal[])
+proc opExtractErrImpl(vm: VM, instr: Instruction): bool =
+  let resultValue = vm.pop()
+  if resultValue.kind == tkResult and not resultValue.hasValue and resultValue.wrappedVal != nil:
+    vm.push(resultValue.wrappedVal[])
   else:
     vm.raiseRuntimeError("extractErr: not an Err value")
+  return true
 
-proc opMakeObjectImpl(vm: VM, instr: Instruction) {.inline.} =
+proc opMakeObjectImpl(vm: VM, instr: Instruction): bool =
   # arg contains number of field pairs on stack
   # Stack format: value1, "field1", value2, "field2", ... (top of stack has last pair)
   let numFields = int(instr.arg)
@@ -554,8 +668,9 @@ proc opMakeObjectImpl(vm: VM, instr: Instruction) {.inline.} =
     fields[fieldName] = fieldValue
 
   vm.push(vObject(fields))
+  return true
 
-proc opObjectGetImpl(vm: VM, instr: Instruction) =
+proc opObjectGetImpl(vm: VM, instr: Instruction): bool =
   let fieldName = instr.sarg  # Field name is stored in instruction
   let obj = vm.pop()          # Object to access
 
@@ -576,14 +691,241 @@ proc opObjectGetImpl(vm: VM, instr: Instruction) =
     vm.raiseRuntimeError(&"object has no field '{fieldName}'")
 
   vm.push(actualObj.oval[fieldName])
+  return true
 
-proc opJumpImpl(vm: VM, instr: Instruction) =
+# Fast builtin function implementations
+proc builtinPrint(vm: VM, argCount: int): bool =
+  let arg = vm.pop()
+  let output = case arg.kind:
+    of tkString: arg.sval
+    of tkChar: $arg.cval
+    of tkInt: $arg.ival
+    of tkFloat: $arg.fval
+    of tkBool:
+      if arg.bval: "true" else: "false"
+    else: "<ref>"
+
+  if vm.debugger != nil:
+    stderr.writeLine(output)
+    stderr.flushFile()
+  else:
+    echo output
+
+  vm.push(vVoidValue)
+  return true
+
+proc builtinNew(vm: VM, argCount: int): bool =
+  let arg = vm.pop()
+  vm.push(vm.alloc(arg))
+  return true
+
+proc builtinDeref(vm: VM, argCount: int): bool =
+  let refVal = vm.pop()
+  if refVal.kind != tkRef:
+    vm.raiseRuntimeError("deref on non-ref")
+  let cell = vm.heap[refVal.refId]
+  if cell.isNil or not cell.alive:
+    vm.raiseRuntimeError("nil ref")
+  vm.push(cell.val)
+  return true
+
+proc builtinRand(vm: VM, argCount: int): bool =
+  if argCount == 1:
+    let maxVal = vm.pop()
+    if maxVal.kind == tkInt and maxVal.ival > 0:
+      let res = rand(int(maxVal.ival))
+      vm.push(vIntFast(int64(res)))
+    else:
+      vm.push(vIntZero)
+  elif argCount == 2:
+    let maxVal = vm.pop()
+    let minVal = vm.pop()
+    if maxVal.kind == tkInt and minVal.kind == tkInt and maxVal.ival >= minVal.ival:
+      let res = rand(int(maxVal.ival - minVal.ival)) + int(minVal.ival)
+      vm.push(vIntFast(int64(res)))
+    else:
+      vm.push(vIntZero)
+  return true
+
+proc builtinSeed(vm: VM, argCount: int): bool =
+  if argCount == 1:
+    let seedVal = vm.pop()
+    if seedVal.kind == tkInt:
+      randomize(int(seedVal.ival))
+  elif argCount == 0:
+    randomize()
+  vm.push(vVoidValue)
+  return true
+
+proc builtinReadFile(vm: VM, argCount: int): bool =
+  if argCount == 1:
+    let pathArg = vm.pop()
+    if pathArg.kind == tkString:
+      try:
+        let content = readFile(pathArg.sval)
+        vm.push(vStringFast(content))
+      except:
+        vm.push(vEmptyString)
+    else:
+      vm.push(vEmptyString)
+  return true
+
+proc builtinParseInt(vm: VM, argCount: int): bool =
+  if argCount == 1:
+    let strArg = vm.pop()
+    if strArg.kind == tkString:
+      try:
+        let parsed = parseInt(strArg.sval)
+        vm.push(vOptionSome(vInt(parsed)))
+      except:
+        vm.push(vOptionNone())
+    else:
+      vm.push(vOptionNone())
+  return true
+
+proc builtinParseFloat(vm: VM, argCount: int): bool =
+  if argCount == 1:
+    let strArg = vm.pop()
+    if strArg.kind == tkString:
+      try:
+        let parsed = parseFloat(strArg.sval)
+        vm.push(vOptionSome(vFloat(parsed)))
+      except:
+        vm.push(vOptionNone())
+    else:
+      vm.push(vOptionNone())
+  return true
+
+proc builtinParseBool(vm: VM, argCount: int): bool =
+  if argCount == 1:
+    let strArg = vm.pop()
+    if strArg.kind == tkString:
+      case strArg.sval.toLower()
+      of "true", "1", "yes", "on":
+        vm.push(vOptionSome(vBool(true)))
+      of "false", "0", "no", "off":
+        vm.push(vOptionSome(vBool(false)))
+      else:
+        vm.push(vOptionNone())
+    else:
+      vm.push(vOptionNone())
+  return true
+
+proc builtinToString(vm: VM, argCount: int): bool =
+  if argCount == 1:
+    let arg = vm.pop()
+    case arg.kind
+    of tkInt:
+      vm.push(vStringFast($arg.ival))
+    of tkFloat:
+      vm.push(vStringFast($arg.fval))
+    of tkBool:
+      vm.push(vStringFast($arg.bval))
+    of tkChar:
+      vm.push(vStringFast($arg.cval))
+    else:
+      vm.push(vEmptyString)
+  return true
+
+proc builtinIsSome(vm: VM, argCount: int): bool =
+  if argCount == 1:
+    let arg = vm.pop()
+    if arg.kind == tkOption:
+      vm.push(vBool(arg.hasValue))
+    else:
+      vm.push(vBool(false))
+  return true
+
+proc builtinIsNone(vm: VM, argCount: int): bool =
+  if argCount == 1:
+    let arg = vm.pop()
+    if arg.kind == tkOption:
+      vm.push(vBool(not arg.hasValue))
+    else:
+      vm.push(vBool(false))
+  return true
+
+proc builtinIsOk(vm: VM, argCount: int): bool =
+  if argCount == 1:
+    let arg = vm.pop()
+    if arg.kind == tkResult:
+      vm.push(vBool(arg.hasValue))
+    else:
+      vm.push(vBool(false))
+  return true
+
+proc builtinIsErr(vm: VM, argCount: int): bool =
+  if argCount == 1:
+    let arg = vm.pop()
+    if arg.kind == tkResult:
+      vm.push(vBool(not arg.hasValue))
+    else:
+      vm.push(vBool(false))
+  return true
+
+# Fused instruction implementations for performance optimization
+proc opLoadVarArrayGetImpl(vm: VM, instr: Instruction): bool =
+  ## Fused: LoadVar(array), LoadVar(index), ArrayGet
+  ## arg contains array var name offset, sarg contains index var name
+  let arrayVar = vm.getVar(vm.program.constants[instr.arg])
+  let indexVar = vm.getVar(instr.sarg)
+
+  # Fast unboxed array access without intermediate stack operations
+  if likely(arrayVar.kind == tkArray and indexVar.kind == tkInt):
+    vm.stack.add(arrayVar.aval[indexVar.ival])
+    return true
+
+  vm.raiseRuntimeError("Fused array access requires array and int types")
+  return true
+
+proc opLoadIntAddVarImpl(vm: VM, instr: Instruction): bool =
+  ## Fused: LoadInt, LoadVar, Add
+  ## arg contains the int constant, sarg contains var name
+  let intVal = instr.arg
+  let varVal = vm.getVar(instr.sarg)
+
+  # Fast unboxed integer addition
+  if likely(varVal.kind == tkInt):
+    let computedResult = V(kind: tkInt, ival: intVal + varVal.ival)
+    vm.stack.add(computedResult)
+    return true
+
+  vm.raiseRuntimeError("Fused int+var requires int variable")
+  return true
+
+proc opLoadVarIntLtImpl(vm: VM, instr: Instruction): bool =
+  ## Fused: LoadVar, LoadInt, Lt
+  ## sarg contains var name, arg contains int constant
+  let varVal = vm.getVar(instr.sarg)
+  let intVal = instr.arg
+
+  # Fast unboxed integer comparison
+  if likely(varVal.kind == tkInt):
+    let computedResult = V(kind: tkBool, bval: varVal.ival < intVal)
+    vm.stack.add(computedResult)
+    return true
+
+  vm.raiseRuntimeError("Fused var<int requires int variable")
+  return true
+
+proc opCallBuiltinImpl(vm: VM, instr: Instruction): bool =
+  ## Ultra-fast builtin dispatch using direct builtin ID
+  ## arg contains: (builtinId << 16) | argCount for compact encoding
+  let packed = instr.arg
+  let builtinId = BuiltinFuncId(packed shr 16)
+  let argCount = int(packed and 0xFFFF)
+  let handler = vm.builtinTable[builtinId]
+  return handler(vm, argCount)
+
+proc opJumpImpl(vm: VM, instr: Instruction): bool =
   vm.pc = int(instr.arg)
+  return true
 
-proc opJumpIfFalseImpl(vm: VM, instr: Instruction) =
+proc opJumpIfFalseImpl(vm: VM, instr: Instruction): bool =
   let condition = vm.pop()
   if not truthy(condition):
     vm.pc = int(instr.arg)
+  return true
 
 proc opReturnImpl(vm: VM, instr: Instruction): bool =
   if vm.callStack.len == 0:
@@ -596,209 +938,38 @@ proc opCallImpl(vm: VM, instr: Instruction): bool =
   let funcName = instr.sarg
   let argCount = int(instr.arg)
 
-  # Handle builtin functions using enhanced AST interpreter built-ins
-  if funcName == "print":
-    let arg = vm.pop()
-    let output = case arg.kind:
-      of tkString: arg.sval
-      of tkChar: $arg.cval
-      of tkInt: $arg.ival
-      of tkFloat: $arg.fval
-      of tkBool:
-        if arg.bval: "true" else: "false"
-      else: "<ref>"
+  # User-defined function call - fast hash lookup
+  if vm.program.functions.hasKey(funcName):
+    # Create new frame with fast slots initialization
+    let newFrame = Frame(
+      vars: initTable[string, V](),
+      returnAddress: vm.pc,
+      fastVarCount: 0
+    )
 
-    # When debugging, send output to stderr to avoid corrupting DAP protocol on stdout
-    if vm.debugger != nil:
-      stderr.writeLine(output)
-      stderr.flushFile()
+    # Pop arguments and collect them (they come off stack in reverse order due to forward push)
+    # Optimize: pre-allocate args array to avoid repeated allocations
+    var args: seq[V] = newSeq[V](argCount)
+    for i in 0..<argCount:
+      args[argCount-1-i] = vm.pop()
+    # Arguments are now in correct parameter order
+
+    # Get parameter names from function debug info
+    if vm.program.functionInfo.hasKey(funcName):
+      let debugInfo = vm.program.functionInfo[funcName]
+      for i in 0..<min(args.len, debugInfo.parameterNames.len):
+        newFrame.vars[debugInfo.parameterNames[i]] = args[i]
     else:
-      echo output
+      # Fallback: use generic parameter names if debug info is not available
+      for i in 0..<args.len:
+        newFrame.vars["param" & $i] = args[i]
 
-    vm.push(vVoidValue)
+    vm.callStack.add(newFrame)
+    vm.pc = vm.program.functions[funcName]
     return true
 
-  if funcName == "new":
-    let arg = vm.pop()
-    let refVal = vm.alloc(arg)
-    vm.push(refVal)
-    return true
-
-  if funcName == "deref":
-    let refVal = vm.pop()
-    if refVal.kind != tkRef:
-      vm.raiseRuntimeError("deref on non-ref")
-    let cell = vm.heap[refVal.refId]
-    if cell.isNil or not cell.alive:
-      vm.raiseRuntimeError("nil ref")
-    vm.push(cell.val)
-    return true
-
-  if funcName == "rand":
-    if argCount == 1:
-      let maxVal = vm.pop()
-      if maxVal.kind == tkInt and maxVal.ival > 0:
-        let res = rand(int(maxVal.ival))
-        vm.push(vIntFast(int64(res)))
-      else:
-        vm.push(vIntZero)
-    elif argCount == 2:
-      let maxVal = vm.pop()
-      let minVal = vm.pop()
-      if maxVal.kind == tkInt and minVal.kind == tkInt and maxVal.ival >= minVal.ival:
-        let res = rand(int(maxVal.ival - minVal.ival)) + int(minVal.ival)
-        vm.push(vIntFast(int64(res)))
-      else:
-        vm.push(vIntZero)
-    return true
-
-  if funcName == "seed":
-    if argCount == 1:
-      let seedVal = vm.pop()
-      if seedVal.kind == tkInt:
-        randomize(int(seedVal.ival))
-    elif argCount == 0:
-      randomize()
-    vm.push(vVoidValue)
-    return true
-
-  if funcName == "readFile":
-    if argCount == 1:
-      let pathArg = vm.pop()
-      if pathArg.kind == tkString:
-        try:
-          let content = readFile(pathArg.sval)
-          vm.push(vStringFast(content))
-        except:
-          vm.push(vEmptyString)
-      else:
-        vm.push(vEmptyString)
-    return true
-
-  if funcName == "parseInt":
-    if argCount == 1:
-      let strArg = vm.pop()
-      if strArg.kind == tkString:
-        try:
-          let parsed = parseInt(strArg.sval)
-          vm.push(vOptionSome(vInt(parsed)))
-        except:
-          vm.push(vOptionNone())
-      else:
-        vm.push(vOptionNone())
-    return true
-
-  if funcName == "parseFloat":
-    if argCount == 1:
-      let strArg = vm.pop()
-      if strArg.kind == tkString:
-        try:
-          let parsed = parseFloat(strArg.sval)
-          vm.push(vOptionSome(vFloat(parsed)))
-        except:
-          vm.push(vOptionNone())
-      else:
-        vm.push(vOptionNone())
-    return true
-
-  if funcName == "parseBool":
-    if argCount == 1:
-      let strArg = vm.pop()
-      if strArg.kind == tkString:
-        case strArg.sval.toLower()
-        of "true", "1", "yes", "on":
-          vm.push(vOptionSome(vBool(true)))
-        of "false", "0", "no", "off":
-          vm.push(vOptionSome(vBool(false)))
-        else:
-          vm.push(vOptionNone())
-      else:
-        vm.push(vOptionNone())
-    return true
-
-  if funcName == "toString":
-    if argCount == 1:
-      let arg = vm.pop()
-      case arg.kind
-      of tkInt:
-        vm.push(vStringFast($arg.ival))
-      of tkFloat:
-        vm.push(vStringFast($arg.fval))
-      of tkBool:
-        vm.push(vStringFast($arg.bval))
-      of tkChar:
-        vm.push(vStringFast($arg.cval))
-      else:
-        vm.push(vEmptyString)
-    return true
-
-  if funcName == "isSome":
-    if argCount == 1:
-      let arg = vm.pop()
-      if arg.kind == tkOption:
-        vm.push(vBool(arg.hasValue))
-      else:
-        vm.push(vBool(false))
-    return true
-
-  if funcName == "isNone":
-    if argCount == 1:
-      let arg = vm.pop()
-      if arg.kind == tkOption:
-        vm.push(vBool(not arg.hasValue))
-      else:
-        vm.push(vBool(false))
-    return true
-
-  if funcName == "isOk":
-    if argCount == 1:
-      let arg = vm.pop()
-      if arg.kind == tkResult:
-        vm.push(vBool(arg.hasValue))
-      else:
-        vm.push(vBool(false))
-    return true
-
-  if funcName == "isErr":
-    if argCount == 1:
-      let arg = vm.pop()
-      if arg.kind == tkResult:
-        vm.push(vBool(not arg.hasValue))
-      else:
-        vm.push(vBool(false))
-    return true
-
-  # User-defined function call
-  if not vm.program.functions.hasKey(funcName):
-    vm.raiseRuntimeError("Unknown function: " & funcName)
-
-  # Create new frame with fast slots initialization
-  let newFrame = Frame(
-    vars: initTable[string, V](),
-    returnAddress: vm.pc,
-    fastVarCount: 0
-  )
-
-  # Pop arguments and collect them (they come off stack in reverse order due to forward push)
-  # Optimize: pre-allocate args array to avoid repeated allocations
-  var args: seq[V] = newSeq[V](argCount)
-  for i in 0..<argCount:
-    args[argCount-1-i] = vm.pop()
-  # Arguments are now in correct parameter order
-
-  # Get parameter names from function debug info
-  if vm.program.functionInfo.hasKey(funcName):
-    let debugInfo = vm.program.functionInfo[funcName]
-    for i in 0..<min(args.len, debugInfo.parameterNames.len):
-      newFrame.vars[debugInfo.parameterNames[i]] = args[i]
-  else:
-    # Fallback: use generic parameter names if debug info is not available
-    for i in 0..<args.len:
-      newFrame.vars["param" & $i] = args[i]
-
-  vm.callStack.add(newFrame)
-  vm.pc = vm.program.functions[funcName]
-  return true
+  # Function not found
+  vm.raiseRuntimeError("Unknown function: " & funcName)
 
 proc vmValueToDisplayString(value: V, maxArrayElements: int = 10): string =
   ## Convert a VM value to a display string for debugger
@@ -1051,7 +1222,7 @@ proc vmDebuggerOnBreak*(vm: VM) =
     vm.debugger.onDebugEvent("stopped", event)
 
 proc executeInstruction*(vm: VM): bool =
-  ## Execute a single bytecode instruction. Returns false when program should halt.
+  ## Execute a single bytecode instruction using jump table dispatch. Returns false when program should halt.
   if vm.pc >= vm.program.instructions.len:
     return false
 
@@ -1064,61 +1235,15 @@ proc executeInstruction*(vm: VM): bool =
   let instr = vm.program.instructions[vm.pc]
   vm.pc += 1
 
-  case instr.op
-  of opLoadInt: vm.opLoadIntImpl(instr)
-  of opLoadFloat: vm.opLoadFloatImpl(instr)
-  of opLoadString: vm.opLoadStringImpl(instr)
-  of opLoadChar: vm.opLoadCharImpl(instr)
-  of opLoadBool: vm.opLoadBoolImpl(instr)
-  of opLoadVar: vm.opLoadVarImpl(instr)
-  of opStoreVar: vm.opStoreVarImpl(instr)
-  of opLoadNil: vm.opLoadNilImpl(instr)
-  of opPop: vm.opPopImpl(instr)
-  of opDup: vm.opDupImpl(instr)
-  of opAdd: vm.opAddImpl(instr)
-  of opSub: vm.opSubImpl(instr)
-  of opMul: vm.opMulImpl(instr)
-  of opDiv: vm.opDivImpl(instr)
-  of opMod: vm.opModImpl(instr)
-  of opNeg: vm.opNegImpl(instr)
-  of opEq: vm.opEqImpl(instr)
-  of opNe: vm.opNeImpl(instr)
-  of opLt: vm.opLtImpl(instr)
-  of opLe: vm.opLeImpl(instr)
-  of opGt: vm.opGtImpl(instr)
-  of opGe: vm.opGeImpl(instr)
-  of opAnd: vm.opAndImpl(instr)
-  of opOr: vm.opOrImpl(instr)
-  of opNot: vm.opNotImpl(instr)
-  of opNewRef: vm.opNewRefImpl(instr)
-  of opDeref: vm.opDerefImpl(instr)
-  of opMakeArray: vm.opMakeArrayImpl(instr)
-  of opArrayGet: vm.opArrayGetImpl(instr)
-  of opArraySlice: vm.opArraySliceImpl(instr)
-  of opArrayLen: vm.opArrayLenImpl(instr)
-  of opCast: vm.opCastImpl(instr)
-  of opMakeOptionSome: vm.opMakeOptionSomeImpl(instr)
-  of opMakeOptionNone: vm.opMakeOptionNoneImpl(instr)
-  of opMakeResultOk: vm.opMakeResultOkImpl(instr)
-  of opMakeResultErr: vm.opMakeResultErrImpl(instr)
-  of opMatchValue: vm.opMatchValueImpl(instr)
-  of opExtractSome: vm.opExtractSomeImpl(instr)
-  of opExtractOk: vm.opExtractOkImpl(instr)
-  of opExtractErr: vm.opExtractErrImpl(instr)
-  of opMakeObject: vm.opMakeObjectImpl(instr)
-  of opObjectGet: vm.opObjectGetImpl(instr)
-  of opJump: vm.opJumpImpl(instr)
-  of opJumpIfFalse: vm.opJumpIfFalseImpl(instr)
-  of opCall:
-    return vm.opCallImpl(instr)
-  of opReturn:
-    return vm.opReturnImpl(instr)
+  # Fast jump table dispatch - single array lookup instead of case statement
+  let handler = vm.jumpTable[instr.op]
+  let continueExecution = handler(vm, instr)
 
   # Call debugger after instruction hook
   if vm.debugger != nil:
     vmDebuggerAfterInstruction(vm)
 
-  return true
+  return continueExecution
 
 proc runBytecode*(vm: VM): int =
   ## Run the bytecode program. Returns exit code.
@@ -1146,8 +1271,8 @@ proc runBytecode*(vm: VM): int =
         vm.globals[globalName] = vInt(0)  # Default initialization
 
     # Execute global initialization function if it exists
-    if vm.program.functions.hasKey("__global_init__"):
-      vm.pc = vm.program.functions["__global_init__"]
+    if vm.program.functions.hasKey(GLOBAL_INIT_FUNC_NAME):
+      vm.pc = vm.program.functions[GLOBAL_INIT_FUNC_NAME]
       while vm.executeInstruction():
         discard
 
@@ -1171,27 +1296,103 @@ proc runBytecode*(vm: VM): int =
         echo "  at line ", instr.debug.line, " in ", instr.debug.sourceFile
     return 1
 
+# Initialize the builtin function tables
+proc initBuiltinTable(): array[BuiltinFuncId, BuiltinHandler] =
+  ## Initialize fast builtin dispatch table
+  result[bfPrint] = builtinPrint
+  result[bfNew] = builtinNew
+  result[bfDeref] = builtinDeref
+  result[bfRand] = builtinRand
+  result[bfSeed] = builtinSeed
+  result[bfReadFile] = builtinReadFile
+  result[bfParseInt] = builtinParseInt
+  result[bfParseFloat] = builtinParseFloat
+  result[bfParseBool] = builtinParseBool
+  result[bfToString] = builtinToString
+  result[bfIsSome] = builtinIsSome
+  result[bfIsNone] = builtinIsNone
+  result[bfIsOk] = builtinIsOk
+  result[bfIsErr] = builtinIsErr
+
+# Initialize the jump table with instruction handlers
+proc initJumpTable(): array[OpCode, InstructionHandler] =
+  ## Initialize the jump table for fast instruction dispatch
+  result[opLoadInt] = opLoadIntImpl
+  result[opLoadFloat] = opLoadFloatImpl
+  result[opLoadString] = opLoadStringImpl
+  result[opLoadChar] = opLoadCharImpl
+  result[opLoadBool] = opLoadBoolImpl
+  result[opLoadVar] = opLoadVarImpl
+  result[opStoreVar] = opStoreVarImpl
+  result[opLoadNil] = opLoadNilImpl
+  result[opPop] = opPopImpl
+  result[opDup] = opDupImpl
+  result[opAdd] = opAddImpl
+  result[opSub] = opSubImpl
+  result[opMul] = opMulImpl
+  result[opDiv] = opDivImpl
+  result[opMod] = opModImpl
+  result[opNeg] = opNegImpl
+  result[opEq] = opEqImpl
+  result[opNe] = opNeImpl
+  result[opLt] = opLtImpl
+  result[opLe] = opLeImpl
+  result[opGt] = opGtImpl
+  result[opGe] = opGeImpl
+  result[opAnd] = opAndImpl
+  result[opOr] = opOrImpl
+  result[opNot] = opNotImpl
+  result[opNewRef] = opNewRefImpl
+  result[opDeref] = opDerefImpl
+  result[opMakeArray] = opMakeArrayImpl
+  result[opArrayGet] = opArrayGetImpl
+  result[opArraySlice] = opArraySliceImpl
+  result[opArrayLen] = opArrayLenImpl
+  result[opCast] = opCastImpl
+  result[opMakeOptionSome] = opMakeOptionSomeImpl
+  result[opMakeOptionNone] = opMakeOptionNoneImpl
+  result[opMakeResultOk] = opMakeResultOkImpl
+  result[opMakeResultErr] = opMakeResultErrImpl
+  result[opMatchValue] = opMatchValueImpl
+  result[opExtractSome] = opExtractSomeImpl
+  result[opExtractOk] = opExtractOkImpl
+  result[opExtractErr] = opExtractErrImpl
+  result[opMakeObject] = opMakeObjectImpl
+  result[opObjectGet] = opObjectGetImpl
+  result[opJump] = opJumpImpl
+  result[opJumpIfFalse] = opJumpIfFalseImpl
+  result[opCall] = opCallImpl
+  result[opReturn] = opReturnImpl
+  # Fused instructions
+  result[opLoadVarArrayGet] = opLoadVarArrayGetImpl
+  result[opLoadIntAddVar] = opLoadIntAddVarImpl
+  result[opLoadVarIntLt] = opLoadVarIntLtImpl
+  result[opCallBuiltin] = opCallBuiltinImpl
+
 proc newBytecodeVM*(program: BytecodeProgram): VM =
-  ## Create a new bytecode VM instance
+  ## Create a new bytecode VM instance with initialized jump table and pre-allocated stacks
   VM(
-    stack: @[],
-    heap: @[],
-    callStack: @[],
+    stack: newSeqOfCap[V](1024),      # Pre-allocate stack capacity for better performance
+    heap: newSeqOfCap[HeapCell](256), # Pre-allocate heap capacity
+    callStack: newSeqOfCap[Frame](64), # Pre-allocate call stack capacity
     program: program,
     pc: 0,
     globals: initTable[string, V](),
+    jumpTable: initJumpTable(),       # Initialize jump table once at VM creation
+    builtinTable: initBuiltinTable(), # Initialize builtin dispatch table
     debugger: nil  # No debugger by default - zero cost
   )
 
 proc newBytecodeVMWithDebugger*(program: BytecodeProgram, debugger: EtchDebugger): VM =
-  ## Create a new bytecode VM instance with debugger attached
+  ## Create a new bytecode VM instance with debugger attached and pre-allocated stacks
   VM(
-    stack: @[],
-    heap: @[],
-    callStack: @[],
+    stack: newSeqOfCap[V](1024),      # Pre-allocate stack capacity for better performance
+    heap: newSeqOfCap[HeapCell](256), # Pre-allocate heap capacity
+    callStack: newSeqOfCap[Frame](64), # Pre-allocate call stack capacity
     program: program,
     pc: 0,
     globals: initTable[string, V](),
+    jumpTable: initJumpTable(),       # Initialize jump table once at VM creation
     debugger: debugger
   )
 

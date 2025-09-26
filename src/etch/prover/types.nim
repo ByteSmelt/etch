@@ -40,9 +40,10 @@ type ProverContext* = ref object
   fnContext*: string  # Current function context for error messages
   flags*: CompilerFlags  # Compiler flags (includes verbose mode)
   prog*: Program  # Program being analyzed (can be nil)
+  callStack*: seq[string]  # Track function call stack to prevent infinite recursion
 
 proc newProverContext*(fnContext: string = "", flags: CompilerFlags = CompilerFlags(), prog: Program = nil): ProverContext =
-  ProverContext(fnContext: fnContext, flags: flags, prog: prog)
+  ProverContext(fnContext: fnContext, flags: flags, prog: prog, callStack: @[])
 
 proc infoConst*(v: int64): Info =
   Info(known: true, cval: v, minv: v, maxv: v, nonZero: v != 0, isBool: false, initialized: true, used: false)
