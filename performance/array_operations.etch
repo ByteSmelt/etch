@@ -1,0 +1,22 @@
+fn main() {
+    seed(42);
+    var arr = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+    var sum = 0;
+
+    // Array access benchmark
+    for i in 0..<50000 {
+        var idx = rand(9, 0);
+        sum = (sum + arr[idx]) % 100000;
+
+        // Add some computation periodically
+        if i % 1000 == 0 {
+            sum = (sum + 10) % 100000;  // 10 is array length
+        }
+    }
+
+    // Print final sum and array state
+    print(sum);
+    for i in 0..<10 {  // Hardcode array length
+        print(arr[i]);
+    }
+}

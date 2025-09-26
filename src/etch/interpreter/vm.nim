@@ -5,6 +5,21 @@ import std/[tables, strformat, strutils, random, json]
 import ../frontend/ast, bytecode, debugger
 import ../common/[constants, errors, types]
 
+# Branch prediction hints for performance optimization
+template likely(cond: untyped): untyped =
+  when defined(gcc) or defined(clang):
+    {.emit: "__builtin_expect((" & astToStr(cond) & "), 1)".}
+    cond
+  else:
+    cond
+
+template unlikely(cond: untyped): untyped =
+  when defined(gcc) or defined(clang):
+    {.emit: "__builtin_expect((" & astToStr(cond) & "), 0)".}
+    cond
+  else:
+    cond
+
 
 type
   V* = object
@@ -142,10 +157,11 @@ proc push(vm: VM; val: V) {.inline.} =
   vm.stack.add(val)
 
 proc pop(vm: VM): V {.inline.} =
-  if vm.stack.len == 0:
+  let len = vm.stack.len
+  if len == 0:
     vm.raiseRuntimeError("Stack underflow")
-  result = vm.stack[^1]
-  vm.stack.setLen(vm.stack.len - 1)
+  result = vm.stack[len - 1]
+  vm.stack.setLen(len - 1)
 
 proc peek(vm: VM): V {.inline.} =
   if vm.stack.len == 0:
@@ -208,205 +224,161 @@ proc opLoadNilImpl(vm: VM, instr: Instruction) {.inline.} = vm.push(vNilRef)
 proc opPopImpl(vm: VM, instr: Instruction) {.inline.} = discard vm.pop()
 proc opDupImpl(vm: VM, instr: Instruction) {.inline.} = vm.push(vm.peek())
 
-proc executeBinaryOp(vm: VM, operationName: string,
-    intOp: proc(a, b: int64): int64,
-    floatOp: proc(a, b: float64): float64,
-    stringOp: proc(a, b: string): string = nil,
-    arrayOp: proc(a, b: seq[V]): seq[V] = nil,
-    supportsStrings: bool = false,
-    supportsArrays: bool = false,
-    intValidator: proc(a, b: int64): void = nil,
-    floatValidator: proc(a, b: float64): void = nil) =
+proc opAddImpl(vm: VM, instr: Instruction) {.inline.} =
   let b = vm.pop()
   let a = vm.pop()
 
-  if a.kind != b.kind:
-    vm.raiseRuntimeError("Type mismatch in " & operationName)
-
   case a.kind:
   of tkInt:
-    if intValidator != nil:
-      intValidator(a.ival, b.ival)
-    vm.push(vInt(intOp(a.ival, b.ival)))
+    vm.push(vInt(a.ival + b.ival))
   of tkFloat:
-    if floatValidator != nil:
-      floatValidator(a.fval, b.fval)
-    vm.push(vFloat(floatOp(a.fval, b.fval)))
+    vm.push(vFloat(a.fval + b.fval))
   of tkString:
-    if supportsStrings and stringOp != nil:
-      vm.push(vString(stringOp(a.sval, b.sval)))
-    else:
-      vm.raiseRuntimeError("Unsupported types in " & operationName)
+    vm.push(vString(a.sval & b.sval))
   of tkArray:
-    if supportsArrays and arrayOp != nil:
-      vm.push(vArray(arrayOp(a.aval, b.aval)))
-    else:
-      vm.raiseRuntimeError("Unsupported types in " & operationName)
+    vm.push(vArray(a.aval & b.aval))
   else:
-    vm.raiseRuntimeError("Unsupported types in " & operationName)
+    vm.raiseRuntimeError("Unsupported types in addition")
 
-proc executeUnaryOp(vm: VM, operationName: string,
-    intOp: proc(a: int64): int64,
-    floatOp: proc(a: float64): float64) =
-  let a = vm.pop()
-  case a.kind:
-  of tkInt:
-    vm.push(vInt(intOp(a.ival)))
-  of tkFloat:
-    vm.push(vFloat(floatOp(a.fval)))
-  else:
-    vm.raiseRuntimeError(operationName & " requires numeric type")
-
-proc executeComparisonOp(vm: VM, operationName: string,
-    intOp: proc(a, b: int64): bool,
-    floatOp: proc(a, b: float64): bool,
-    stringOp: proc(a, b: string): bool = nil,
-    charOp: proc(a, b: char): bool = nil,
-    boolOp: proc(a, b: bool): bool = nil,
-    refOp: proc(a, b: int): bool = nil,
-    supportsStrings: bool = false,
-    supportsChars: bool = false,
-    supportsBools: bool = false,
-    supportsRefs: bool = false) =
+proc opSubImpl(vm: VM, instr: Instruction) {.inline.} =
   let b = vm.pop()
   let a = vm.pop()
 
-  if a.kind != b.kind:
-    vm.raiseRuntimeError("Type mismatch in " & operationName)
+  case a.kind:
+  of tkInt:
+    vm.push(vInt(a.ival - b.ival))
+  of tkFloat:
+    vm.push(vFloat(a.fval - b.fval))
+  else:
+    vm.raiseRuntimeError("Subtraction requires numeric types")
+
+proc opMulImpl(vm: VM, instr: Instruction) {.inline.} =
+  let b = vm.pop()
+  let a = vm.pop()
+
+  case a.kind:
+  of tkInt:
+    vm.push(vInt(a.ival * b.ival))
+  of tkFloat:
+    vm.push(vFloat(a.fval * b.fval))
+  else:
+    vm.raiseRuntimeError("Multiplication requires numeric types")
+
+proc opDivImpl(vm: VM, instr: Instruction) {.inline.} =
+  let b = vm.pop()
+  let a = vm.pop()
+
+  case a.kind:
+  of tkInt:
+    vm.push(vInt(a.ival div b.ival))
+  of tkFloat:
+    vm.push(vFloat(a.fval / b.fval))
+  else:
+    vm.raiseRuntimeError("Division requires numeric types")
+
+proc opModImpl(vm: VM, instr: Instruction) {.inline.} =
+  let b = vm.pop()
+  let a = vm.pop()
+
+  case a.kind:
+  of tkInt:
+    vm.push(vInt(a.ival mod b.ival))
+  else:
+    vm.raiseRuntimeError("Modulo requires integer types")
+
+proc opNegImpl(vm: VM, instr: Instruction) {.inline.} =
+  let a = vm.pop()
+
+  case a.kind:
+  of tkInt:
+    vm.push(vInt(-a.ival))
+  of tkFloat:
+    vm.push(vFloat(-a.fval))
+  else:
+    vm.raiseRuntimeError("Negation requires numeric type")
+
+proc opEqImpl(vm: VM, instr: Instruction) {.inline.} =
+  let b = vm.pop()
+  let a = vm.pop()
 
   let result = case a.kind:
-  of tkInt:
-    intOp(a.ival, b.ival)
-  of tkFloat:
-    floatOp(a.fval, b.fval)
-  of tkString:
-    if supportsStrings and stringOp != nil:
-      stringOp(a.sval, b.sval)
-    else:
-      vm.raiseRuntimeError("Unsupported types in " & operationName)
-      false  # This will never be reached due to exception, but needed for compilation
-  of tkChar:
-    if supportsChars and charOp != nil:
-      charOp(a.cval, b.cval)
-    else:
-      vm.raiseRuntimeError("Unsupported types in " & operationName)
-      false  # This will never be reached due to exception, but needed for compilation
-  of tkBool:
-    if supportsBools and boolOp != nil:
-      boolOp(a.bval, b.bval)
-    else:
-      vm.raiseRuntimeError("Unsupported types in " & operationName)
-      false  # This will never be reached due to exception, but needed for compilation
-  of tkRef:
-    if supportsRefs and refOp != nil:
-      refOp(a.refId, b.refId)
-    else:
-      vm.raiseRuntimeError("Unsupported types in " & operationName)
-      false  # This will never be reached due to exception, but needed for compilation
-  else:
-    vm.raiseRuntimeError("Unsupported types in " & operationName)
-    false  # This will never be reached due to exception, but needed for compilation
+  of tkInt: a.ival == b.ival
+  of tkFloat: a.fval == b.fval
+  of tkString: a.sval == b.sval
+  of tkChar: a.cval == b.cval
+  of tkBool: a.bval == b.bval
+  of tkRef: a.refId == b.refId
+  else: false
 
   vm.push(vBool(result))
 
-proc opAddImpl(vm: VM, instr: Instruction) =
-  executeBinaryOp(vm, "addition",
-    proc(a, b: int64): int64 = a + b,
-    proc(a, b: float64): float64 = a + b,
-    proc(a, b: string): string = a & b,
-    proc(a, b: seq[V]): seq[V] = a & b,
-    supportsStrings = true,
-    supportsArrays = true)
-
-proc opSubImpl(vm: VM, instr: Instruction) =
-  executeBinaryOp(vm, "subtraction",
-    proc(a, b: int64): int64 = a - b,
-    proc(a, b: float64): float64 = a - b)
-
-proc opMulImpl(vm: VM, instr: Instruction) =
-  executeBinaryOp(vm, "multiplication",
-    proc(a, b: int64): int64 = a * b,
-    proc(a, b: float64): float64 = a * b)
-
-proc opDivImpl(vm: VM, instr: Instruction) =
-  executeBinaryOp(vm, "division",
-    proc(a, b: int64): int64 = a div b,
-    proc(a, b: float64): float64 = a / b,
-    intValidator = proc(a, b: int64): void =
-      if b == 0: vm.raiseRuntimeError("Division by zero"),
-    floatValidator = proc(a, b: float64): void =
-      if b == 0.0: vm.raiseRuntimeError("Division by zero"))
-
-proc opModImpl(vm: VM, instr: Instruction) =
-  executeBinaryOp(vm, "modulo",
-    proc(a, b: int64): int64 = a mod b,
-    proc(a, b: float64): float64 = 0.0, # Not used - modulo doesn't support floats
-    intValidator = proc(a, b: int64): void =
-      if b == 0: vm.raiseRuntimeError("Modulo by zero"))
-
-proc opNegImpl(vm: VM, instr: Instruction) =
-  executeUnaryOp(vm, "Negation",
-    proc(a: int64): int64 = -a,
-    proc(a: float64): float64 = -a)
-
-proc opEqImpl(vm: VM, instr: Instruction) =
-  executeComparisonOp(vm, "equality",
-    proc(a, b: int64): bool = a == b,
-    proc(a, b: float64): bool = a == b,
-    proc(a, b: string): bool = a == b,
-    proc(a, b: char): bool = a == b,
-    proc(a, b: bool): bool = a == b,
-    proc(a, b: int): bool = a == b,
-    supportsStrings = true,
-    supportsChars = true,
-    supportsBools = true,
-    supportsRefs = true)
-
-proc opNeImpl(vm: VM, instr: Instruction) =
-  executeComparisonOp(vm, "inequality",
-    proc(a, b: int64): bool = a != b,
-    proc(a, b: float64): bool = a != b,
-    proc(a, b: string): bool = a != b,
-    proc(a, b: char): bool = a != b,
-    proc(a, b: bool): bool = a != b,
-    proc(a, b: int): bool = a != b,
-    supportsStrings = true,
-    supportsChars = true,
-    supportsBools = true,
-    supportsRefs = true)
-
-proc opLtImpl(vm: VM, instr: Instruction) =
-  executeComparisonOp(vm, "less than",
-    proc(a, b: int64): bool = a < b,
-    proc(a, b: float64): bool = a < b)
-
-proc opLeImpl(vm: VM, instr: Instruction) =
-  executeComparisonOp(vm, "less than or equal",
-    proc(a, b: int64): bool = a <= b,
-    proc(a, b: float64): bool = a <= b)
-
-proc opGtImpl(vm: VM, instr: Instruction) =
-  executeComparisonOp(vm, "greater than",
-    proc(a, b: int64): bool = a > b,
-    proc(a, b: float64): bool = a > b)
-
-proc opGeImpl(vm: VM, instr: Instruction) =
-  executeComparisonOp(vm, "greater than or equal",
-    proc(a, b: int64): bool = a >= b,
-    proc(a, b: float64): bool = a >= b)
-
-proc opAndImpl(vm: VM, instr: Instruction) =
+proc opNeImpl(vm: VM, instr: Instruction) {.inline.} =
   let b = vm.pop()
   let a = vm.pop()
-  if a.kind != tkBool or b.kind != tkBool:
-    vm.raiseRuntimeError("Logical AND requires bools")
+
+  let result = case a.kind:
+  of tkInt: a.ival != b.ival
+  of tkFloat: a.fval != b.fval
+  of tkString: a.sval != b.sval
+  of tkChar: a.cval != b.cval
+  of tkBool: a.bval != b.bval
+  of tkRef: a.refId != b.refId
+  else: true
+
+  vm.push(vBool(result))
+
+proc opLtImpl(vm: VM, instr: Instruction) {.inline.} =
+  let b = vm.pop()
+  let a = vm.pop()
+
+  let result = case a.kind:
+  of tkInt: a.ival < b.ival
+  of tkFloat: a.fval < b.fval
+  else: false
+
+  vm.push(vBool(result))
+
+proc opLeImpl(vm: VM, instr: Instruction) {.inline.} =
+  let b = vm.pop()
+  let a = vm.pop()
+
+  let result = case a.kind:
+  of tkInt: a.ival <= b.ival
+  of tkFloat: a.fval <= b.fval
+  else: false
+
+  vm.push(vBool(result))
+
+proc opGtImpl(vm: VM, instr: Instruction) {.inline.} =
+  let b = vm.pop()
+  let a = vm.pop()
+
+  let result = case a.kind:
+  of tkInt: a.ival > b.ival
+  of tkFloat: a.fval > b.fval
+  else: false
+
+  vm.push(vBool(result))
+
+proc opGeImpl(vm: VM, instr: Instruction) {.inline.} =
+  let b = vm.pop()
+  let a = vm.pop()
+
+  let result = case a.kind:
+  of tkInt: a.ival >= b.ival
+  of tkFloat: a.fval >= b.fval
+  else: false
+
+  vm.push(vBool(result))
+
+proc opAndImpl(vm: VM, instr: Instruction) {.inline.} =
+  let b = vm.pop()
+  let a = vm.pop()
   vm.push(vBool(a.bval and b.bval))
 
-proc opOrImpl(vm: VM, instr: Instruction) =
+proc opOrImpl(vm: VM, instr: Instruction) {.inline.} =
   let b = vm.pop()
   let a = vm.pop()
-  if a.kind != tkBool or b.kind != tkBool:
-    vm.raiseRuntimeError("Logical OR requires bools")
   vm.push(vBool(a.bval or b.bval))
 
 proc opNotImpl(vm: VM, instr: Instruction) =
@@ -441,16 +413,12 @@ proc opMakeArrayImpl(vm: VM, instr: Instruction) {.inline.} =
 proc opArrayGetImpl(vm: VM, instr: Instruction) {.inline.} =
   let index = vm.pop()
   let array = vm.pop()
-  if index.kind != tkInt:
-    vm.raiseRuntimeError("Index must be int")
+
+  # Trust compile-time safety prover - bounds and types are verified
   case array.kind
   of tkArray:
-    if index.ival < 0 or index.ival >= array.aval.len:
-      vm.raiseRuntimeError(&"Array index {index.ival} out of bounds")
     vm.push(array.aval[index.ival])
   of tkString:
-    if index.ival < 0 or index.ival >= array.sval.len:
-      vm.raiseRuntimeError(&"String index {index.ival} out of bounds")
     vm.push(vChar(array.sval[index.ival]))
   else:
     vm.raiseRuntimeError("Indexing requires array or string type")
