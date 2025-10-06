@@ -197,6 +197,12 @@ proc inferFieldAccessExpr(prog: Program; fd: FunDecl; sc: Scope; e: Expr; subst:
   if objType.kind == tkRef:
     actualObjType = objType.inner
 
+  # Resolve user-defined types to get the actual object type
+  if actualObjType.kind == tkUserDefined:
+    actualObjType = resolveUserType(sc, actualObjType.name)
+    if actualObjType == nil:
+      raise newTypecheckError(e.pos, &"unknown type '{objType.name}'")
+
   if actualObjType.kind == tkObject:
     # Look up field in object type
     for field in actualObjType.fields:
@@ -242,8 +248,10 @@ proc inferNewExpr(prog: Program; fd: FunDecl; sc: Scope; e: Expr; subst: var TyS
 
 proc inferObjectLiteralExpr(prog: Program; fd: FunDecl; sc: Scope; e: Expr; subst: var TySubst; expectedTy: EtchType): EtchType =
   # Object literal: try to infer type from expected type or error
-  if expectedTy == nil or expectedTy.kind != tkObject:
-    raise newTypecheckError(e.pos, "object literal requires explicit type annotation")
+  if expectedTy == nil:
+    raise newTypecheckError(e.pos, "object literal requires explicit type annotation (no expected type)")
+  if expectedTy.kind != tkObject:
+    raise newTypecheckError(e.pos, &"object literal requires explicit type annotation (expected type is {expectedTy.kind}, not object)")
 
   # Verify all required fields are provided and types match
   let objType = expectedTy
@@ -260,6 +268,9 @@ proc inferObjectLiteralExpr(prog: Program; fd: FunDecl; sc: Scope; e: Expr; subs
 
     if fieldType == nil:
       raise newTypecheckError(e.pos, &"object type '{objType.name}' has no field '{fieldInit.name}'")
+
+    # Resolve nested user types in the field type (e.g., array[Person] -> array[<resolved Person>])
+    fieldType = resolveNestedUserTypes(sc, fieldType, e.pos)
 
     # Type check the field value
     let valueType = inferExprTypes(prog, fd, sc, fieldInit.value, subst, fieldType)
@@ -386,14 +397,27 @@ proc inferIndexExpr(prog: Program; fd: FunDecl; sc: Scope; e: Expr; subst: var T
   return e.typ
 
 
-proc inferArrayExpr(prog: Program; fd: FunDecl; sc: Scope; e: Expr; subst: var TySubst): EtchType =
+proc inferArrayExpr(prog: Program; fd: FunDecl; sc: Scope; e: Expr; subst: var TySubst; expectedTy: EtchType = nil): EtchType =
   # Array literal: [elem1, elem2, ...] - infer element type from first element
   if e.elements.len == 0:
     raise newTypecheckError(e.pos, "empty arrays not supported - cannot infer element type")
-  let elemType = inferExprTypes(prog, fd, sc, e.elements[0], subst)
+
+  # Try to get expected element type from expected array type
+  var expectedElemType: EtchType = nil
+  if expectedTy != nil and expectedTy.kind == tkArray:
+    expectedElemType = expectedTy.inner
+    # Resolve user-defined types
+    if expectedElemType != nil and expectedElemType.kind == tkUserDefined:
+      expectedElemType = resolveUserType(sc, expectedElemType.name)
+      if expectedElemType == nil:
+        raise newTypecheckError(e.pos, &"unknown type in array")
+
+  # Infer type of first element with expected type if available
+  let elemType = inferExprTypes(prog, fd, sc, e.elements[0], subst, expectedElemType)
+
   # Verify all elements have the same type
   for i in 1..<e.elements.len:
-    let t = inferExprTypes(prog, fd, sc, e.elements[i], subst)
+    let t = inferExprTypes(prog, fd, sc, e.elements[i], subst, expectedElemType)
     if not typeEq(elemType, t):
       raise newTypecheckError(e.elements[i].pos, &"array element type mismatch: expected {elemType}, got {t}")
   e.typ = tArray(elemType)
@@ -538,7 +562,7 @@ proc inferExprTypes*(prog: Program; fd: FunDecl; sc: Scope; e: Expr; subst: var 
   of ekCall: return inferCallExpr(prog, fd, sc, e, subst)
   of ekNewRef: return inferNewRefExpr(prog, fd, sc, e, subst)
   of ekDeref: return inferDerefExpr(prog, fd, sc, e, subst)
-  of ekArray: return inferArrayExpr(prog, fd, sc, e, subst)
+  of ekArray: return inferArrayExpr(prog, fd, sc, e, subst, expectedTy)
   of ekIndex: return inferIndexExpr(prog, fd, sc, e, subst)
   of ekSlice: return inferSliceExpr(prog, fd, sc, e, subst)
   of ekArrayLen: return inferArrayLenExpr(prog, fd, sc, e, subst)

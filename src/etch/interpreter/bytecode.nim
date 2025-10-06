@@ -275,15 +275,33 @@ proc compileResultErrExpr(prog: var BytecodeProgram, e: Expr, ctx: var Compilati
 
 proc compileObjectLiteralExpr(prog: var BytecodeProgram, e: Expr, ctx: var CompilationContext) =
   # Compile object literal: { field1: value1, field2: value2, ... }
-  # Stack layout: value1, "field1", value2, "field2", ...
+  # Include both explicitly provided fields and fields with defaults
+
+  # Track which fields are provided
+  var providedFields: seq[string] = @[]
+  for field in e.fieldInits:
+    providedFields.add(field.name)
+
+  # First, compile all explicitly provided fields
   for field in e.fieldInits:
     # Push field value first, then field name (reverse order for stack)
     prog.compileExpr(field.value, ctx)
     let fieldNameIndex = prog.addConstant(field.name)
     prog.emit(opLoadString, fieldNameIndex, pos = e.pos, ctx = ctx)
 
-  # Create object with specified number of fields
-  prog.emit(opMakeObject, e.fieldInits.len, pos = e.pos, ctx = ctx)
+  # Then add fields with default values that weren't provided
+  var totalFields = e.fieldInits.len
+  if e.objectType != nil and e.objectType.kind == tkObject:
+    for objField in e.objectType.fields:
+      if objField.name notin providedFields and objField.defaultValue.isSome:
+        # Compile the default value expression
+        prog.compileExpr(objField.defaultValue.get, ctx)
+        let fieldNameIndex = prog.addConstant(objField.name)
+        prog.emit(opLoadString, fieldNameIndex, pos = e.pos, ctx = ctx)
+        totalFields += 1
+
+  # Create object with all fields (provided + defaults)
+  prog.emit(opMakeObject, totalFields, pos = e.pos, ctx = ctx)
 
 proc compileFieldAccessExpr(prog: var BytecodeProgram, e: Expr, ctx: var CompilationContext) =
   # Compile field access: obj.field

@@ -169,7 +169,13 @@ proc typecheckFor(prog: Program; fd: FunDecl; sc: Scope; s: Stmt; subst: var TyS
 
     if arrayType.kind == tkArray:
       # Loop variable has the array element type
-      loopScope.types[s.fvar] = arrayType.inner
+      # Resolve nested user types (e.g., Person from array[Person])
+      var elementType = arrayType.inner
+      if elementType.kind == tkUserDefined:
+        elementType = resolveUserType(sc, elementType.name)
+        if elementType == nil:
+          raise newTypecheckError(s.pos, &"unknown type '{arrayType.inner.name}'")
+      loopScope.types[s.fvar] = elementType
     elif arrayType.kind == tkString:
       # String iteration - loop variable is char
       loopScope.types[s.fvar] = tChar()
