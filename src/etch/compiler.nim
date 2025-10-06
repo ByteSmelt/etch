@@ -7,7 +7,7 @@ import typechecker/[core, types, statements, inference]
 import interpreter/[vm, bytecode, serialize]
 import prover/[core]
 import comptime, common/errors
-import common/[constants, logging, cffi, library_resolver]
+import common/[constants, logging, cffi, library_resolver, compiler_hash]
 import module_system
 
 type
@@ -39,13 +39,27 @@ proc shouldRecompile*(sourceFile, bytecodeFile: string, options: CompilerOptions
   if sourceTime > bytecodeTime:
     return true
 
-  # Check source hash + compiler flags
+  # Check source hash + compiler flags + compiler version
   try:
     let sourceContent = readFile(sourceFile)
     let flags = CompilerFlags(verbose: options.verbose, debug: options.debug)
     let currentHash = hashSourceAndFlags(sourceContent, flags)
     let prog = loadBytecode(bytecodeFile)
-    return prog.sourceHash != currentHash
+
+    # Check if source hash matches
+    if prog.sourceHash != currentHash:
+      return true
+
+    # Check if compiler version matches
+    let currentCompilerVersion = getCompilerVersionHash()
+    if prog.compilerVersion != currentCompilerVersion:
+      if options.verbose:
+        echo &"[COMPILER] Bytecode invalidated: compiler version changed"
+        echo &"  Cached version: {prog.compilerVersion}"
+        echo &"  Current version: {currentCompilerVersion}"
+      return true
+
+    return false
   except:
     return true  # Recompile if we can't read bytecode
 
@@ -168,7 +182,25 @@ proc evaluateGlobalVariables(prog: Program): Table[string, V] =
       if canEvaluateAtCompileTime(g.vinit.get(), prog):
         try:
           # Evaluate pure expressions at compile time for optimization
-          let res = evalExprWithBytecode(prog, g.vinit.get(), globalVars)
+          var res = evalExprWithBytecode(prog, g.vinit.get(), globalVars)
+
+          # If the variable type is a union, wrap the value
+          if g.vtype.kind == tkUnion and res.kind != tkUnion:
+            # Find which union type index this value corresponds to
+            for i, ut in g.vtype.unionTypes:
+              # Check if the value type matches this union type
+              let valueMatches = case res.kind:
+                of tkInt: ut.kind == tkInt
+                of tkFloat: ut.kind == tkFloat
+                of tkString: ut.kind == tkString
+                of tkChar: ut.kind == tkChar
+                of tkBool: ut.kind == tkBool
+                else: false
+
+              if valueMatches:
+                res = vUnion(i, res)
+                break
+
           globalVars[g.vname] = res
         except:
           # If evaluation fails, let runtime handle it

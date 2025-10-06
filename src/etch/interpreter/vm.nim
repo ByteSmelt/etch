@@ -32,6 +32,9 @@ type
     wrappedVal*: ref V     # the actual value for Some/Ok, or error msg for Err
     # Object represented as field name -> value mapping
     oval*: Table[string, V]
+    # Union represented as type index and wrapped value
+    unionTypeIdx*: int     # Index of the active type in the union
+    unionVal*: ref V       # The actual value
 
   HeapCell = ref object
     alive: bool
@@ -124,6 +127,11 @@ proc vResultErr(err: V): V {.inline.}  =
   var refVal = new(V)
   refVal[] = err
   V(kind: tkResult, hasValue: false, wrappedVal: refVal)
+
+proc vUnion*(typeIdx: int, val: V): V {.inline.} =
+  var refVal = new(V)
+  refVal[] = val
+  V(kind: tkUnion, unionTypeIdx: typeIdx, unionVal: refVal)
 
 proc alloc(vm: VM; v: V): V {.inline.}  =
   vm.heap.add HeapCell(alive: true, val: v)
@@ -628,7 +636,15 @@ proc opMatchValueImpl(vm: VM, instr: Instruction): bool =
     else:
       vm.push(vBool(false))
   else:
-    vm.push(vBool(false))
+    # Check for union type match (100+ = union type indices)
+    if instr.arg >= 100:
+      let typeIndex = instr.arg - 100
+      if value.kind == tkUnion and value.unionTypeIdx == typeIndex:
+        vm.push(vBool(true))
+      else:
+        vm.push(vBool(false))
+    else:
+      vm.push(vBool(false))
   return true
 
 proc opExtractSomeImpl(vm: VM, instr: Instruction): bool =
@@ -653,6 +669,20 @@ proc opExtractErrImpl(vm: VM, instr: Instruction): bool =
     vm.push(resultValue.wrappedVal[])
   else:
     vm.raiseRuntimeError("extractErr: not an Err value")
+  return true
+
+proc opMakeUnionImpl(vm: VM, instr: Instruction): bool =
+  # arg contains the type index for the union
+  let value = vm.pop()
+  vm.push(vUnion(int(instr.arg), value))
+  return true
+
+proc opExtractUnionImpl(vm: VM, instr: Instruction): bool =
+  let unionValue = vm.pop()
+  if unionValue.kind == tkUnion and unionValue.unionVal != nil:
+    vm.push(unionValue.unionVal[])
+  else:
+    vm.raiseRuntimeError("extractUnion: not a union value")
   return true
 
 proc opMakeObjectImpl(vm: VM, instr: Instruction): bool =
@@ -1334,6 +1364,60 @@ proc executeInstruction*(vm: VM): bool =
 
   return continueExecution
 
+proc convertGlobalValueToVMValue*(gv: GlobalValue): V =
+  ## Convert a GlobalValue from bytecode storage to a VM value
+  case gv.kind
+  of tkInt:
+    V(kind: tkInt, ival: gv.ival)
+  of tkFloat:
+    V(kind: tkFloat, fval: gv.fval)
+  of tkBool:
+    V(kind: tkBool, bval: gv.bval)
+  of tkString:
+    V(kind: tkString, sval: gv.sval)
+  of tkChar:
+    V(kind: tkChar, cval: gv.cval)
+  of tkVoid:
+    V(kind: tkVoid)
+  of tkRef:
+    V(kind: tkRef, refId: gv.refId)
+  of tkArray:
+    # Convert array values recursively
+    var arrayVals: seq[V] = @[]
+    for item in gv.aval:
+      arrayVals.add(convertGlobalValueToVMValue(item))
+    V(kind: tkArray, aval: arrayVals)
+  of tkOption:
+    # Convert option value
+    var wrappedVal: ref V = nil
+    if gv.wrappedVal != nil:
+      wrappedVal = new(V)
+      wrappedVal[] = convertGlobalValueToVMValue(gv.wrappedVal[])
+    V(kind: tkOption, hasValue: gv.hasValue, wrappedVal: wrappedVal)
+  of tkResult:
+    # Convert result value
+    var wrappedVal: ref V = nil
+    if gv.wrappedVal != nil:
+      wrappedVal = new(V)
+      wrappedVal[] = convertGlobalValueToVMValue(gv.wrappedVal[])
+    V(kind: tkResult, hasValue: gv.hasValue, wrappedVal: wrappedVal)
+  of tkObject:
+    # Convert object fields recursively
+    var objFields = initTable[string, V]()
+    for field, fieldGV in gv.oval:
+      objFields[field] = convertGlobalValueToVMValue(fieldGV)
+    V(kind: tkObject, oval: objFields)
+  of tkUnion:
+    # Convert union value - need to recursively convert the wrapped value
+    var wrappedVal: ref V = nil
+    if gv.unionVal != nil:
+      wrappedVal = new(V)
+      wrappedVal[] = convertGlobalValueToVMValue(gv.unionVal[])
+    V(kind: tkUnion, unionTypeIdx: gv.unionTypeIdx, unionVal: wrappedVal)
+  else:
+    # Default for any remaining types
+    V(kind: tkVoid)
+
 proc runBytecode*(vm: VM): int =
   ## Run the bytecode program. Returns exit code.
   try:
@@ -1341,19 +1425,7 @@ proc runBytecode*(vm: VM): int =
     for globalName in vm.program.globals:
       if vm.program.globalValues.hasKey(globalName):
         let gv = vm.program.globalValues[globalName]
-        case gv.kind
-        of tkInt:
-          vm.globals[globalName] = V(kind: tkInt, ival: gv.ival)
-        of tkFloat:
-          vm.globals[globalName] = V(kind: tkFloat, fval: gv.fval)
-        of tkBool:
-          vm.globals[globalName] = V(kind: tkBool, bval: gv.bval)
-        of tkString:
-          vm.globals[globalName] = V(kind: tkString, sval: gv.sval)
-        of tkChar:
-          vm.globals[globalName] = V(kind: tkChar, cval: gv.cval)
-        else:
-          vm.globals[globalName] = vInt(0)  # Default for unsupported types
+        vm.globals[globalName] = convertGlobalValueToVMValue(gv)
       else:
         # For globals without pre-computed values, initialize with default
         # The runtime initialization code will set the correct values
@@ -1449,6 +1521,8 @@ proc initJumpTable(): array[OpCode, InstructionHandler] =
   result[opMakeObject] = opMakeObjectImpl
   result[opObjectGet] = opObjectGetImpl
   result[opObjectSet] = opObjectSetImpl
+  result[opMakeUnion] = opMakeUnionImpl
+  result[opExtractUnion] = opExtractUnionImpl
   result[opJump] = opJumpImpl
   result[opJumpIfFalse] = opJumpIfFalseImpl
   result[opCall] = opCallImpl
@@ -1500,9 +1574,47 @@ proc convertVMValueToGlobalValue*(val: V): GlobalValue =
     GlobalValue(kind: tkString, sval: val.sval)
   of tkChar:
     GlobalValue(kind: tkChar, cval: val.cval)
+  of tkVoid:
+    GlobalValue(kind: tkVoid)
+  of tkRef:
+    GlobalValue(kind: tkRef, refId: val.refId)
+  of tkArray:
+    # Convert array values recursively
+    var arrayVals: seq[GlobalValue] = @[]
+    for item in val.aval:
+      arrayVals.add(convertVMValueToGlobalValue(item))
+    GlobalValue(kind: tkArray, aval: arrayVals)
+  of tkOption:
+    # Convert option value
+    var wrappedGlobal: ref GlobalValue = nil
+    if val.wrappedVal != nil:
+      wrappedGlobal = new(GlobalValue)
+      wrappedGlobal[] = convertVMValueToGlobalValue(val.wrappedVal[])
+    GlobalValue(kind: tkOption, hasValue: val.hasValue, wrappedVal: wrappedGlobal)
+  of tkResult:
+    # Convert result value
+    var wrappedGlobal: ref GlobalValue = nil
+    if val.wrappedVal != nil:
+      wrappedGlobal = new(GlobalValue)
+      wrappedGlobal[] = convertVMValueToGlobalValue(val.wrappedVal[])
+    GlobalValue(kind: tkResult, hasValue: val.hasValue, wrappedVal: wrappedGlobal)
+  of tkObject:
+    # Convert object fields recursively
+    var objFields = initTable[string, GlobalValue]()
+    for field, fieldVal in val.oval:
+      objFields[field] = convertVMValueToGlobalValue(fieldVal)
+    GlobalValue(kind: tkObject, oval: objFields)
+  of tkUnion:
+    # Convert union value - need to recursively convert the wrapped value
+    var wrappedGlobal = new(GlobalValue)
+    if val.unionVal != nil:
+      wrappedGlobal[] = convertVMValueToGlobalValue(val.unionVal[])
+    else:
+      wrappedGlobal[] = GlobalValue(kind: tkVoid)
+    GlobalValue(kind: tkUnion, unionTypeIdx: val.unionTypeIdx, unionVal: wrappedGlobal)
   else:
-    # Default for unsupported types
-    GlobalValue(kind: tkInt, ival: 0)
+    # Default for any remaining types
+    GlobalValue(kind: tkVoid)
 
 proc evalExprWithBytecode*(prog: Program, expr: Expr, globals: Table[string, V] = initTable[string, V]()): V =
   ## Evaluate an expression using bytecode compilation and execution
@@ -1518,6 +1630,7 @@ proc evalExprWithBytecode*(prog: Program, expr: Expr, globals: Table[string, V] 
     sourceFile: "",
     compilerFlags: CompilerFlags(),
     sourceHash: "",
+    compilerVersion: "",  # Not needed for temporary evaluation
     lineToInstructionMap: initTable[int, seq[int]](),
     functionInfo: initTable[string, FunctionInfo]()
   )

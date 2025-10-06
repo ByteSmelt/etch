@@ -3,7 +3,8 @@
 
 import std/[tables, options, hashes, sequtils, strformat, strutils]
 import ../frontend/ast, serialize
-import ../common/[logging, types, constants, builtins]
+import ../common/[logging, types, constants, builtins, compiler_hash]
+import ../typechecker/types as tchecker
 export serialize
 
 type
@@ -165,6 +166,27 @@ proc compileCallExpr(prog: var BytecodeProgram, e: Expr, ctx: var CompilationCon
     for i in 0..<foundFunction.params.len:
       if i < e.args.len:
         prog.compileExpr(e.args[i], ctx)
+
+        # If parameter type is a union and argument type is not, wrap it
+        let paramType = foundFunction.params[i].typ
+        if paramType.kind == tkUnion and e.args[i].typ != nil and e.args[i].typ.kind != tkUnion:
+          # Find which union type index this value corresponds to
+          var typeIdx = -1
+          for j, ut in paramType.unionTypes:
+            if tchecker.typeEq(ut, e.args[i].typ):
+              typeIdx = j
+              break
+            # Also check for tkUserDefined vs tkObject with same name
+            elif (ut.kind == tkUserDefined and e.args[i].typ.kind == tkObject and
+                  ut.name == e.args[i].typ.name):
+              typeIdx = j
+              break
+            elif (ut.kind == tkObject and e.args[i].typ.kind == tkUserDefined and
+                  ut.name == e.args[i].typ.name):
+              typeIdx = j
+              break
+          if typeIdx >= 0:
+            prog.emit(opMakeUnion, typeIdx, pos = e.pos, ctx = ctx)
       elif foundFunction.params[i].defaultValue.isSome:
         prog.compileExpr(foundFunction.params[i].defaultValue.get, ctx)
       else:
@@ -367,6 +389,25 @@ proc compileVarStmt(prog: var BytecodeProgram, s: Stmt, ctx: var CompilationCont
 
   if s.vinit.isSome:
     prog.compileExpr(s.vinit.get, ctx)
+
+    # If the target type is a union, wrap the value
+    if s.vtype.kind == tkUnion and s.vinit.get.typ != nil:
+      var typeIndex = -1
+      for idx, ut in s.vtype.unionTypes:
+        if tchecker.typeEq(ut, s.vinit.get.typ):
+          typeIndex = idx
+          break
+        # Also check for tkUserDefined vs tkObject with same name
+        elif (ut.kind == tkUserDefined and s.vinit.get.typ.kind == tkObject and
+              ut.name == s.vinit.get.typ.name):
+          typeIndex = idx
+          break
+        elif (ut.kind == tkObject and s.vinit.get.typ.kind == tkUserDefined and
+              ut.name == s.vinit.get.typ.name):
+          typeIndex = idx
+          break
+      if typeIndex >= 0:
+        prog.emit(opMakeUnion, typeIndex, pos = s.pos, ctx = ctx)
   else:
     # Default initialization
     case s.vtype.kind
@@ -609,6 +650,30 @@ proc compileExprStmt(prog: var BytecodeProgram, s: Stmt, ctx: var CompilationCon
 proc compileReturnStmt(prog: var BytecodeProgram, s: Stmt, ctx: var CompilationContext) =
   if s.re.isSome:
     prog.compileExpr(s.re.get, ctx)
+    # If returning to a union type, wrap the value
+    # Find the current function in the AST program
+    if ctx.currentFunction.len > 0 and ctx.astProgram.funInstances.hasKey(ctx.currentFunction):
+      let funDecl = ctx.astProgram.funInstances[ctx.currentFunction]
+      if funDecl.ret.kind == tkUnion:
+        let returnExprType = s.re.get().typ
+        if returnExprType != nil and returnExprType.kind != tkUnion:
+          # Find which union type index this value corresponds to
+          var typeIdx = -1
+          for i, ut in funDecl.ret.unionTypes:
+            if tchecker.typeEq(ut, returnExprType):
+              typeIdx = i
+              break
+            # Also check for tkUserDefined vs tkObject with same name
+            elif (ut.kind == tkUserDefined and returnExprType.kind == tkObject and
+                  ut.name == returnExprType.name):
+              typeIdx = i
+              break
+            elif (ut.kind == tkObject and returnExprType.kind == tkUserDefined and
+                  ut.name == returnExprType.name):
+              typeIdx = i
+              break
+          if typeIdx >= 0:
+            prog.emit(opMakeUnion, typeIdx, pos = s.pos, ctx = ctx)
   prog.emit(opReturn, pos = s.pos, ctx = ctx)
 
 proc compileComptimeStmt(prog: var BytecodeProgram, s: Stmt, ctx: var CompilationContext) =
@@ -693,6 +758,29 @@ proc compileMatchExpr(prog: var BytecodeProgram, e: Expr, ctx: var CompilationCo
     of pkWildcard:
       # Wildcard always matches
       discard
+
+    of pkType:
+      # Type pattern for union matching
+      # We need to check if the runtime type matches the pattern type
+      # For now, emit a type check instruction
+      # The type index in the union should be determined by the type checker
+      var typeIndex = -1
+      if e.matchExpr.typ != nil and e.matchExpr.typ.kind == tkUnion:
+        for idx, ut in e.matchExpr.typ.unionTypes:
+          if tchecker.typeEq(ut, matchCase.pattern.typePattern):
+            typeIndex = idx
+            break
+
+      if typeIndex >= 0:
+        prog.emit(opMatchValue, 100 + typeIndex, pos = e.pos, ctx = ctx) # 100+ = union type check
+        let jumpToNext = prog.instructions.len
+        prog.emit(opJumpIfFalse, pos = e.pos, ctx = ctx) # Jump if type doesn't match
+        caseJumps.add(jumpToNext)
+
+        # Extract union value and optionally bind it
+        prog.emit(opExtractUnion, pos = e.pos, ctx = ctx)
+        if matchCase.pattern.typeBind.len > 0:
+          prog.emit(opStoreVar, 0, matchCase.pattern.typeBind, e.pos, ctx)
 
     # Pop the matched value (consumed by pattern test)
     prog.emit(opPop, pos = e.pos, ctx = ctx)
@@ -786,6 +874,7 @@ proc compileProgram*(astProg: Program, sourceHash: string, sourceFile: string = 
     constants: @[],
     functions: initTable[string, int](),
     sourceHash: sourceHash,
+    compilerVersion: getCompilerVersionHash(),
     globals: @[],
     globalValues: initTable[string, GlobalValue](),
     sourceFile: sourceFile,

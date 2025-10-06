@@ -45,8 +45,8 @@ proc getBuiltinNames*(): seq[string] =
 
 # Simple function to check if a name is a builtin function
 proc isBuiltin*(name: string): bool =
-  for id, name in BUILTIN_NAMES:
-    if name == funcName:
+  for id, builtinName in BUILTIN_NAMES:
+    if builtinName == name:
       return true
   return false
 

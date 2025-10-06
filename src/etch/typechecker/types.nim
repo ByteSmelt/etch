@@ -22,7 +22,37 @@ proc typeEq*(a, b: EtchType): bool =
   of tkOption: return typeEq(a.inner, b.inner)
   of tkResult: return typeEq(a.inner, b.inner)
   of tkGeneric: return a.name == b.name
-  of tkUserDefined, tkDistinct, tkObject: return a.name == b.name
+  of tkUserDefined, tkDistinct, tkObject:
+    # For user-defined and object types, check name equality
+    # Also allow matching between tkUserDefined and tkObject with same name
+    if a.kind == b.kind:
+      return a.name == b.name
+    elif (a.kind == tkUserDefined and b.kind == tkObject) or
+         (a.kind == tkObject and b.kind == tkUserDefined):
+      return a.name == b.name
+    else:
+      return false
+  of tkUnion:
+    if a.unionTypes.len != b.unionTypes.len: return false
+    # Check if all types in a exist in b (order doesn't matter for union equality)
+    for aType in a.unionTypes:
+      var found = false
+      for bType in b.unionTypes:
+        if typeEq(aType, bType):
+          found = true
+          break
+      if not found:
+        return false
+    # Check if all types in b exist in a (to ensure they have exactly the same types)
+    for bType in b.unionTypes:
+      var found = false
+      for aType in a.unionTypes:
+        if typeEq(aType, bType):
+          found = true
+          break
+      if not found:
+        return false
+    return true
   of tkInferred: return false  # Inferred types should be resolved before comparison
   else: true
 
@@ -42,6 +72,11 @@ proc resolveTy*(t: EtchType, subst: var TySubst): EtchType =
   of tkDistinct:
     let resolvedInner = if t.inner != nil: resolveTy(t.inner, subst) else: nil
     return tDistinct(t.name, resolvedInner)
+  of tkUnion:
+    var resolvedTypes: seq[EtchType] = @[]
+    for ut in t.unionTypes:
+      resolvedTypes.add(resolveTy(ut, subst))
+    return tUnion(resolvedTypes)
   of tkInt, tkFloat, tkString, tkChar, tkBool, tkVoid, tkUserDefined, tkObject: return t
   of tkInferred:
     # Inferred types should have been resolved by the time we reach resolveTy
@@ -70,9 +105,31 @@ proc getDistinctBaseType*(t: EtchType): EtchType =
 
 
 proc canAssignDistinct*(targetType: EtchType, sourceType: EtchType): bool =
-  ## Check if we can assign sourceType to targetType for distinct types
+  ## Check if we can assign sourceType to targetType for distinct types and unions
   ## Distinct types are only assignable from their base types, not other distinct types
-  if targetType.kind == tkDistinct:
+  ## Union types can accept any of their component types
+  if targetType.kind == tkUnion:
+    # If source is also a union, they need to be equal
+    if sourceType.kind == tkUnion:
+      return typeEq(targetType, sourceType)
+    # If source is not a union, check if it matches any type in the target union
+    for unionType in targetType.unionTypes:
+      # Direct recursive check
+      if canAssignDistinct(unionType, sourceType):
+        return true
+      # Direct type equality check
+      if typeEq(unionType, sourceType):
+        return true
+      # Special case: Check if a tkUserDefined matches a tkObject with the same name
+      if (unionType.kind == tkUserDefined and sourceType.kind == tkObject and
+          unionType.name == sourceType.name):
+        return true
+      # Also the reverse case
+      if (unionType.kind == tkObject and sourceType.kind == tkUserDefined and
+          unionType.name == sourceType.name):
+        return true
+    return false
+  elif targetType.kind == tkDistinct:
     if sourceType.kind == tkDistinct:
       # Can't assign one distinct type to another, even if same base type
       return false

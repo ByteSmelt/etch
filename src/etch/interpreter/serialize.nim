@@ -14,6 +14,18 @@ type
     bval*: bool
     sval*: string
     cval*: char
+    # Ref represented as reference to heap slot
+    refId*: int
+    # Array represented as sequence of values
+    aval*: seq[GlobalValue]
+    # Option/Result represented as wrapped value with presence flag
+    hasValue*: bool        # true for Some/Ok, false for None/Err
+    wrappedVal*: ref GlobalValue     # the actual value for Some/Ok, or error msg for Err
+    # Object represented as field name -> value mapping
+    oval*: Table[string, GlobalValue]
+    # Union fields
+    unionTypeIdx*: int
+    unionVal*: ref GlobalValue
 
   CompilerFlags* = object
     verbose*: bool
@@ -41,6 +53,8 @@ type
     opMakeOptionSome, opMakeOptionNone, opMakeResultOk, opMakeResultErr
     opMatchValue, opExtractSome, opExtractOk, opExtractErr
     opMakeObject, opObjectGet, opObjectSet
+    # Union operations
+    opMakeUnion, opExtractUnion
     # Fused instructions for performance
     opLoadVarArrayGet, opLoadIntAddVar, opLoadVarIntLt
     # Fast builtin dispatch
@@ -73,6 +87,7 @@ type
     constants*: seq[string]
     functions*: Table[string, int]
     sourceHash*: string
+    compilerVersion*: string  # Hash of compiler source code
     globals*: seq[string]
     globalValues*: Table[string, GlobalValue]
     sourceFile*: string
@@ -97,6 +112,14 @@ proc serializeToBinary*(prog: BytecodeProgram): string =
   elif hashBytes.len > 32:
     hashBytes = hashBytes[0..<32]
   stream.write(hashBytes)
+
+  # Compiler version hash (32 bytes, padded with zeros if needed)
+  var compilerBytes = prog.compilerVersion
+  if compilerBytes.len < 32:
+    compilerBytes = compilerBytes & repeat('\0', 32 - compilerBytes.len)
+  elif compilerBytes.len > 32:
+    compilerBytes = compilerBytes[0..<32]
+  stream.write(compilerBytes)
 
   # Compiler flags
   var flags: uint8 = 0
@@ -263,6 +286,9 @@ proc deserializeFromBinary*(data: string): BytecodeProgram =
 
   # Read source hash
   result.sourceHash = stream.readStr(32).strip(chars = {'\0'})
+
+  # Read compiler version hash
+  result.compilerVersion = stream.readStr(32).strip(chars = {'\0'})
 
   # Read compiler flags
   let flags = stream.readUint8()
@@ -459,6 +485,8 @@ proc `$`*(op: OpCode): string =
   of opMakeObject: "MAKE_OBJECT"
   of opObjectGet: "OBJECT_GET"
   of opObjectSet: "OBJECT_SET"
+  of opMakeUnion: "MAKE_UNION"
+  of opExtractUnion: "EXTRACT_UNION"
   of opLoadVarArrayGet: "LOAD_VAR_ARRAY_GET"
   of opLoadIntAddVar: "LOAD_INT_ADD_VAR"
   of opLoadVarIntLt: "LOAD_VAR_INT_LT"

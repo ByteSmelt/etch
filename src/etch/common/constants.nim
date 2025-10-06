@@ -24,12 +24,15 @@ const
 const
   MAIN_FUNCTION_NAME* = "main"
   GLOBAL_INIT_FUNC_NAME* = "__global_init__"
-  GLOBAL_FINI_FUNC_NAME* = "__global_fini__"
 
 # Bytecode serialization constants
 const
   BYTECODE_MAGIC* = "ETCH"
-  BYTECODE_VERSION* = 13
+  BYTECODE_VERSION* = 15  # Added compiler version hash to bytecode
+
+# AST version for union type support
+const
+  AST_VERSION* = 2
 
 # Runtime constants
 const
@@ -40,8 +43,3 @@ const
 const
   # Fast variable slots - number of local variables cached per frame
   VM_FAST_SLOTS_COUNT* = 8
-
-# Bytecode Optimization constants
-const
-  # Enable bytecode optimization passes only in release builds
-  ENABLE_BYTECODE_OPTIMIZATION* = defined(release)

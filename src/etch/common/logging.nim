@@ -8,9 +8,6 @@ proc verboseLog*(flags: CompilerFlags, module: string, msg: string) =
   if flags.verbose:
     echo "[", module, "] ", msg
 
-template logVerbose*(flags: CompilerFlags, module: string, msg: string) =
-  verboseLog(flags, module, msg)
-
 # Convenience templates for each module
 template logCompiler*(flags: CompilerFlags, msg: string) =
   verboseLog(flags, MODULE_COMPILER, msg)

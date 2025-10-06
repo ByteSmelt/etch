@@ -9,7 +9,7 @@ import ../common/types
 type
   TypeKind* = enum
     tkInt, tkFloat, tkString, tkChar, tkBool, tkVoid, tkRef, tkGeneric, tkArray, tkOption, tkResult,
-    tkUserDefined, tkDistinct, tkObject, tkInferred
+    tkUserDefined, tkDistinct, tkObject, tkInferred, tkUnion
 
   ObjectField* = object
     name*: string
@@ -23,6 +23,7 @@ type
     inner*: EtchType        # for tkRef and tkArray, base type for tkDistinct
     fields*: seq[ObjectField]  # for tkObject
     generation*: uint32     # for generational reference tracking
+    unionTypes*: seq[EtchType] # for tkUnion - list of possible types
 
   TypeEnv* = Table[string, EtchType]
 
@@ -38,7 +39,7 @@ type
   UnOp* = enum uoNot, uoNeg
 
   PatternKind* = enum
-    pkSome, pkNone, pkOk, pkErr, pkWildcard
+    pkSome, pkNone, pkOk, pkErr, pkWildcard, pkType
 
   Pattern* = ref object
     case kind*: PatternKind
@@ -46,6 +47,9 @@ type
       bindName*: string  # variable name to bind the extracted value
     of pkNone, pkWildcard:
       discard
+    of pkType:
+      typePattern*: EtchType  # the type to match against in a union
+      typeBind*: string       # optional variable to bind the value if type matches
 
   MatchCase* = object
     pattern*: Pattern
@@ -219,7 +223,6 @@ proc tInt*(): EtchType = EtchType(kind: tkInt)
 proc tFloat*(): EtchType = EtchType(kind: tkFloat)
 proc tString*(): EtchType = EtchType(kind: tkString)
 proc tInferred*(): EtchType = EtchType(kind: tkInferred)
-proc tAny*(): EtchType = EtchType(kind: tkGeneric, name: "Any")  # Accept any type
 proc tArray*(inner: EtchType): EtchType = EtchType(kind: tkArray, inner: inner)
 proc tRef*(inner: EtchType): EtchType = EtchType(kind: tkRef, inner: inner)
 proc tGeneric*(name: string): EtchType = EtchType(kind: tkGeneric, name: name)
@@ -228,6 +231,7 @@ proc tResult*(inner: EtchType): EtchType = EtchType(kind: tkResult, inner: inner
 proc tUserDefined*(name: string): EtchType = EtchType(kind: tkUserDefined, name: name)
 proc tDistinct*(name: string, base: EtchType): EtchType = EtchType(kind: tkDistinct, name: name, inner: base)
 proc tObject*(name: string, fields: seq[ObjectField]): EtchType = EtchType(kind: tkObject, name: name, fields: fields)
+proc tUnion*(types: seq[EtchType]): EtchType = EtchType(kind: tkUnion, unionTypes: types)
 
 
 proc `$`*(t: EtchType): string =
@@ -247,11 +251,32 @@ proc `$`*(t: EtchType): string =
   of tkDistinct: t.name
   of tkObject: t.name
   of tkInferred: "<inferred>"
+  of tkUnion:
+    var types: seq[string] = @[]
+    for ut in t.unionTypes:
+      types.add($ut)
+    types.join(" | ")
 
 proc isCompatibleWith*(actual: EtchType, expected: EtchType): bool =
   ## Check if actual type is compatible with expected type
   if expected.kind == tkGeneric and expected.name == "Any":
     return true  # Any accepts all types
+
+  # Check if expected is a union and actual is one of its types
+  if expected.kind == tkUnion:
+    for ut in expected.unionTypes:
+      if actual.isCompatibleWith(ut):
+        return true
+    return false
+
+  # Check if actual is a union (shouldn't normally happen, but handle it)
+  if actual.kind == tkUnion:
+    # All types in actual union must be compatible with expected
+    for ut in actual.unionTypes:
+      if not ut.isCompatibleWith(expected):
+        return false
+    return true
+
   if actual.kind == expected.kind:
     case actual.kind
     of tkRef, tkArray, tkOption:
@@ -326,6 +351,11 @@ proc copyType*(t: EtchType): EtchType =
   of tkDistinct: tDistinct(t.name, if t.inner != nil: copyType(t.inner) else: nil)
   of tkObject: tObject(t.name, t.fields)  # Fields are shared - this is intentional for type definitions
   of tkInferred: tInferred()
+  of tkUnion:
+    var copiedTypes: seq[EtchType] = @[]
+    for ut in t.unionTypes:
+      copiedTypes.add(copyType(ut))
+    tUnion(copiedTypes)
 
 
 # Function overload management helpers
@@ -350,7 +380,7 @@ proc generateOverloadSignature*(funDecl: FunDecl): string =
   ## Format: funcName__paramTypes_returnType (inspired by JNI/C++ mangling but simplified)
   result = funDecl.name & "__"
 
-  # Compact type encoding: v=void, b=bool, c=char, i=int, f=float, s=string, A=array, R=ref, O=option, E=result, U=user-defined, D=distinct, T=object
+  # Compact type encoding: v=void, b=bool, c=char, i=int, f=float, s=string, A=array, R=ref, O=option, E=result, U=user-defined, D=distinct, T=object, N=union
   proc encodeType(t: EtchType): string =
     case t.kind
     of tkVoid: return "v"
@@ -368,6 +398,10 @@ proc generateOverloadSignature*(funDecl: FunDecl): string =
     of tkDistinct: return "D" & $t.name.len & t.name
     of tkObject: return "T" & $t.name.len & t.name
     of tkInferred: return "I"  # Inferred type (shouldn't appear in function signatures)
+    of tkUnion:
+      result = "N" & $t.unionTypes.len
+      for ut in t.unionTypes:
+        result.add(encodeType(ut))
 
   # Encode parameters
   for param in funDecl.params:
@@ -445,6 +479,21 @@ proc demangleFunctionSignature*(mangledName: string): string =
       let name = encoded[pos..<pos + nameLen]
       pos += nameLen
       name
+    of 'N':
+      # Union type: N<count><type1><type2>...
+      if pos >= encoded.len:
+        return "union"
+      var countStr = ""
+      while pos < encoded.len and encoded[pos].isDigit:
+        countStr.add(encoded[pos])
+        pos += 1
+      if countStr.len == 0:
+        return "union"
+      let typeCount = parseInt(countStr)
+      var types: seq[string] = @[]
+      for i in 0..<typeCount:
+        types.add(decodeType(encoded, pos))
+      types.join(" | ")
     of 'U', 'D', 'T':
       # User-defined, distinct, or object type: <letter><length><name>
       if pos >= encoded.len:

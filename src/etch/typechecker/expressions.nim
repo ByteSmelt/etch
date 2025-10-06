@@ -128,7 +128,8 @@ proc inferCall(prog: Program; sc: Scope; e: Expr; subst: var TySubst): EtchType 
         if not typeEq(resolvedPat, got):
           raise newTypecheckError(e.pos, &"type mismatch: expected {resolvedPat}, got {got}")
       else:
-        if not typeEq(pat, got): raise newTypecheckError(e.pos, &"type mismatch: expected {pat}, got {got}")
+        # Use canAssignDistinct to handle union types and distinct types
+        if not canAssignDistinct(pat, got): raise newTypecheckError(e.pos, &"type mismatch: expected {pat}, got {got}")
     unify(pt, ta)
 
   # ret type resolution
@@ -250,11 +251,30 @@ proc inferObjectLiteralExpr(prog: Program; fd: FunDecl; sc: Scope; e: Expr; subs
   # Object literal: try to infer type from expected type or error
   if expectedTy == nil:
     raise newTypecheckError(e.pos, "object literal requires explicit type annotation (no expected type)")
-  if expectedTy.kind != tkObject:
+
+  var objType: EtchType = nil
+
+  # Handle union types - find the object type in the union
+  if expectedTy.kind == tkUnion:
+    # Look for an object type in the union
+    for unionType in expectedTy.unionTypes:
+      if unionType.kind == tkObject:
+        objType = unionType
+        break
+      elif unionType.kind == tkUserDefined:
+        # Resolve user-defined type to check if it's an object
+        let resolvedType = resolveUserType(sc, unionType.name)
+        if resolvedType != nil and resolvedType.kind == tkObject:
+          objType = resolvedType
+          break
+    if objType == nil:
+      raise newTypecheckError(e.pos, "union type does not contain an object type for object literal")
+  elif expectedTy.kind == tkObject:
+    objType = expectedTy
+  else:
     raise newTypecheckError(e.pos, &"object literal requires explicit type annotation (expected type is {expectedTy.kind}, not object)")
 
   # Verify all required fields are provided and types match
-  let objType = expectedTy
   var providedFields: seq[string] = @[]
   for fieldInit in e.fieldInits:
     providedFields.add(fieldInit.name)

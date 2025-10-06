@@ -1,0 +1,13 @@
+// Test union with array types
+
+fn testUnionArray() -> int | array[int] {
+  return [1, 2, 3];
+}
+
+fn main() {
+  let val = testUnionArray();
+  match val {
+    int(i) => print(i),
+    array[int](a) => print(a[0])
+  };
+}

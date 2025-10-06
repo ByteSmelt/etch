@@ -47,47 +47,63 @@ proc parseBlock(p: Parser): seq[Stmt]
 
 # --- Type parsing ---
 proc parseType(p: Parser): EtchType =
-  let t = p.cur
-  if t.kind in {tkKeyword, tkIdent}:
-    if t.lex == "int": discard p.eat; return tInt()
-    if t.lex == "float": discard p.eat; return tFloat()
-    if t.lex == "string": discard p.eat; return tString()
-    if t.lex == "char": discard p.eat; return tChar()
-    if t.lex == "bool": discard p.eat; return tBool()
-    if t.lex == "void": discard p.eat; return tVoid()
-    if t.lex == "ref":
-      discard p.expect(tkKeyword, "ref")
-      discard p.expect(tkSymbol, "[")
-      let inner = p.parseType()
-      discard p.expect(tkSymbol, "]")
-      return tRef(inner)
-    if t.lex == "array":
-      discard p.expect(tkKeyword, "array")
-      discard p.expect(tkSymbol, "[")
-      let inner = p.parseType()
-      discard p.expect(tkSymbol, "]")
-      return tArray(inner)
-    if t.lex == "option":
-      discard p.expect(tkKeyword, "option")
-      discard p.expect(tkSymbol, "[")
-      let inner = p.parseType()
-      discard p.expect(tkSymbol, "]")
-      return tOption(inner)
-    if t.lex == "result":
-      discard p.expect(tkIdent, "result")
-      discard p.expect(tkSymbol, "[")
-      let inner = p.parseType()
-      discard p.expect(tkSymbol, "]")
-      return tResult(inner)
-    # Check if it's a generic type parameter
-    if t.lex in p.genericParams:
+  ## Parse a single type, potentially part of a union
+  proc parseSingleType(p: Parser): EtchType =
+    let t = p.cur
+    if t.kind in {tkKeyword, tkIdent}:
+      if t.lex == "int": discard p.eat; return tInt()
+      if t.lex == "float": discard p.eat; return tFloat()
+      if t.lex == "string": discard p.eat; return tString()
+      if t.lex == "char": discard p.eat; return tChar()
+      if t.lex == "bool": discard p.eat; return tBool()
+      if t.lex == "void": discard p.eat; return tVoid()
+      if t.lex == "ref":
+        discard p.expect(tkKeyword, "ref")
+        discard p.expect(tkSymbol, "[")
+        let inner = p.parseType()
+        discard p.expect(tkSymbol, "]")
+        return tRef(inner)
+      if t.lex == "array":
+        discard p.expect(tkKeyword, "array")
+        discard p.expect(tkSymbol, "[")
+        let inner = p.parseType()
+        discard p.expect(tkSymbol, "]")
+        return tArray(inner)
+      if t.lex == "option":
+        discard p.expect(tkKeyword, "option")
+        discard p.expect(tkSymbol, "[")
+        let inner = p.parseType()
+        discard p.expect(tkSymbol, "]")
+        return tOption(inner)
+      if t.lex == "result":
+        discard p.expect(tkIdent, "result")
+        discard p.expect(tkSymbol, "[")
+        let inner = p.parseType()
+        discard p.expect(tkSymbol, "]")
+        return tResult(inner)
+      # Check if it's a generic type parameter
+      if t.lex in p.genericParams:
+        discard p.eat
+        return tGeneric(t.lex)
+      # user-defined type name (could be alias, distinct, or object)
       discard p.eat
-      return tGeneric(t.lex)
-    # user-defined type name (could be alias, distinct, or object)
-    discard p.eat
-    return tUserDefined(t.lex)
-  let actualName = friendlyTokenName(t.kind, t.lex)
-  raise newParseError(p.posOf(t), &"expected type, got {actualName}")
+      return tUserDefined(t.lex)
+    let actualName = friendlyTokenName(t.kind, t.lex)
+    raise newParseError(p.posOf(t), &"expected type, got {actualName}")
+
+  # Parse first type
+  var types: seq[EtchType] = @[parseSingleType(p)]
+
+  # Check for union (|) operator
+  while p.cur.kind == tkSymbol and p.cur.lex == "|":
+    discard p.eat()  # consume |
+    types.add(parseSingleType(p))
+
+  # If we have multiple types, create a union
+  if types.len > 1:
+    return tUnion(types)
+  else:
+    return types[0]
 
 # --- Expression Pratt parser ---
 proc getOperatorPrecedence(op: string): int =
@@ -219,8 +235,31 @@ proc parseMatchExpr(p: Parser; t: Token): Expr =
   return Expr(kind: ekMatch, matchExpr: matchExpr, cases: cases, pos: p.posOf(t))
 
 proc parsePattern(p: Parser): Pattern =
-  ## Parses match patterns: some(x), none, ok(x), error(x), _
-  let t = p.eat()
+  ## Parses match patterns: some(x), none, ok(x), error(x), _, or type patterns for unions
+  let t = p.cur
+
+  # Check for type patterns (for union matching)
+  # Support both: `int(x)` or just `int` patterns
+  if t.kind in {tkKeyword, tkIdent}:
+    # Check if this might be a type
+    let isType = t.lex in ["int", "float", "string", "char", "bool", "ref", "array", "option", "result"] or
+                 t.lex in p.genericParams
+
+    if isType:
+      # Try to parse as type
+      let typ = p.parseType()
+
+      # Check for optional binding: type(bindVar)
+      var bindName = ""
+      if p.cur.kind == tkSymbol and p.cur.lex == "(":
+        discard p.eat()  # consume (
+        bindName = p.expect(tkIdent).lex
+        discard p.expect(tkSymbol, ")")
+
+      return Pattern(kind: pkType, typePattern: typ, typeBind: bindName)
+
+  # Fall back to regular patterns
+  discard p.eat()
   case t.lex
   of "some":
     discard p.expect(tkSymbol, "(")
@@ -242,7 +281,15 @@ proc parsePattern(p: Parser): Pattern =
   of "_":
     return Pattern(kind: pkWildcard)
   else:
-    raise newParseError(p.posOf(t), "expected pattern (some, none, ok, error, or _)")
+    # Try parsing as a type pattern for user-defined types
+    p.i -= 1  # backtrack
+    let typ = p.parseType()
+    var bindName = ""
+    if p.cur.kind == tkSymbol and p.cur.lex == "(":
+      discard p.eat()  # consume (
+      bindName = p.expect(tkIdent).lex
+      discard p.expect(tkSymbol, ")")
+    return Pattern(kind: pkType, typePattern: typ, typeBind: bindName)
 
 proc parseCastExpr(p: Parser; t: Token): Expr =
   ## Parses cast expressions: type(expr)

@@ -703,6 +703,11 @@ proc analyzeMatchExpr(e: Expr, env: Env, ctx: ProverContext): Info =
       # For error(x), bind a string value
       caseEnv.vals[matchCase.pattern.bindName] = infoUnknown()
       caseEnv.nils[matchCase.pattern.bindName] = false
+    of pkType:
+      # For type patterns in union types like int(i) or string(s)
+      if matchCase.pattern.typeBind.len > 0:
+        caseEnv.vals[matchCase.pattern.typeBind] = matchedInfo  # The value when cast to this type
+        caseEnv.nils[matchCase.pattern.typeBind] = false
     else:
       # pkNone, pkWildcard - no bindings
       discard

@@ -145,8 +145,16 @@ proc typecheckReturn(prog: Program; fd: FunDecl; sc: Scope; s: Stmt; subst: var 
     if s.re.isSome(): raise newTypecheckError(s.pos, "void function cannot return a value")
   else:
     if not s.re.isSome(): raise newTypecheckError(s.pos, "non-void function must return a value")
-    let rt = inferExprTypes(prog, fd, sc, s.re.get(), subst, fd.ret)
-    if not typeEq(rt, fd.ret): raise newTypecheckError(s.pos, &"return type mismatch: expected {fd.ret}, got {rt}")
+    # Special handling for match expressions in return statements
+    var rt: EtchType
+    if s.re.get().kind == ekMatch:
+      rt = inferMatchExpr(prog, fd, sc, s.re.get(), subst)
+    else:
+      rt = inferExprTypes(prog, fd, sc, s.re.get(), subst, fd.ret)
+
+    # Check if return type is compatible (including union compatibility)
+    if not canAssignDistinct(fd.ret, rt):
+      raise newTypecheckError(s.pos, &"return type mismatch: expected {fd.ret}, got {rt}")
 
 
 proc typecheckComptime(prog: Program; fd: FunDecl; sc: Scope; s: Stmt; subst: var TySubst) =
@@ -223,9 +231,9 @@ proc inferMatchExpr*(prog: Program; fd: FunDecl; sc: Scope; e: Expr; subst: var 
   # Type check the matched expression
   let matchedType = inferExprTypes(prog, fd, sc, e.matchExpr, subst)
 
-  # Verify matched expression is option or result type
-  if matchedType.kind != tkOption and matchedType.kind != tkResult:
-    raise newTypecheckError(e.pos, &"match can only be used with option[T] or result[T] types, got {matchedType}")
+  # Verify matched expression is option, result, or union type
+  if matchedType.kind notin [tkOption, tkResult, tkUnion]:
+    raise newTypecheckError(e.pos, &"match can only be used with option[T], result[T], or union types, got {matchedType}")
 
   # Check all cases and determine result type
   if e.cases.len == 0:
@@ -245,6 +253,19 @@ proc inferMatchExpr*(prog: Program; fd: FunDecl; sc: Scope; e: Expr; subst: var 
       if matchCase.pattern.kind notin {pkOk, pkErr, pkWildcard}:
         raise newTypecheckError(e.pos, &"invalid pattern for result[T]: expected ok(_), error(_), or _")
       hasRelevantCases = true
+    of tkUnion:
+      if matchCase.pattern.kind notin {pkType, pkWildcard}:
+        raise newTypecheckError(e.pos, &"invalid pattern for union type: expected type pattern or _")
+      # Verify the type pattern matches one of the union types
+      if matchCase.pattern.kind == pkType:
+        var validPattern = false
+        for ut in matchedType.unionTypes:
+          if typeEq(matchCase.pattern.typePattern, ut):
+            validPattern = true
+            break
+        if not validPattern:
+          raise newTypecheckError(e.pos, &"pattern type {matchCase.pattern.typePattern} is not part of union {matchedType}")
+      hasRelevantCases = true
     else:
       discard
 
@@ -263,23 +284,21 @@ proc inferMatchExpr*(prog: Program; fd: FunDecl; sc: Scope; e: Expr; subst: var 
       # For error patterns, bind the error value (usually string)
       caseScope.types[matchCase.pattern.bindName] = tString()  # Assume error messages are strings
       caseScope.flags[matchCase.pattern.bindName] = vfLet
+    of pkType:
+      # For type patterns in unions, bind the value with the matched type
+      if matchCase.pattern.typeBind.len > 0:
+        caseScope.types[matchCase.pattern.typeBind] = matchCase.pattern.typePattern
+        caseScope.flags[matchCase.pattern.typeBind] = vfLet
     else:
       discard
 
     # Type check all statements in case body
     let caseType = typecheckStmtList(prog, fd, caseScope, matchCase.body, subst)
 
-    # Determine the actual type based on the case body
-    # If empty body or only void statements, type is void
-    # Otherwise, take the type of the last expression
-    var actualCaseType: EtchType = tVoid()
+    # Use the type returned by typecheckStmtList, which correctly handles
+    # the type of the last expression in the block
+    var actualCaseType: EtchType = if caseType != nil: caseType else: tVoid()
 
-    if matchCase.body.len > 0:
-      let lastStmt = matchCase.body[matchCase.body.len - 1]
-      if lastStmt.kind == skExpr and lastStmt.sexpr.typ != nil:
-        actualCaseType = lastStmt.sexpr.typ
-      elif caseType != nil:
-        actualCaseType = caseType
 
     # Check type consistency across all match arms
     if resultType == nil:

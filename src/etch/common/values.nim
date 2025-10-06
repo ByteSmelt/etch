@@ -3,7 +3,7 @@
 
 type
   ValueKind* = enum
-    vkInt, vkFloat, vkString, vkBool, vkVoid, vkRef, vkOption, vkResult
+    vkInt, vkFloat, vkString, vkBool, vkVoid, vkRef, vkOption, vkResult, vkUnion
 
   Value* = object
     case kind*: ValueKind
@@ -25,6 +25,9 @@ type
     of vkResult:
       isOk*: bool
       resultVal*: ref Value
+    of vkUnion:
+      unionTypeIndex*: int     # Index indicating which type in the union is active (0-based)
+      unionVal*: ref Value     # The actual value
 
 # Value constructors
 proc vInt*(val: int64): Value =
@@ -44,3 +47,11 @@ proc vVoid*(): Value =
 
 proc vRef*(id: int): Value =
   Value(kind: vkRef, refId: id)
+
+proc vUnion*(typeIndex: int, val: Value): Value =
+  Value(kind: vkUnion, unionTypeIndex: typeIndex, unionVal: new(Value))
+
+proc initUnion*(typeIndex: int, val: Value): Value =
+  result = Value(kind: vkUnion, unionTypeIndex: typeIndex)
+  new(result.unionVal)
+  result.unionVal[] = val
