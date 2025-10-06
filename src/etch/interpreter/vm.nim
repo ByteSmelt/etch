@@ -693,6 +693,43 @@ proc opObjectGetImpl(vm: VM, instr: Instruction): bool =
   vm.push(actualObj.oval[fieldName])
   return true
 
+proc opObjectSetImpl(vm: VM, instr: Instruction): bool =
+  let fieldName = instr.sarg  # Field name is stored in instruction
+  let value = vm.pop()        # Value to set
+  let obj = vm.pop()          # Object to modify
+
+  # Handle automatic dereferencing for reference types
+  var actualObj: V
+  var objRef: int = -1
+  if obj.kind == tkRef:
+    objRef = obj.refId
+    if objRef < 0 or objRef >= vm.heap.len:
+      vm.raiseRuntimeError("invalid reference")
+    let cell = vm.heap[objRef]
+    if cell.isNil or not cell.alive:
+      vm.raiseRuntimeError("attempted to set field on null reference")
+    actualObj = cell.val
+  else:
+    actualObj = obj
+
+  if actualObj.kind != tkObject:
+    vm.raiseRuntimeError(&"field assignment requires object type, got '{actualObj.kind}'")
+
+  # Create a new object with the updated field
+  var newFields = actualObj.oval
+  newFields[fieldName] = value
+
+  # Update the object (either on heap or in variable)
+  if objRef >= 0:
+    # Update the heap-allocated object
+    vm.heap[objRef].val = vObject(newFields)
+  else:
+    # For stack-allocated objects, we need to store the modified object
+    # This is handled by the calling code (e.g., in a variable assignment)
+    vm.push(vObject(newFields))
+
+  return true
+
 # Fast builtin function implementations
 proc builtinPrint(vm: VM, argCount: int): bool =
   let arg = vm.pop()
@@ -1411,6 +1448,7 @@ proc initJumpTable(): array[OpCode, InstructionHandler] =
   result[opExtractErr] = opExtractErrImpl
   result[opMakeObject] = opMakeObjectImpl
   result[opObjectGet] = opObjectGetImpl
+  result[opObjectSet] = opObjectSetImpl
   result[opJump] = opJumpImpl
   result[opJumpIfFalse] = opJumpIfFalseImpl
   result[opCall] = opCallImpl

@@ -838,6 +838,17 @@ proc proveAssign(s: Stmt; env: Env, ctx: ProverContext) =
     logProver(ctx.flags, "Variable " & s.aname & " assigned range [" & $info.minv & ".." & $info.maxv & "]")
 
 
+proc proveFieldAssign(s: Stmt; env: Env, ctx: ProverContext) =
+  logProver(ctx.flags, "Field assignment")
+  # Analyze the target expression to check initialization
+  discard analyzeExpr(s.faTarget, env, ctx)
+  # Analyze the value expression
+  let valueInfo = analyzeExpr(s.faValue, env, ctx)
+  # For now we don't track field-level initialization
+  # This would require more sophisticated tracking of object fields
+  logProver(ctx.flags, "Field assigned value with range [" & $valueInfo.minv & ".." & $valueInfo.maxv & "]")
+
+
 proc proveIf(s: Stmt; env: Env, ctx: ProverContext) =
   let condResult = evaluateCondition(s.cond, env, ctx)
   logProver(ctx.flags, "If condition evaluation result: " & $condResult)
@@ -1239,7 +1250,10 @@ proc proveExpr(s: Stmt; env: Env, ctx: ProverContext) =
 
 proc proveReturn(s: Stmt; env: Env, ctx: ProverContext) =
   if s.re.isSome():
-      discard analyzeExpr(s.re.get(), env, ctx)
+      let returnInfo = analyzeExpr(s.re.get(), env, ctx)
+      # Check if the returned expression is initialized
+      if not returnInfo.initialized:
+        raise newProverError(s.pos, "returning uninitialized value")
 
 
 proc proveComptime(s: Stmt; env: Env, ctx: ProverContext) =
@@ -1252,6 +1266,7 @@ proc proveStmt*(s: Stmt; env: Env, ctx: ProverContext) =
   let stmtKindStr = case s.kind
     of skVar: "variable declaration"
     of skAssign: "assignment"
+    of skFieldAssign: "field assignment"
     of skIf: "if statement"
     of skWhile: "while loop"
     of skFor: "for loop"
@@ -1267,6 +1282,7 @@ proc proveStmt*(s: Stmt; env: Env, ctx: ProverContext) =
   case s.kind
   of skVar: proveVar(s, env, ctx)
   of skAssign: proveAssign(s, env, ctx)
+  of skFieldAssign: proveFieldAssign(s, env, ctx)
   of skIf: proveIf(s, env, ctx)
   of skWhile: proveWhile(s, env, ctx)
   of skFor: proveFor(s, env, ctx)

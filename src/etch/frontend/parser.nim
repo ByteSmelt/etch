@@ -571,73 +571,66 @@ proc parseImport(p: Parser): Stmt =
       if p.cur.kind == tkIdent:
         importPath = importPath & "/" & p.cur.lex
         discard p.eat()
+      elif p.cur.kind == tkSymbol and p.cur.lex == "[":
+        # Path ends with / for multi-module import (e.g., lib/ [math, physics])
+        importPath = importPath & "/"
+        break
       else:
         raise newParseError(Pos(filename: p.filename, line: p.cur.line, col: p.cur.col), "Expected module name after '/'")
 
-    # Add .etch extension if not present
-    if not importPath.endsWith(".etch"):
+    # Add .etch extension if not present (but not for paths ending with /)
+    if not importPath.endsWith(".etch") and not importPath.endsWith("/"):
       importPath = importPath & ".etch"
 
   # Parse optional import list
   var items: seq[ImportItem] = @[]
 
-  if p.cur.kind == tkSymbol and p.cur.lex == "{":
+  # Check for [ ] - multiple submodule import
+  if p.cur.kind == tkSymbol and p.cur.lex == "[":
+    discard p.eat()  # consume "["
+
+    # Parse multiple submodule imports: import lib/ [ math, physics ]
+    var moduleNames: seq[string] = @[]
+    while p.cur.kind != tkSymbol or p.cur.lex != "]":
+      let moduleName = p.expect(tkIdent).lex
+      moduleNames.add(moduleName)
+
+      if p.cur.kind == tkSymbol and p.cur.lex == ",":
+        discard p.eat()
+      elif p.cur.kind == tkSymbol and p.cur.lex == "]":
+        break
+      else:
+        raise newParseError(Pos(filename: p.filename, line: p.cur.line, col: p.cur.col), "Expected ',' or ']' after module name")
+
+    discard p.expect(tkSymbol, "]")
+
+    # Store the module names as a special marker in importItems
+    # We'll expand these in parseProgram
+    for moduleName in moduleNames:
+      items.add(ImportItem(
+        itemKind: "module",
+        name: moduleName,
+        signature: FunctionSignature(),
+        typ: nil,
+        isExported: false,
+        alias: ""
+      ))
+
+    # Return with special marker to indicate multi-module import
+    return Stmt(
+      kind: skImport,
+      importKind: "multi-module",
+      importPath: importPath,
+      importItems: items,
+      pos: pos
+    )
+  elif p.cur.kind == tkSymbol and p.cur.lex == "{":
     discard p.eat()  # consume "{"
 
-    # Peek ahead to determine if this is a multi-module import or item import
-    # Multi-module: import lib { math, xyz }  (no semicolons, just commas)
-    # Item import: import lib/math { add; square; }  (semicolons after items)
-    var isMultiModule = false
-    if importKind == "module" and p.cur.kind == tkIdent:
-      # Save position to look ahead
-      let savedPos = p.i
+    # Parse symbol imports from a specific module
+    # import lib/math { add, square }  (import specific symbols from module)
 
-      # Look for the pattern: ident [, or }]
-      discard p.eat()  # consume the identifier
-      if p.cur.kind == tkSymbol and (p.cur.lex == "," or p.cur.lex == "}"):
-        isMultiModule = true
-
-      # Restore position
-      p.i = savedPos
-
-    if isMultiModule:
-      # Parse multiple module imports: import lib { math, xyz }
-      var moduleNames: seq[string] = @[]
-      while p.cur.kind != tkSymbol or p.cur.lex != "}":
-        let moduleName = p.expect(tkIdent).lex
-        moduleNames.add(moduleName)
-
-        if p.cur.kind == tkSymbol and p.cur.lex == ",":
-          discard p.eat()
-        elif p.cur.kind == tkSymbol and p.cur.lex == "}":
-          break
-        else:
-          raise newParseError(Pos(filename: p.filename, line: p.cur.line, col: p.cur.col), "Expected ',' or '}' after module name")
-
-      discard p.expect(tkSymbol, "}")
-
-      # Store the module names as a special marker in importItems
-      # We'll expand these in parseProgram
-      for moduleName in moduleNames:
-        items.add(ImportItem(
-          itemKind: "module",
-          name: moduleName,
-          signature: FunctionSignature(),
-          typ: nil,
-          isExported: false,
-          alias: ""
-        ))
-
-      # Return with special marker to indicate multi-module import
-      return Stmt(
-        kind: skImport,
-        importKind: "multi-module",
-        importPath: importPath,
-        importItems: items,
-        pos: pos
-      )
-
-    # Otherwise, parse as regular item import
+    # Parse as regular item import
     while p.cur.kind != tkSymbol or p.cur.lex != "}":
       var itemKind = "function"  # default
       var itemName = ""
@@ -746,12 +739,52 @@ proc parseImport(p: Parser): Stmt =
 proc parseSimpleStmt(p: Parser): Stmt =
   # assignment or call expr
   let start = p.cur
+
+  # Try to detect assignment: either simple identifier or field access followed by =
+  # We need to look ahead to see if we have an assignment pattern
+  var isAssignment = false
+  var lookAheadIdx = 0
+
+  # Check for simple identifier assignment (x = ...)
   if start.kind == tkIdent and p.peek().kind == tkSymbol and p.peek().lex == "=":
-    let n = p.eat()
-    discard p.expect(tkSymbol, "=")
-    let e = p.parseExpr()
-    discard p.expect(tkSymbol, ";")
-    return Stmt(kind: skAssign, aname: n.lex, aval: e, pos: p.posOf(n))
+    isAssignment = true
+  # Check for field assignment (obj.field = ...)
+  elif start.kind == tkIdent:
+    # Look for pattern: identifier . identifier =
+    # We might have multiple field accesses: obj.field1.field2 = ...
+    lookAheadIdx = 1
+    while p.peek(lookAheadIdx).kind == tkSymbol and p.peek(lookAheadIdx).lex == ".":
+      if p.peek(lookAheadIdx + 1).kind != tkIdent:
+        break
+      lookAheadIdx += 2
+      if p.peek(lookAheadIdx).kind == tkSymbol and p.peek(lookAheadIdx).lex == "=":
+        isAssignment = true
+        break
+
+  if isAssignment:
+    if lookAheadIdx == 0:
+      # Simple identifier assignment
+      let n = p.eat()
+      discard p.expect(tkSymbol, "=")
+      let e = p.parseExpr()
+      discard p.expect(tkSymbol, ";")
+      return Stmt(kind: skAssign, aname: n.lex, aval: e, pos: p.posOf(n))
+    else:
+      # Field assignment - parse left side as expression (to get field access)
+      let leftExpr = p.parseExpr()
+      discard p.expect(tkSymbol, "=")
+      let rightExpr = p.parseExpr()
+      discard p.expect(tkSymbol, ";")
+
+      # Create a field assignment statement
+      # Support nested field access: p.sub.field = value
+      if leftExpr.kind == ekFieldAccess:
+        return Stmt(kind: skFieldAssign,
+                   faTarget: leftExpr,  # Store the full field access expression
+                   faValue: rightExpr,
+                   pos: p.posOf(start))
+      else:
+        raise newEtchError(&"Invalid assignment target at {p.posOf(start)}")
   else:
     let e = p.parseExpr()
     discard p.expect(tkSymbol, ";")

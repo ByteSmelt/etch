@@ -3,7 +3,7 @@
 // import lib/math
 // import lib/str
 
-import lib { math, str }  // Import multiple modules from lib directory
+import lib/[ math, str ]  // Import multiple modules from lib directory
 
 fn main() {
   // From lib/math

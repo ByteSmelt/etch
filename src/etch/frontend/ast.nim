@@ -126,7 +126,7 @@ type
       initExpr*: Option[Expr] # optional initialization expression
 
   StmtKind* = enum
-    skVar, skAssign, skIf, skWhile, skFor, skBreak, skExpr, skReturn, skComptime, skTypeDecl, skImport
+    skVar, skAssign, skFieldAssign, skIf, skWhile, skFor, skBreak, skExpr, skReturn, skComptime, skTypeDecl, skImport
 
   VarFlag* = enum
     vfLet, vfVar
@@ -143,6 +143,9 @@ type
     of skAssign:
       aname*: string
       aval*: Expr
+    of skFieldAssign:
+      faTarget*: Expr        # field access expression (can be nested)
+      faValue*: Expr         # value to assign
     of skIf:
       cond*: Expr
       thenBody*: seq[Stmt]

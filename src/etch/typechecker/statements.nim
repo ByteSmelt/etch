@@ -92,6 +92,29 @@ proc typecheckAssign(prog: Program; fd: FunDecl; sc: Scope; s: Stmt; subst: var 
       raise newTypecheckError(s.pos, "assignment type mismatch")
 
 
+proc typecheckFieldAssign(prog: Program; fd: FunDecl; sc: Scope; s: Stmt; subst: var TySubst) =
+  # Typecheck the target expression (the field access)
+  let targetType = inferExprTypes(prog, fd, sc, s.faTarget, subst)
+
+  # The target must be a field access expression
+  if s.faTarget.kind != ekFieldAccess:
+    raise newTypecheckError(s.pos, &"invalid assignment target")
+
+  # Typecheck the value expression
+  let valueType = inferExprTypes(prog, fd, sc, s.faValue, subst)
+
+  # Check type compatibility
+  var typesCompatible = typeEq(valueType, targetType)
+  if not typesCompatible and valueType.kind == tkRef and valueType.inner.kind == tkVoid and targetType.kind == tkRef:
+    typesCompatible = true  # nil can be assigned to any reference type
+
+  if not typesCompatible:
+    if valueType.kind == tkVoid:
+      raise newTypecheckError(s.pos, &"cannot assign void function result to field")
+    else:
+      raise newTypecheckError(s.pos, &"field assignment type mismatch")
+
+
 proc typecheckIf(prog: Program; fd: FunDecl; sc: Scope; s: Stmt; subst: var TySubst) =
   let ct = inferExprTypes(prog, fd, sc, s.cond, subst)
   if ct.kind != tkBool: raise newTypecheckError(s.pos, "if condition must be bool")
@@ -272,6 +295,7 @@ proc typecheckStmt*(prog: Program; fd: FunDecl; sc: Scope; s: Stmt; subst: var T
   case s.kind
   of skVar: typecheckVar(prog, fd, sc, s, subst)
   of skAssign: typecheckAssign(prog, fd, sc, s, subst)
+  of skFieldAssign: typecheckFieldAssign(prog, fd, sc, s, subst)
   of skIf: typecheckIf(prog, fd, sc, s, subst)
   of skWhile: typecheckWhile(prog, fd, sc, s, subst)
   of skFor: typecheckFor(prog, fd, sc, s, subst)

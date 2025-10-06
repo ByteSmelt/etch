@@ -12,12 +12,16 @@ const MAX_ITERATIONS = 1000
 proc tryEvaluateComplexFunction*(body: seq[Stmt], paramEnv: Table[string, int64]): Option[int64] =
   ## Try to evaluate a function body with loops and local variables
   var localVars = paramEnv  # Start with parameters
+  var uninitializedVars: seq[string] = @[]  # Track uninitialized variables
 
   proc evalExprLocal(expr: Expr): Option[int64] =
     case expr.kind
     of ekInt:
       return some(expr.ival)
     of ekVar:
+      # Check if variable is uninitialized
+      if expr.vname in uninitializedVars:
+        return none(int64)  # Cannot evaluate - variable is uninitialized
       if localVars.hasKey(expr.vname):
         return some(localVars[expr.vname])
       return none(int64)
@@ -54,14 +58,23 @@ proc tryEvaluateComplexFunction*(body: seq[Stmt], paramEnv: Table[string, int64]
         let val = evalExprLocal(stmt.vinit.get)
         if val.isSome:
           localVars[stmt.vname] = val.get
+          # Remove from uninitialized list if it was there
+          let idx = uninitializedVars.find(stmt.vname)
+          if idx >= 0:
+            uninitializedVars.delete(idx)
         else:
           return none(int64)  # Cannot evaluate initializer
       else:
-        localVars[stmt.vname] = 0'i64  # Default initialization
+        # Variable declared without initializer - mark as uninitialized
+        uninitializedVars.add(stmt.vname)
     of skAssign:
       let val = evalExprLocal(stmt.aval)
       if val.isSome:
         localVars[stmt.aname] = val.get
+        # Assignment initializes the variable
+        let idx = uninitializedVars.find(stmt.aname)
+        if idx >= 0:
+          uninitializedVars.delete(idx)
       else:
         return none(int64)  # Cannot evaluate assignment
     of skWhile:
@@ -81,6 +94,10 @@ proc tryEvaluateComplexFunction*(body: seq[Stmt], paramEnv: Table[string, int64]
             let val = evalExprLocal(bodyStmt.aval)
             if val.isSome:
               localVars[bodyStmt.aname] = val.get
+              # Assignment initializes the variable
+              let idx = uninitializedVars.find(bodyStmt.aname)
+              if idx >= 0:
+                uninitializedVars.delete(idx)
             else:
               return none(int64)
           else:
@@ -107,6 +124,8 @@ proc tryEvaluatePureFunction*(call: Expr, argInfos: seq[Info], fn: FunDecl, prog
 
   # Create parameter environment with constant argument values
   var paramEnv: Table[string, int64] = initTable[string, int64]()
+  var uninitializedVars: seq[string] = @[]  # Track uninitialized variables
+
   for i, arg in argInfos:
     if i < fn.params.len and arg.known:
       paramEnv[fn.params[i].name] = arg.cval
@@ -122,6 +141,9 @@ proc tryEvaluatePureFunction*(call: Expr, argInfos: seq[Info], fn: FunDecl, prog
     of ekInt:
       return some(expr.ival)
     of ekVar:
+      # Check if variable is uninitialized
+      if expr.vname in uninitializedVars:
+        return none(int64)  # Cannot evaluate - variable is uninitialized
       if paramEnv.hasKey(expr.vname):
         return some(paramEnv[expr.vname])
       return none(int64)
@@ -187,6 +209,32 @@ proc tryEvaluatePureFunction*(call: Expr, argInfos: seq[Info], fn: FunDecl, prog
   # Simple statement evaluator for function body
   proc evalStmt(stmt: Stmt): Option[int64] =
     case stmt.kind
+    of skVar:
+      if stmt.vinit.isSome:
+        let val = evalExpr(stmt.vinit.get)
+        if val.isSome:
+          paramEnv[stmt.vname] = val.get
+          # Remove from uninitialized list if it was there
+          let idx = uninitializedVars.find(stmt.vname)
+          if idx >= 0:
+            uninitializedVars.delete(idx)
+        else:
+          return none(int64)  # Cannot evaluate initializer
+      else:
+        # Variable declared without initializer - mark as uninitialized
+        uninitializedVars.add(stmt.vname)
+      return none(int64)  # Variable declaration doesn't return a value
+    of skAssign:
+      let val = evalExpr(stmt.aval)
+      if val.isSome:
+        paramEnv[stmt.aname] = val.get
+        # Assignment initializes the variable
+        let idx = uninitializedVars.find(stmt.aname)
+        if idx >= 0:
+          uninitializedVars.delete(idx)
+      else:
+        return none(int64)  # Cannot evaluate assignment
+      return none(int64)  # Assignment doesn't return a value
     of skReturn:
       if stmt.re.isSome:
         return evalExpr(stmt.re.get)
@@ -215,6 +263,20 @@ proc tryEvaluatePureFunction*(call: Expr, argInfos: seq[Info], fn: FunDecl, prog
   if fn.body.len == 1 and (fn.body[0].kind == skReturn or fn.body[0].kind == skIf):
     # Simple case: single return statement or single if statement
     return evalStmt(fn.body[0])
-  else:
+  elif fn.body.len > 1:
+    # Process multiple statements in sequence
+    for stmt in fn.body:
+      case stmt.kind
+      of skVar, skAssign:
+        # Process variable declaration or assignment but continue
+        discard evalStmt(stmt)
+      of skReturn:
+        return evalStmt(stmt)
+      else:
+        let res = evalStmt(stmt)
+        if res.isSome:
+          return res
     # Try to handle more complex function bodies with loops and variables
     return tryEvaluateComplexFunction(fn.body, paramEnv)
+  else:
+    return none(int64)

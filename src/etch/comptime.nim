@@ -170,6 +170,11 @@ proc foldStmt(prog: Program, s: var Stmt) =
   of skAssign:
     var x = s.aval; foldExpr(prog, x)
     s.aval = x
+  of skFieldAssign:
+    var target = s.faTarget; foldExpr(prog, target)
+    s.faTarget = target
+    var value = s.faValue; foldExpr(prog, value)
+    s.faValue = value
   of skIf:
     foldExpr(prog, s.cond)
     for i in 0..<s.thenBody.len: foldStmt(prog, s.thenBody[i])

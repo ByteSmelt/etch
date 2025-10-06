@@ -40,7 +40,7 @@ type
     opCast
     opMakeOptionSome, opMakeOptionNone, opMakeResultOk, opMakeResultErr
     opMatchValue, opExtractSome, opExtractOk, opExtractErr
-    opMakeObject, opObjectGet
+    opMakeObject, opObjectGet, opObjectSet
     # Fused instructions for performance
     opLoadVarArrayGet, opLoadIntAddVar, opLoadVarIntLt
     # Fast builtin dispatch
@@ -458,6 +458,7 @@ proc `$`*(op: OpCode): string =
   of opExtractErr: "EXTRACT_ERR"
   of opMakeObject: "MAKE_OBJECT"
   of opObjectGet: "OBJECT_GET"
+  of opObjectSet: "OBJECT_SET"
   of opLoadVarArrayGet: "LOAD_VAR_ARRAY_GET"
   of opLoadIntAddVar: "LOAD_INT_ADD_VAR"
   of opLoadVarIntLt: "LOAD_VAR_INT_LT"

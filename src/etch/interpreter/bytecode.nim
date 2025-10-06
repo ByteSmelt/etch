@@ -367,6 +367,41 @@ proc compileAssignStmt(prog: var BytecodeProgram, s: Stmt, ctx: var CompilationC
   prog.compileExpr(s.aval, ctx)
   prog.emit(opStoreVar, 0, s.aname, s.pos, ctx)
 
+proc compileFieldAssignStmt(prog: var BytecodeProgram, s: Stmt, ctx: var CompilationContext) =
+  # For field assignment, we need to handle nested access specially
+  # e.g., p.sub.field = value
+  # We compile it as a sequence of gets followed by a set
+
+  # Extract the path to the field being set
+  var fieldPath: seq[string] = @[]
+  var baseExpr = s.faTarget
+
+  while baseExpr.kind == ekFieldAccess:
+    fieldPath.insert(baseExpr.fieldName, 0)  # Build path from right to left
+    baseExpr = baseExpr.objectExpr
+
+  # Check if base is a variable (need to store back) or something else
+  let isVariable = baseExpr.kind == ekVar
+
+  # Compile the base object expression - puts object on stack
+  prog.compileExpr(baseExpr, ctx)
+
+  # Navigate to the parent of the field we're setting
+  # For p.sub.field = value, we need to get p.sub first
+  for i in 0..<fieldPath.high:
+    prog.emit(opObjectGet, 0, fieldPath[i], s.pos, ctx)
+
+  # Compile the value expression - puts value on stack
+  prog.compileExpr(s.faValue, ctx)
+
+  # Emit field set instruction - pops value and object, sets field
+  prog.emit(opObjectSet, 0, fieldPath[^1], s.pos, ctx)
+
+  # If the base was a variable, we need to store the modified object back
+  if isVariable:
+    # The modified object is on the stack, store it back to the variable
+    prog.emit(opStoreVar, 0, baseExpr.vname, s.pos, ctx)
+
 proc compileIfStmt(prog: var BytecodeProgram, s: Stmt, ctx: var CompilationContext) =
   var jumpToNexts: seq[int] = @[]  # Jumps to the next elif/else clause
   var jumpToEnds: seq[int] = @[]   # Jumps to the end of the entire if-elif-else chain
@@ -567,6 +602,7 @@ proc compileStmt*(prog: var BytecodeProgram, s: Stmt, ctx: var CompilationContex
   case s.kind
   of skVar: prog.compileVarStmt(s, ctx)
   of skAssign: prog.compileAssignStmt(s, ctx)
+  of skFieldAssign: prog.compileFieldAssignStmt(s, ctx)
   of skIf: prog.compileIfStmt(s, ctx)
   of skWhile: prog.compileWhileStmt(s, ctx)
   of skFor: prog.compileForStmt(s, ctx)
