@@ -97,6 +97,95 @@ type
     cffiInfo*: seq[CFFIInfo]  # CFFI function metadata
 
 
+proc serializeGlobalValue(stream: StringStream, value: GlobalValue) =
+  ## Recursively serialize a GlobalValue
+  stream.write(uint8(ord(value.kind)))
+  case value.kind
+  of tkInt:
+    stream.write(value.ival)
+  of tkFloat:
+    stream.write(value.fval)
+  of tkBool:
+    stream.write(uint8(if value.bval: 1 else: 0))
+  of tkString:
+    var sLen = uint32(value.sval.len)
+    stream.write(sLen)
+    stream.write(value.sval)
+  of tkChar:
+    stream.write(value.cval)
+  of tkArray:
+    var aLen = uint32(value.aval.len)
+    stream.write(aLen)
+    for item in value.aval:
+      serializeGlobalValue(stream, item)
+  of tkObject:
+    var oLen = uint32(value.oval.len)
+    stream.write(oLen)
+    for key, val in value.oval:
+      var keyLen = uint32(key.len)
+      stream.write(keyLen)
+      stream.write(key)
+      serializeGlobalValue(stream, val)
+  of tkOption, tkResult:
+    stream.write(uint8(if value.hasValue: 1 else: 0))
+    if value.wrappedVal != nil:
+      serializeGlobalValue(stream, value.wrappedVal[])
+  of tkUnion:
+    stream.write(uint32(value.unionTypeIdx))
+    if value.unionVal != nil:
+      stream.write(uint8(1))  # Has value
+      serializeGlobalValue(stream, value.unionVal[])
+    else:
+      stream.write(uint8(0))  # No value
+  of tkRef:
+    stream.write(value.refId)
+  else:
+    discard # Other types not supported yet
+
+proc deserializeGlobalValue(stream: StringStream): GlobalValue =
+  ## Recursively deserialize a GlobalValue
+  let valueKind = TypeKind(stream.readUint8())
+  result = GlobalValue(kind: valueKind)
+  case valueKind
+  of tkInt:
+    result.ival = stream.readInt64()
+  of tkFloat:
+    result.fval = stream.readFloat64()
+  of tkBool:
+    result.bval = stream.readUint8() != 0
+  of tkString:
+    let sLen = stream.readUint32()
+    result.sval = stream.readStr(int(sLen))
+  of tkChar:
+    result.cval = stream.readChar()
+  of tkArray:
+    let aLen = stream.readUint32()
+    result.aval = @[]
+    for i in 0..<aLen:
+      result.aval.add(deserializeGlobalValue(stream))
+  of tkObject:
+    let oLen = stream.readUint32()
+    result.oval = initTable[string, GlobalValue]()
+    for i in 0..<oLen:
+      let keyLen = stream.readUint32()
+      let key = stream.readStr(int(keyLen))
+      result.oval[key] = deserializeGlobalValue(stream)
+  of tkOption, tkResult:
+    result.hasValue = stream.readUint8() != 0
+    if result.hasValue:
+      result.wrappedVal = new GlobalValue
+      result.wrappedVal[] = deserializeGlobalValue(stream)
+  of tkUnion:
+    result.unionTypeIdx = int(stream.readUint32())
+    let hasValue = stream.readUint8() != 0
+    if hasValue:
+      result.unionVal = new GlobalValue
+      result.unionVal[] = deserializeGlobalValue(stream)
+  of tkRef:
+    result.refId = stream.readInt64()
+  else:
+    discard # Other types not supported yet
+
 proc serializeToBinary*(prog: BytecodeProgram): string =
   ## Serialize bytecode program to binary format for storage
   var stream = newStringStream()
@@ -159,21 +248,8 @@ proc serializeToBinary*(prog: BytecodeProgram): string =
     var nameLen = uint32(name.len)
     stream.write(nameLen)
     stream.write(name)
-    # Serialize value
-    stream.write(uint8(ord(value.kind)))
-    case value.kind
-    of tkInt:
-      stream.write(value.ival)
-    of tkFloat:
-      stream.write(value.fval)
-    of tkBool:
-      stream.write(uint8(if value.bval: 1 else: 0))
-    of tkString:
-      var sLen = uint32(value.sval.len)
-      stream.write(sLen)
-      stream.write(value.sval)
-    else:
-      discard # Other types not supported yet
+    # Use the recursive serialization function
+    serializeGlobalValue(stream, value)
 
   # Functions table
   var funcCount = uint32(prog.functions.len)
@@ -318,20 +394,8 @@ proc deserializeFromBinary*(data: string): BytecodeProgram =
   for i in 0..<globalValueCount:
     let nameLen = stream.readUint32()
     let name = stream.readStr(int(nameLen))
-    let valueKind = TypeKind(stream.readUint8())
-    var value = GlobalValue(kind: valueKind)
-    case valueKind
-    of tkInt:
-      value.ival = stream.readInt64()
-    of tkFloat:
-      value.fval = stream.readFloat64()
-    of tkBool:
-      value.bval = stream.readUint8() != 0
-    of tkString:
-      let sLen = stream.readUint32()
-      value.sval = stream.readStr(int(sLen))
-    else:
-      discard # Other types not supported yet
+    # Use the recursive deserialization function
+    let value = deserializeGlobalValue(stream)
     result.globalValues[name] = value
 
   # Read functions

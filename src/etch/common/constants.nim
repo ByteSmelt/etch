@@ -28,7 +28,7 @@ const
 # Bytecode serialization constants
 const
   BYTECODE_MAGIC* = "ETCH"
-  BYTECODE_VERSION* = 15  # Added compiler version hash to bytecode
+  BYTECODE_VERSION* = 18  # Added full recursive serialization for all types in unions
 
 # AST version for union type support
 const

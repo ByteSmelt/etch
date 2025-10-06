@@ -906,7 +906,29 @@ proc compileProgram*(astProg: Program, sourceHash: string, sourceFile: string = 
       # For complex expressions (like function calls), let them execute at runtime
       if g.vinit.isSome():
         if canEvaluateConstantExpr(g.vinit.get()):
-          let globalVal = evaluateConstantExpr(g.vinit.get())
+          var globalVal = evaluateConstantExpr(g.vinit.get())
+
+          # If the variable type is a union, wrap the value
+          if g.vtype.kind == tkUnion:
+            let unionType = g.vtype
+            # Find which union type index this value belongs to
+            var typeIdx = -1
+            let valType = globalVal.kind
+            for i, ut in unionType.unionTypes:
+              if ut.kind == valType:
+                typeIdx = i
+                break
+
+            if typeIdx >= 0:
+              # Wrap the value in a union
+              let innerVal = evaluateConstantExpr(g.vinit.get())
+              globalVal = GlobalValue(
+                kind: tkUnion,
+                unionTypeIdx: typeIdx,
+                unionVal: new GlobalValue
+              )
+              globalVal.unionVal[] = innerVal
+
           result.globalValues[g.vname] = globalVal
           # Skip runtime bytecode generation for pre-computed values
         else:

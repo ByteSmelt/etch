@@ -10,8 +10,12 @@ type MyObj2 = object {
   value: int;
 };
 
-fn testIntOrObject() -> int | MyObj {
-  return { x: 10, y: 20 };
+fn testIntOrObject(b: bool) -> int | MyObj {
+  if b {
+    return { x: 10, y: 20 };
+  } else {
+    return 99;
+  }
 }
 
 fn testStringOrObject() -> string | MyObj2 {
@@ -19,7 +23,16 @@ fn testStringOrObject() -> string | MyObj2 {
 }
 
 fn main() {
-  let val1 = testIntOrObject();
+  var val1 = testIntOrObject(true);
+  match val1 {
+    int(i) => print(i),
+    MyObj(o) => {
+      print(o.x);
+      print(o.y);
+    }
+  };
+
+  val1 = testIntOrObject(false);
   match val1 {
     int(i) => print(i),
     MyObj(o) => {
