@@ -42,7 +42,7 @@ proc typecheckVar(prog: Program; fd: FunDecl; sc: Scope; s: Stmt; subst: var TyS
     # then check for undeclared variables if type check passes
 
     # Phase 1: Create temporary scope with self-reference to check type compatibility
-    var tempScope = Scope(types: sc.types, flags: sc.flags, userTypes: sc.userTypes)
+    var tempScope = Scope(types: sc.types, flags: sc.flags, userTypes: sc.userTypes, prog: sc.prog)
     tempScope.types[s.vname] = resolvedVtype  # Allow self-reference for type checking
 
     var tempSubst = subst
@@ -95,24 +95,24 @@ proc typecheckAssign(prog: Program; fd: FunDecl; sc: Scope; s: Stmt; subst: var 
 proc typecheckIf(prog: Program; fd: FunDecl; sc: Scope; s: Stmt; subst: var TySubst) =
   let ct = inferExprTypes(prog, fd, sc, s.cond, subst)
   if ct.kind != tkBool: raise newTypecheckError(s.pos, "if condition must be bool")
-  var sThen = Scope(types: sc.types, flags: sc.flags, userTypes: sc.userTypes) # shallow copy ok
+  var sThen = Scope(types: sc.types, flags: sc.flags, userTypes: sc.userTypes, prog: sc.prog) # shallow copy ok
   for st in s.thenBody: typecheckStmt(prog, fd, sThen, st, subst)
 
   # Typecheck elif chain
   for elifBranch in s.elifChain:
     let elifCondType = inferExprTypes(prog, fd, sc, elifBranch.cond, subst)
     if elifCondType.kind != tkBool: raise newTypecheckError(s.pos, "elif condition must be bool")
-    var sElif = Scope(types: sc.types, flags: sc.flags, userTypes: sc.userTypes)
+    var sElif = Scope(types: sc.types, flags: sc.flags, userTypes: sc.userTypes, prog: sc.prog)
     for st in elifBranch.body: typecheckStmt(prog, fd, sElif, st, subst)
 
-  var sElse = Scope(types: sc.types, flags: sc.flags, userTypes: sc.userTypes)
+  var sElse = Scope(types: sc.types, flags: sc.flags, userTypes: sc.userTypes, prog: sc.prog)
   for st in s.elseBody: typecheckStmt(prog, fd, sElse, st, subst)
 
 
 proc typecheckWhile(prog: Program; fd: FunDecl; sc: Scope; s: Stmt; subst: var TySubst) =
   let ct = inferExprTypes(prog, fd, sc, s.wcond, subst)
   if ct.kind != tkBool: raise newTypecheckError(s.pos, "while condition must be bool")
-  var sBody = Scope(types: sc.types, flags: sc.flags, userTypes: sc.userTypes)
+  var sBody = Scope(types: sc.types, flags: sc.flags, userTypes: sc.userTypes, prog: sc.prog)
   for st in s.wbody: typecheckStmt(prog, fd, sBody, st, subst)
 
 
@@ -128,7 +128,7 @@ proc typecheckReturn(prog: Program; fd: FunDecl; sc: Scope; s: Stmt; subst: var 
 
 proc typecheckComptime(prog: Program; fd: FunDecl; sc: Scope; s: Stmt; subst: var TySubst) =
   # Typecheck comptime block statements and add injected variables to main scope
-  var ctScope = Scope(types: sc.types, flags: sc.flags, userTypes: sc.userTypes)
+  var ctScope = Scope(types: sc.types, flags: sc.flags, userTypes: sc.userTypes, prog: sc.prog)
   for stmt in s.cbody:
     typecheckStmt(prog, fd, ctScope, stmt, subst)
     # If this is a variable declaration, add it to the main scope (injected variables)
@@ -138,7 +138,7 @@ proc typecheckComptime(prog: Program; fd: FunDecl; sc: Scope; s: Stmt; subst: va
 
 proc typecheckFor(prog: Program; fd: FunDecl; sc: Scope; s: Stmt; subst: var TySubst) =
   # Create new scope for loop body with loop variable
-  var loopScope = Scope(types: sc.types, flags: sc.flags, userTypes: sc.userTypes)
+  var loopScope = Scope(types: sc.types, flags: sc.flags, userTypes: sc.userTypes, prog: sc.prog)
 
   if s.farray.isSome():
     # Array iteration: for x in array
@@ -220,7 +220,7 @@ proc inferMatchExpr*(prog: Program; fd: FunDecl; sc: Scope; e: Expr; subst: var 
       discard
 
     # Create scope for pattern bindings
-    var caseScope = Scope(types: initTable[string, EtchType](), flags: initTable[string, VarFlag](), userTypes: sc.userTypes)
+    var caseScope = Scope(types: initTable[string, EtchType](), flags: initTable[string, VarFlag](), userTypes: sc.userTypes, prog: sc.prog)
     # Copy parent scope
     for k, v in sc.types: caseScope.types[k] = v
     for k, v in sc.flags: caseScope.flags[k] = v
@@ -286,4 +286,8 @@ proc typecheckStmt*(prog: Program; fd: FunDecl; sc: Scope; s: Stmt; subst: var T
   of skTypeDecl:
     # Type declarations are processed during program initialization
     # No runtime type checking needed here
+    discard
+  of skImport:
+    # FFI imports are processed during program initialization
+    # They register functions in the global FFI registry
     discard

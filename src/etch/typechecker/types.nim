@@ -2,7 +2,7 @@
 # Type utilities and operations for the type checker
 
 import std/[tables, strformat, options]
-import ../frontend/ast, ../common/errors, ../common/types
+import ../frontend/ast, ../common/errors, ../common/types, ../common/builtins
 
 
 type
@@ -10,6 +10,7 @@ type
     types*: Table[string, EtchType] # variables
     flags*: Table[string, VarFlag] # variable mutability
     userTypes*: Table[string, EtchType] # user-defined types
+    prog*: Program  # Reference to the program for function lookups
   TySubst* = Table[string, EtchType] # generic var -> concrete type
 
 
@@ -176,47 +177,64 @@ proc simpleInferTypeFromUnary(expr: Expr; sc: Scope): EtchType =
       return nil
 
 proc simpleInferTypeFromCall(expr: Expr; sc: Scope): EtchType =
-  ## Function calls: handle builtin functions with known return types
-  case expr.fname
-  of "rand":
-    # rand(max) or rand(max, min) always returns int
-    if expr.args.len >= 1 and expr.args.len <= 2:
-      return tInt()
+  ## Function calls: handle builtin functions and imported functions
+
+  # Debug: check if we have scope and program (commented out - enable when debugging)
+  # if sc == nil:
+  #   echo "[DEBUG] simpleInferTypeFromCall: sc is nil for ", expr.fname
+  # elif sc.prog == nil:
+  #   echo "[DEBUG] simpleInferTypeFromCall: sc.prog is nil for ", expr.fname
+  # else:
+  #   echo "[DEBUG] simpleInferTypeFromCall: checking ", expr.fname, " with prog"
+
+  # First check if it's a builtin with special inference rules
+  if isBuiltin(expr.fname):
+    let (_, returnType) = getBuiltinSignature(expr.fname)
+    # For builtins with inferred return types, handle specially
+    if returnType != nil and returnType.kind != tkInferred:
+      return returnType
+
+    # Special cases for builtins with generic returns
+    case expr.fname
+    of "new":
+      # new(value) returns ref[typeof(value)]
+      if expr.args.len == 1:
+        let innerType = simpleInferTypeFromExpr(expr.args[0], sc)
+        if innerType != nil:
+          return tRef(innerType)
+    of "deref":
+      # deref(ref) returns the inner type of the reference
+      if expr.args.len == 1:
+        let refType = simpleInferTypeFromExpr(expr.args[0], sc)
+        if refType != nil and refType.kind == tkRef:
+          return refType.inner
+      return nil
     else:
       return nil
-  of "readFile":
-    # readFile(path) always returns string
-    if expr.args.len == 1:
-      return tString()
-    else:
-      return nil
-  of "print", "seed", "inject":
-    # These functions return void
-    return tVoid()
-  of "new":
-    # new(value) returns ref[typeof(value)]
-    if expr.args.len == 1:
-      let innerType = simpleInferTypeFromExpr(expr.args[0], sc)
-      if innerType != nil:
-        return tRef(innerType)
-      else:
-        return nil
-    else:
-      return nil
-  of "deref":
-    # deref(ref) returns the inner type of the reference
-    if expr.args.len == 1:
-      let refType = simpleInferTypeFromExpr(expr.args[0], sc)
-      if refType != nil and refType.kind == tkRef:
-        return refType.inner
-      else:
-        return nil
-    else:
-      return nil
-  # Note: # is handled as ekArrayLen, not as a function call
-  else:
-    # Unknown function call - requires type annotation
-    return nil
+
+  # Check if it's a function in the program (imported or defined)
+  if sc != nil and sc.prog != nil:
+    let overloads = sc.prog.getFunctionOverloads(expr.fname)
+    if overloads.len > 0:
+      # For simplicity, use the first overload's return type
+      # A more sophisticated approach would do overload resolution
+      return overloads[0].ret
+
+    # Check if it's an FFI or CFFI import
+    for stmt in sc.prog.globals:
+      if stmt.kind == skImport and (stmt.importKind == "ffi" or stmt.importKind == "cffi"):
+        for item in stmt.importItems:
+          if item.itemKind == "function" and item.name == expr.fname:
+            # Found the FFI/CFFI function, return its return type
+            return item.signature.returnType
+  elif sc != nil:
+    # If we have scope but no prog, it means the scope wasn't properly initialized
+    # Try to look up in global function table (this is a fallback)
+    # This shouldn't happen if everything is set up correctly
+    discard
+
+  # Unknown function call - requires type annotation
+  return nil
 
 proc simpleInferTypeFromOptionSome(expr: Expr; sc: Scope): EtchType =
   ## some(value) has type option[T] where T is the type of value

@@ -174,12 +174,22 @@ proc compileCallExpr(prog: var BytecodeProgram, e: Expr, ctx: var CompilationCon
     for i in countdown(e.args.high, 0):
       prog.compileExpr(e.args[i], ctx)
 
+  # Check if this is a CFFI function first
+  var isCFFIFunc = false
+  if foundFunction != nil:
+    isCFFIFunc = foundFunction.isCFFI
+
   # Check if this is a builtin function call for optimized dispatch
   let isBuiltinFunc = isBuiltin(e.fname)
   if prog.compilerFlags.verbose:
-    echo &"[BYTECODE] Function {e.fname}: isBuiltin={isBuiltinFunc}"
+    echo &"[BYTECODE] Function {e.fname}: isBuiltin={isBuiltinFunc}, isCFFI={isCFFIFunc}"
 
-  if isBuiltinFunc:
+  if isCFFIFunc:
+    # CFFI function call
+    if prog.compilerFlags.verbose:
+      echo &"[BYTECODE] CFFI function call: {e.fname} -> {resolvedFunctionName} (args: {totalArgCount})"
+    prog.emit(opCallCFFI, totalArgCount, resolvedFunctionName, e.pos, ctx)
+  elif isBuiltinFunc:
     try:
       let builtinId = getBuiltinId(e.fname)
       # Pack builtin ID and arg count into single integer for ultra-fast dispatch
@@ -567,6 +577,10 @@ proc compileStmt*(prog: var BytecodeProgram, s: Stmt, ctx: var CompilationContex
   of skTypeDecl:
     # Type declarations don't generate runtime code
     discard
+  of skImport:
+    # Import statements don't generate runtime code
+    # FFI functions are registered at compile time
+    discard
 
 proc compileMatchExpr(prog: var BytecodeProgram, e: Expr, ctx: var CompilationContext) =
   # Compile the expression to be matched
@@ -723,7 +737,8 @@ proc compileProgram*(astProg: Program, sourceHash: string, sourceFile: string = 
     sourceFile: sourceFile,
     functionInfo: initTable[string, FunctionInfo](),
     lineToInstructionMap: initTable[int, seq[int]](),
-    compilerFlags: flags
+    compilerFlags: flags,
+    cffiInfo: @[]
   )
 
   var ctx = CompilationContext(

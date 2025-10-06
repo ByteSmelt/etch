@@ -16,7 +16,7 @@ const keywords = [
   "fn","let","var","return","if","elif","else","while","for","break","in",
   "true","false","int","float","string","char","bool","void","ref",
   "comptime","new","and","or","array","nil","option","match",
-  "some","none","ok","error","type","distinct","object"
+  "some","none","ok","error","type","distinct","object","import","export"
 ].toSeq
 
 proc isKeyword(w: string): bool = w in keywords

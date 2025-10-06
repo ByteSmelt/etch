@@ -4,10 +4,11 @@
 import std/[os, tables, times, options, strformat]
 import frontend/[ast, lexer, parser]
 import typechecker/[core, types, statements, inference]
-import interpreter/[vm, bytecode]
+import interpreter/[vm, bytecode, serialize]
 import prover/[core]
 import comptime, common/errors
-import common/[constants, logging]
+import common/[constants, logging, cffi]
+import module_system
 
 type
   CompilerResult* = object
@@ -63,7 +64,8 @@ proc ensureMainInst(prog: Program) =
       let key = MAIN_FUNCTION_NAME
       if not prog.funInstances.hasKey(key):
         prog.funInstances[key] = FunDecl(
-          name: key, typarams: @[], params: mainFunc.params, ret: mainFunc.ret, body: mainFunc.body)
+          name: key, typarams: @[], params: mainFunc.params, ret: mainFunc.ret, body: mainFunc.body,
+          isExported: mainFunc.isExported, isCFFI: mainFunc.isCFFI)
 
 proc ensureAllNonGenericInst(prog: Program, flags: CompilerFlags) =
   ## Instantiate all non-generic functions so they're available for comptime evaluation
@@ -90,7 +92,8 @@ proc ensureAllNonGenericInst(prog: Program, flags: CompilerFlags) =
               resolvedRet = prog.types[resolvedRet.name]
 
           prog.funInstances[key] = FunDecl(
-            name: key, typarams: @[], params: resolvedParams, ret: resolvedRet, body: f.body)
+            name: key, typarams: @[], params: resolvedParams, ret: resolvedRet, body: f.body,
+            isExported: f.isExported, isCFFI: f.isCFFI)
 
 # Forward declarations
 proc hasImpureCall(expr: Expr): bool
@@ -206,6 +209,11 @@ proc parseAndTypecheck*(options: CompilerOptions): (Program, string, Table[strin
   var prog = parseProgram(toks, options.sourceFile)
   logCompiler(flags, "Parsed AST with " & $prog.funs.len & " functions and " & $prog.globals.len & " globals")
 
+  # Process imports - load modules and FFI functions
+  logCompiler(flags, "Processing imports")
+  globalModuleRegistry.processImports(prog, options.sourceFile)
+  logCompiler(flags, "After imports: " & $prog.funs.len & " functions and " & $prog.globals.len & " globals")
+
   # For this MVP, instantiation occurs when functions are called during typecheck inference.
   # We need a shallow pass to trigger calls in bodies:
   logCompiler(flags, "Starting type checking phase")
@@ -232,7 +240,7 @@ proc parseAndTypecheck*(options: CompilerOptions): (Program, string, Table[strin
   for name, overloads in prog.funs:
     for f in overloads:
       if f.typarams.len == 0 and f.ret == nil:
-        var sc = Scope(types: initTable[string, EtchType](), flags: initTable[string, VarFlag](), userTypes: prog.types)
+        var sc = Scope(types: initTable[string, EtchType](), flags: initTable[string, VarFlag](), userTypes: prog.types, prog: prog)
         for p in f.params: sc.types[p.name] = p.typ
         for v in prog.globals:
           if v.kind == skVar:
@@ -247,7 +255,7 @@ proc parseAndTypecheck*(options: CompilerOptions): (Program, string, Table[strin
 
   for k in instanceKeys:
     let f = prog.funInstances[k]
-    var sc = Scope(types: initTable[string, EtchType](), flags: initTable[string, VarFlag](), userTypes: prog.types)
+    var sc = Scope(types: initTable[string, EtchType](), flags: initTable[string, VarFlag](), userTypes: prog.types, prog: prog)
     for p in f.params: sc.types[p.name] = p.typ
     for v in prog.globals:
       if v.kind == skVar:
@@ -279,6 +287,55 @@ proc runCachedBytecode*(bytecodeFile: string): CompilerResult =
   echo "Using cached bytecode: ", bytecodeFile
   try:
     let prog = loadBytecode(bytecodeFile)
+
+    # Re-register CFFI functions from cached info
+    for cffiInfo in prog.cffiInfo:
+      # Try to load the library if not already loaded
+      if cffiInfo.library notin globalCFFIRegistry.libraries:
+        # Determine library path based on platform
+        let libPath = when defined(windows):
+          cffiInfo.library & ".dll"
+        elif defined(macosx):
+          if cffiInfo.library == "math" or cffiInfo.library == "m":
+            "/usr/lib/libSystem.dylib"
+          else:
+            "lib" & cffiInfo.library & ".dylib"
+        else:
+          if cffiInfo.library == "math" or cffiInfo.library == "m":
+            "libm.so.6"
+          else:
+            "lib" & cffiInfo.library & ".so"
+
+        discard globalCFFIRegistry.loadLibrary(cffiInfo.library, libPath)
+
+      # Convert string type kinds back to EtchType
+      var paramSpecs: seq[cffi.ParamSpec] = @[]
+      for i, paramType in cffiInfo.paramTypes:
+        let typ = case paramType
+          of "tkFloat": tFloat()
+          of "tkInt": tInt()
+          of "tkBool": tBool()
+          of "tkString": tString()
+          of "tkVoid": tVoid()
+          else: tVoid()
+        paramSpecs.add(cffi.ParamSpec(name: "arg" & $i, typ: typ))
+
+      let retType = case cffiInfo.returnType
+        of "tkFloat": tFloat()
+        of "tkInt": tInt()
+        of "tkBool": tBool()
+        of "tkString": tString()
+        of "tkVoid": tVoid()
+        else: tVoid()
+
+      let signature = cffi.FunctionSignature(
+        params: paramSpecs,
+        returnType: retType
+      )
+
+      # Re-register the function
+      globalCFFIRegistry.loadFunction(cffiInfo.library, cffiInfo.mangledName, cffiInfo.symbol, signature)
+
     let vm = newBytecodeVM(prog)
     let exitCode = vm.runBytecode()
     return CompilerResult(success: true, exitCode: exitCode)
@@ -310,8 +367,22 @@ proc compileAndRun*(options: CompilerOptions): CompilerResult =
 
     # Compile to bytecode
     logCompiler(flags, "Compiling to bytecode")
-    let bytecodeProg = compileProgramWithGlobals(prog, srcHash, evaluatedGlobals, options.sourceFile, flags)
+    var bytecodeProg = compileProgramWithGlobals(prog, srcHash, evaluatedGlobals, options.sourceFile, flags)
     logCompiler(flags, "Bytecode compilation complete (" & $bytecodeProg.instructions.len & " instructions)")
+
+    # Add CFFI info from the registry
+    for funcName, cffiFunc in globalCFFIRegistry.functions:
+      var paramTypes: seq[string] = @[]
+      for param in cffiFunc.signature.params:
+        paramTypes.add($param.typ.kind)
+
+      bytecodeProg.cffiInfo.add(CFFIInfo(
+        library: cffiFunc.library,
+        symbol: cffiFunc.symbol,
+        mangledName: funcName,
+        paramTypes: paramTypes,
+        returnType: $cffiFunc.signature.returnType.kind
+      ))
 
     # Save bytecode to cache
     let bytecodeFile = getBytecodeFileName(options.sourceFile)

@@ -2,7 +2,7 @@
 # Pratt parser for Etch using tokens from lexer
 
 import std/[strformat, tables, options, strutils]
-import ast, lexer, ../common/[errors, types]
+import ast, lexer, ../common/[errors, types, builtins]
 import ../typechecker/types
 
 type
@@ -532,6 +532,217 @@ proc parseComptime(p: Parser): Stmt =
   let body = p.parseBlock()
   Stmt(kind: skComptime, cbody: body, pos: p.posOf(k))
 
+proc parseImport(p: Parser): Stmt =
+  let k = p.expect(tkKeyword, "import")
+  let pos = p.posOf(k)
+
+  # Parse the module path or FFI namespace
+  var importKind = "module"  # default to module import
+  var importPath = ""
+
+  # Check for FFI import: "import ffi <library>" for C libraries
+  if p.cur.kind == tkIdent and p.cur.lex == "ffi":
+    discard p.eat()  # consume "ffi"
+    if p.cur.kind == tkIdent:
+      importKind = "cffi"  # C FFI
+      importPath = p.cur.lex  # Library name or alias (c, cmath, etc.)
+      discard p.eat()
+
+      # Check for path-like syntax (e.g., clib/mathlib)
+      while p.cur.kind == tkSymbol and p.cur.lex == "/":
+        discard p.eat()  # consume '/'
+        if p.cur.kind == tkIdent:
+          importPath = importPath & "/" & p.cur.lex
+          discard p.eat()
+        else:
+          raise newParseError(Pos(filename: p.filename, line: p.cur.line, col: p.cur.col), "Expected library name after '/'")
+    else:
+      raise newParseError(Pos(filename: p.filename, line: p.cur.line, col: p.cur.col), "Expected library name or path after 'ffi' (e.g., 'c', 'cmath', 'clib/mathlib')")
+  elif p.cur.kind == tkString:
+    # Module import with quotes: 'import "path/to/module.etch"'
+    importPath = p.expect(tkString).lex
+  else:
+    # Module import without quotes: 'import lib/math'
+    importPath = p.expect(tkIdent).lex
+
+    # Check for path-like syntax (e.g., lib/math)
+    while p.cur.kind == tkSymbol and p.cur.lex == "/":
+      discard p.eat()  # consume '/'
+      if p.cur.kind == tkIdent:
+        importPath = importPath & "/" & p.cur.lex
+        discard p.eat()
+      else:
+        raise newParseError(Pos(filename: p.filename, line: p.cur.line, col: p.cur.col), "Expected module name after '/'")
+
+    # Add .etch extension if not present
+    if not importPath.endsWith(".etch"):
+      importPath = importPath & ".etch"
+
+  # Parse optional import list
+  var items: seq[ImportItem] = @[]
+
+  if p.cur.kind == tkSymbol and p.cur.lex == "{":
+    discard p.eat()  # consume "{"
+
+    # Peek ahead to determine if this is a multi-module import or item import
+    # Multi-module: import lib { math, xyz }  (no semicolons, just commas)
+    # Item import: import lib/math { add; square; }  (semicolons after items)
+    var isMultiModule = false
+    if importKind == "module" and p.cur.kind == tkIdent:
+      # Save position to look ahead
+      let savedPos = p.i
+
+      # Look for the pattern: ident [, or }]
+      discard p.eat()  # consume the identifier
+      if p.cur.kind == tkSymbol and (p.cur.lex == "," or p.cur.lex == "}"):
+        isMultiModule = true
+
+      # Restore position
+      p.i = savedPos
+
+    if isMultiModule:
+      # Parse multiple module imports: import lib { math, xyz }
+      var moduleNames: seq[string] = @[]
+      while p.cur.kind != tkSymbol or p.cur.lex != "}":
+        let moduleName = p.expect(tkIdent).lex
+        moduleNames.add(moduleName)
+
+        if p.cur.kind == tkSymbol and p.cur.lex == ",":
+          discard p.eat()
+        elif p.cur.kind == tkSymbol and p.cur.lex == "}":
+          break
+        else:
+          raise newParseError(Pos(filename: p.filename, line: p.cur.line, col: p.cur.col), "Expected ',' or '}' after module name")
+
+      discard p.expect(tkSymbol, "}")
+
+      # Store the module names as a special marker in importItems
+      # We'll expand these in parseProgram
+      for moduleName in moduleNames:
+        items.add(ImportItem(
+          itemKind: "module",
+          name: moduleName,
+          signature: FunctionSignature(),
+          typ: nil,
+          isExported: false,
+          alias: ""
+        ))
+
+      # Return with special marker to indicate multi-module import
+      return Stmt(
+        kind: skImport,
+        importKind: "multi-module",
+        importPath: importPath,
+        importItems: items,
+        pos: pos
+      )
+
+    # Otherwise, parse as regular item import
+    while p.cur.kind != tkSymbol or p.cur.lex != "}":
+      var itemKind = "function"  # default
+      var itemName = ""
+
+      # For FFI imports, require 'fn' keyword
+      if importKind == "cffi":
+        if p.cur.kind == tkKeyword and p.cur.lex == "fn":
+          itemKind = "function"
+          discard p.eat()
+          itemName = p.expect(tkIdent).lex
+        else:
+          raise newParseError(Pos(filename: p.filename, line: p.cur.line, col: p.cur.col), "FFI imports require 'fn' keyword before function declarations")
+      else:
+        # For module imports, check for explicit item kind
+        if p.cur.kind == tkKeyword:
+          if p.cur.lex == "fn":
+            itemKind = "function"
+            discard p.eat()
+            itemName = p.expect(tkIdent).lex
+          elif p.cur.lex == "const":
+            itemKind = "const"
+            discard p.eat()
+            itemName = p.expect(tkIdent).lex
+          elif p.cur.lex == "type":
+            itemKind = "type"
+            discard p.eat()
+            itemName = p.expect(tkIdent).lex
+          else:
+            # Default: assume it's a function without 'fn' prefix
+            itemName = p.expect(tkIdent).lex
+        else:
+          # No keyword, just parse the name
+          itemName = p.expect(tkIdent).lex
+
+      var item = ImportItem(
+        itemKind: itemKind,
+        name: itemName,
+        signature: FunctionSignature(),
+        typ: nil,
+        isExported: false,
+        alias: ""
+      )
+
+      # Parse function signature if it's a function
+      if itemKind == "function" and p.cur.kind == tkSymbol and p.cur.lex == "(":
+        discard p.eat()  # consume "("
+
+        var params: seq[Param] = @[]
+        while p.cur.kind != tkSymbol or p.cur.lex != ")":
+          let paramName = p.expect(tkIdent).lex
+          discard p.expect(tkSymbol, ":")
+          let paramType = p.parseType()
+          params.add(Param(name: paramName, typ: paramType, defaultValue: none(Expr)))
+
+          if p.cur.kind == tkSymbol and p.cur.lex == ",":
+            discard p.eat()
+
+        discard p.expect(tkSymbol, ")")
+
+        # Parse return type
+        var returnType = tVoid()
+        if p.cur.kind == tkSymbol and p.cur.lex == "->":
+          discard p.eat()
+          returnType = p.parseType()
+
+        item.signature = FunctionSignature(params: params, returnType: returnType)
+
+      # Check for 'as' clause for aliasing (after signature for functions)
+      if p.cur.kind == tkIdent and p.cur.lex == "as":
+        discard p.eat()
+        item.alias = p.expect(tkIdent).lex
+      elif itemKind == "const" and p.cur.kind == tkSymbol and p.cur.lex == ":":
+        # Parse const type
+        discard p.eat()  # consume ":"
+        item.typ = p.parseType()
+
+      # For CFFI imports, signatures must be provided explicitly
+      if importKind == "cffi" and itemKind == "function":
+        if item.signature.params.len == 0 and item.signature.returnType == nil:
+          raise newParseError(Pos(filename: p.filename, line: p.cur.line, col: p.cur.col), "FFI function imports require explicit type signatures")
+
+      items.add(item)
+
+      # Check for comma, semicolon or closing brace
+      if p.cur.kind == tkSymbol and p.cur.lex == ",":
+        discard p.eat()
+      elif p.cur.kind == tkSymbol and p.cur.lex == ";":
+        discard p.eat()
+      elif p.cur.kind == tkSymbol and p.cur.lex == "}":
+        break
+
+    discard p.expect(tkSymbol, "}")
+
+  # Optional semicolon after import
+  if p.cur.kind == tkSymbol and p.cur.lex == ";":
+    discard p.eat()
+
+  return Stmt(
+    kind: skImport,
+    importKind: importKind,
+    importPath: importPath,
+    importItems: items,
+    pos: pos
+  )
+
 proc parseSimpleStmt(p: Parser): Stmt =
   # assignment or call expr
   let start = p.cur
@@ -627,7 +838,7 @@ proc parseTypeDecl(p: Parser): Stmt =
     pos: p.posOf(start)
   )
 
-proc parseFn(p: Parser; prog: Program) =
+proc parseFn(p: Parser; prog: Program; isExported: bool = false) =
   discard p.expect(tkKeyword, "fn")
   # Allow operator symbols as function names for operator overloading
   let nameToken = p.cur
@@ -670,7 +881,7 @@ proc parseFn(p: Parser; prog: Program) =
     rt = p.parseType()
 
   let body = p.parseBlock()
-  let fd = FunDecl(name: name, typarams: tps, params: ps, ret: rt, body: body)
+  let fd = FunDecl(name: name, typarams: tps, params: ps, ret: rt, body: body, isExported: isExported)
   prog.addFunction(fd)
   # Clear generic parameters after parsing the function
   p.genericParams.setLen(0)
@@ -691,6 +902,7 @@ proc parseStmt*(p: Parser): Stmt =
     of "return": return p.parseReturn()
     of "comptime": return p.parseComptime()
     of "type": return p.parseTypeDecl()
+    of "import": return p.parseImport()
     else: discard # fallthrough to simple
   return p.parseSimpleStmt()
 
@@ -703,11 +915,38 @@ proc parseProgram*(toks: seq[Token], filename: string = "<unknown>"): Program =
     types: initTable[string, EtchType]()
   )
 
+  # Register all builtins automatically - they don't need to be imported
+  for name in getBuiltinNames():
+    let (paramTypes, returnType) = getBuiltinSignature(name)
+    var params: seq[Param] = @[]
+    for i, pType in paramTypes:
+      params.add(Param(name: "arg" & $i, typ: pType, defaultValue: none(Expr)))
+
+    let funcDecl = FunDecl(
+      name: name,
+      typarams: @[],
+      params: params,
+      ret: returnType,
+      body: @[]  # Empty body - will be handled as builtin
+    )
+
+    if name notin result.funs:
+      result.funs[name] = @[]
+    result.funs[name].add(funcDecl)
+
   while p.cur.kind != tkEof:
+    # Check for export modifier
+    var isExported = false
+    if p.cur.kind == tkKeyword and p.cur.lex == "export":
+      isExported = true
+      discard p.eat()  # consume "export"
+
     if p.cur.kind == tkKeyword and p.cur.lex == "fn":
-      p.parseFn(result)
+      p.parseFn(result, isExported)
     elif p.cur.kind == tkKeyword and (p.cur.lex == "let" or p.cur.lex == "var"):
       let st = p.parseStmt()
+      if isExported:
+        st.isExported = true
       result.globals.add st
     elif p.cur.kind == tkKeyword and p.cur.lex == "type":
       let typeDecl = p.parseTypeDecl()
@@ -722,6 +961,30 @@ proc parseProgram*(toks: seq[Token], filename: string = "<unknown>"): Program =
       else:
         let pos = typeDecl.pos
         raise newParseError(pos, &"unknown type kind: {typeDecl.typeKind}")
+    elif p.cur.kind == tkKeyword and p.cur.lex == "import":
+      let importStmt = p.parseImport()
+
+      # Handle multi-module imports by expanding them
+      if importStmt.importKind == "multi-module":
+        # Remove .etch extension from importPath if present for the base path
+        let basePath = if importStmt.importPath.endsWith(".etch"):
+          importStmt.importPath[0..^6]
+        else:
+          importStmt.importPath
+
+        # Create individual import statements for each module
+        for item in importStmt.importItems:
+          if item.itemKind == "module":
+            let fullPath = basePath & "/" & item.name & ".etch"
+            result.globals.add Stmt(
+              kind: skImport,
+              importKind: "module",
+              importPath: fullPath,
+              importItems: @[],
+              pos: importStmt.pos
+            )
+      else:
+        result.globals.add importStmt  # Add import to globals for processing
     else:
       # top-level expr stmt not allowed, give error
       let t = p.cur

@@ -1,15 +1,25 @@
 # Etch Language Implementation - Just commands
 
+default:
+    @just -l
+
+[working-directory: 'examples/clib']
+libs:
+    make
+
 # Test compiling and running all examples
 examples:
+    @just libs
     nim r src/etch.nim --test examples/
 
 # Test compiling and running a specific example file
 test file:
+    @just libs
     nim r src/etch.nim --test {{file}}
 
 # Run a specific example file
 go file:
+    @just libs
     nim r src/etch.nim --run {{file}} --verbose
 
 # Build the project
@@ -33,7 +43,7 @@ perf:
 
 # Deal with VSCode extension packaging and installation
 [working-directory: 'vscode']
-syntax:
+vscode:
     rm -f *.vsix
     -code --uninstall-extension kunitoki.etchlang
     tsc -p ./

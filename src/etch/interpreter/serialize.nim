@@ -45,6 +45,8 @@ type
     opLoadVarArrayGet, opLoadIntAddVar, opLoadVarIntLt
     # Fast builtin dispatch
     opCallBuiltin
+    # CFFI function calls
+    opCallCFFI
 
   Instruction* = object
     op*: OpCode
@@ -59,6 +61,13 @@ type
     parameterNames*: seq[string]
     localVarNames*: seq[string]
 
+  CFFIInfo* = object
+    library*: string
+    symbol*: string
+    mangledName*: string
+    paramTypes*: seq[string]  # Type kinds as strings
+    returnType*: string       # Type kind as string
+
   BytecodeProgram* = object
     instructions*: seq[Instruction]
     constants*: seq[string]
@@ -70,6 +79,7 @@ type
     functionInfo*: Table[string, FunctionInfo]
     lineToInstructionMap*: Table[int, seq[int]]
     compilerFlags*: CompilerFlags
+    cffiInfo*: seq[CFFIInfo]  # CFFI function metadata
 
 
 proc serializeToBinary*(prog: BytecodeProgram): string =
@@ -195,6 +205,33 @@ proc serializeToBinary*(prog: BytecodeProgram): string =
       var paramLen = uint32(paramName.len)
       stream.write(paramLen)
       stream.write(paramName)
+
+  # CFFI info
+  var cffiCount = uint32(prog.cffiInfo.len)
+  stream.write(cffiCount)
+  for cffi in prog.cffiInfo:
+    var libLen = uint32(cffi.library.len)
+    stream.write(libLen)
+    stream.write(cffi.library)
+
+    var symLen = uint32(cffi.symbol.len)
+    stream.write(symLen)
+    stream.write(cffi.symbol)
+
+    var mangledLen = uint32(cffi.mangledName.len)
+    stream.write(mangledLen)
+    stream.write(cffi.mangledName)
+
+    var paramCount = uint32(cffi.paramTypes.len)
+    stream.write(paramCount)
+    for paramType in cffi.paramTypes:
+      var typeLen = uint32(paramType.len)
+      stream.write(typeLen)
+      stream.write(paramType)
+
+    var retLen = uint32(cffi.returnType.len)
+    stream.write(retLen)
+    stream.write(cffi.returnType)
 
   stream.setPosition(0)
   result = stream.readAll()
@@ -328,6 +365,36 @@ proc deserializeFromBinary*(data: string): BytecodeProgram =
       localVarNames: @[]
     )
 
+  # CFFI info
+  result.cffiInfo = @[]
+  let cffiCount = stream.readUint32()
+  for i in 0..<cffiCount:
+    let libLen = stream.readUint32()
+    let library = stream.readStr(int(libLen))
+
+    let symLen = stream.readUint32()
+    let symbol = stream.readStr(int(symLen))
+
+    let mangledLen = stream.readUint32()
+    let mangledName = stream.readStr(int(mangledLen))
+
+    let paramCount = stream.readUint32()
+    var paramTypes: seq[string] = @[]
+    for j in 0..<paramCount:
+      let typeLen = stream.readUint32()
+      paramTypes.add(stream.readStr(int(typeLen)))
+
+    let retLen = stream.readUint32()
+    let returnType = stream.readStr(int(retLen))
+
+    result.cffiInfo.add(CFFIInfo(
+      library: library,
+      symbol: symbol,
+      mangledName: mangledName,
+      paramTypes: paramTypes,
+      returnType: returnType
+    ))
+
   stream.close()
 
 
@@ -395,3 +462,4 @@ proc `$`*(op: OpCode): string =
   of opLoadIntAddVar: "LOAD_INT_ADD_VAR"
   of opLoadVarIntLt: "LOAD_VAR_INT_LT"
   of opCallBuiltin: "CALL_BUILTIN"
+  of opCallCFFI: "CALL_CFFI"

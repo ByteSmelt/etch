@@ -1260,6 +1260,7 @@ proc proveStmt*(s: Stmt; env: Env, ctx: ProverContext) =
     of skReturn: "return statement"
     of skComptime: "comptime block"
     of skTypeDecl: "type declaration"
+    of skImport: "import statement"
 
   logProver(ctx.flags, "Analyzing " & stmtKindStr & (if ctx.fnContext != "": " in " & ctx.fnContext else: ""))
 
@@ -1275,6 +1276,9 @@ proc proveStmt*(s: Stmt; env: Env, ctx: ProverContext) =
   of skComptime: proveComptime(s, env, ctx)
   of skTypeDecl:
     # Type declarations don't need proving
+    discard
+  of skImport:
+    # Import statements don't need proving
     discard
 
 

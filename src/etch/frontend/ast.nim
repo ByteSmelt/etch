@@ -126,13 +126,14 @@ type
       initExpr*: Option[Expr] # optional initialization expression
 
   StmtKind* = enum
-    skVar, skAssign, skIf, skWhile, skFor, skBreak, skExpr, skReturn, skComptime, skTypeDecl
+    skVar, skAssign, skIf, skWhile, skFor, skBreak, skExpr, skReturn, skComptime, skTypeDecl, skImport
 
   VarFlag* = enum
     vfLet, vfVar
 
   Stmt* = ref object
     pos*: Pos
+    isExported*: bool  # Whether this is exported from the module
     case kind*: StmtKind
     of skVar:
       vflag*: VarFlag
@@ -168,8 +169,24 @@ type
       typeKind*: string       # "alias", "distinct", or "object"
       aliasTarget*: EtchType  # target type for alias/distinct
       objectFields*: seq[ObjectField]  # fields for object types
+    of skImport:
+      importKind*: string     # "module" or "ffi"
+      importPath*: string     # file path for modules, namespace for FFI
+      importItems*: seq[ImportItem]  # items to import
     of skBreak:
       discard
+
+  ImportItem* = object
+    itemKind*: string       # "function", "const", "type"
+    name*: string          # item name
+    signature*: FunctionSignature  # for functions
+    typ*: EtchType         # for constants and types
+    isExported*: bool      # whether item is exported from module
+    alias*: string         # optional alias for C FFI symbols
+
+  FunctionSignature* = object
+    params*: seq[Param]
+    returnType*: EtchType
 
   Param* = object
     name*: string
@@ -182,6 +199,8 @@ type
     params*: seq[Param]
     ret*: EtchType
     body*: seq[Stmt]
+    isExported*: bool  # Whether this function is exported
+    isCFFI*: bool      # Whether this is a C FFI function
 
   Program* = ref object
     globals*: seq[Stmt]                   # global let/var with init allowed
@@ -197,6 +216,7 @@ proc tInt*(): EtchType = EtchType(kind: tkInt)
 proc tFloat*(): EtchType = EtchType(kind: tkFloat)
 proc tString*(): EtchType = EtchType(kind: tkString)
 proc tInferred*(): EtchType = EtchType(kind: tkInferred)
+proc tAny*(): EtchType = EtchType(kind: tkGeneric, name: "Any")  # Accept any type
 proc tArray*(inner: EtchType): EtchType = EtchType(kind: tkArray, inner: inner)
 proc tRef*(inner: EtchType): EtchType = EtchType(kind: tkRef, inner: inner)
 proc tGeneric*(name: string): EtchType = EtchType(kind: tkGeneric, name: name)
@@ -224,6 +244,20 @@ proc `$`*(t: EtchType): string =
   of tkDistinct: t.name
   of tkObject: t.name
   of tkInferred: "<inferred>"
+
+proc isCompatibleWith*(actual: EtchType, expected: EtchType): bool =
+  ## Check if actual type is compatible with expected type
+  if expected.kind == tkGeneric and expected.name == "Any":
+    return true  # Any accepts all types
+  if actual.kind == expected.kind:
+    case actual.kind
+    of tkRef, tkArray, tkOption:
+      return actual.inner.isCompatibleWith(expected.inner)
+    of tkResult:
+      return actual.inner.isCompatibleWith(expected.inner)
+    else:
+      return true
+  return false
 
 
 proc `$`*(t: ExprKind): string =

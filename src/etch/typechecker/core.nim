@@ -12,7 +12,8 @@ proc typecheck*(prog: Program) =
   var gscope = Scope(
     types: initTable[string, EtchType](),
     flags: initTable[string, VarFlag](),
-    userTypes: initTable[string, EtchType]()
+    userTypes: initTable[string, EtchType](),
+    prog: prog
   )
 
   # First pass: add all user-defined types to scope

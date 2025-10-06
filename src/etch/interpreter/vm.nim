@@ -3,7 +3,7 @@
 
 import std/[tables, strformat, strutils, random, json]
 import ../frontend/ast, bytecode, debugger
-import ../common/[constants, errors, types, builtins]
+import ../common/[constants, errors, types, builtins, cffi, values]
 
 
 type
@@ -917,6 +917,58 @@ proc opCallBuiltinImpl(vm: VM, instr: Instruction): bool =
   let handler = vm.builtinTable[builtinId]
   return handler(vm, argCount)
 
+proc opCallCFFIImpl(vm: VM, instr: Instruction): bool =
+  ## Handle CFFI function calls
+  let argCount = int(instr.arg)
+  let funcName = instr.sarg
+
+  # Collect arguments from stack
+  var args: seq[Value] = @[]
+  for i in 0 ..< argCount:
+    let arg = vm.pop()
+    # Convert VM value to CFFI Value
+    var cffiVal: Value
+    case arg.kind
+    of tkInt:
+      cffiVal = Value(kind: vkInt, intVal: arg.ival)
+    of tkFloat:
+      cffiVal = Value(kind: vkFloat, floatVal: arg.fval)
+    of tkString:
+      cffiVal = Value(kind: vkString, stringVal: arg.sval)
+    of tkBool:
+      cffiVal = Value(kind: vkBool, boolVal: arg.bval)
+    of tkChar:
+      # Convert char to string for CFFI
+      cffiVal = Value(kind: vkString, stringVal: $arg.cval)
+    else:
+      cffiVal = Value(kind: vkVoid)
+    args.insert(cffiVal, 0)  # Reverse order since we popped from stack
+
+  try:
+    # Call the CFFI function
+    let cffiResult = globalCFFIRegistry.callFunction(funcName, args)
+
+    # Convert result back to VM value
+    case cffiResult.kind
+    of vkInt:
+      vm.push(vInt(cffiResult.intVal))
+    of vkFloat:
+      vm.push(vFloat(cffiResult.floatVal))
+    of vkString:
+      vm.push(vString(cffiResult.stringVal))
+    of vkBool:
+      vm.push(vBool(cffiResult.boolVal))
+    of vkVoid:
+      vm.push(vNilRef)
+    else:
+      vm.push(vNilRef)
+  except Exception as e:
+    # CFFI call failed - push nil and continue (or could raise error)
+    echo "CFFI call failed: ", e.msg
+    vm.push(vNilRef)
+
+  return true
+
 proc opJumpImpl(vm: VM, instr: Instruction): bool =
   vm.pc = int(instr.arg)
   return true
@@ -1368,6 +1420,7 @@ proc initJumpTable(): array[OpCode, InstructionHandler] =
   result[opLoadIntAddVar] = opLoadIntAddVarImpl
   result[opLoadVarIntLt] = opLoadVarIntLtImpl
   result[opCallBuiltin] = opCallBuiltinImpl
+  result[opCallCFFI] = opCallCFFIImpl
 
 proc newBytecodeVM*(program: BytecodeProgram): VM =
   ## Create a new bytecode VM instance with initialized jump table and pre-allocated stacks

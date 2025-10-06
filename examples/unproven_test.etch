@@ -7,9 +7,15 @@ fn divide_default(x: int, y: int = 2) -> int {
 }
 
 fn main() -> void {
-  print(divide(10, 2)); // Can prove y is non-zero
-  print(divide_default(10)); // Can prove y is non-zero
+  //print(divide(10, 2)); // Can prove y is non-zero
+  //print(divide_default(10)); // Can prove y is non-zero
+
+  let x = readFile("data/input.txt");
+  let y = match parseInt(x) {
+    some(v) => v,
+    none => 1
+  };
 
   seed(42);
-  print(divide(10, rand(10, 1))); // Can prove y is non-zero
+  print(divide(10, rand(10, y))); // Can prove y is non-zero
 }

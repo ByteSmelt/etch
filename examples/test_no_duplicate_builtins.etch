@@ -1,0 +1,7 @@
+// Test that importing ffi doesn't create duplicates
+import ffi std { print }
+
+fn main() {
+  // This should work - print should not be duplicated
+  print("Testing no duplicates");
+}

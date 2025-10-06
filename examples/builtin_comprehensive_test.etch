@@ -1,0 +1,32 @@
+// Comprehensive test for FFI builtin imports
+// Tests multiple builtins imported via FFI using simplified syntax
+
+fn main() {
+  // Test print
+  print(100);
+
+  // Test rand with seed
+  seed(123);
+  let r1 = rand(10);
+  print(r1);
+
+  // Test file operations
+  let content: string = readFile("examples/data/input.txt");
+  let numOpt: option[int] = parseInt(content);
+  if isSome(numOpt) {
+    // For now, we can't unwrap option, so skip
+  }
+
+  // Test toString conversion
+  let str: string = toString(456);
+  // Can't print string directly, but we can test parseInt on it
+  let parsed: option[int] = parseInt(str);
+  if isSome(parsed) {
+    print(456);  // We know it will parse to 456
+  }
+
+  // Test multiple rand calls
+  seed(999);
+  print(rand(5));
+  print(rand(5));
+}

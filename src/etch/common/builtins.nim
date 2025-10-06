@@ -73,6 +73,45 @@ proc isBuiltin*(name: string): bool =
   else:
     return false
 
+# Get all builtin names for automatic registration
+proc getBuiltinNames*(): seq[string] =
+  @["print", "new", "deref", "rand", "readFile", "seed",
+    "parseInt", "parseFloat", "parseBool", "toString", "isSome", "isNone", "isOk", "isErr"]
+
+proc getBuiltinSignature*(fname: string): (seq[EtchType], EtchType) =
+  ## Get the parameter types and return type for a builtin function
+  ## Returns empty seq and tVoid if not found or if it has variable signatures
+  case fname
+  of "print":
+    # print accepts multiple types, return a generic signature
+    return (@[tInferred()], tVoid())
+  of "new":
+    return (@[tInferred()], tInferred())  # ref[T]
+  of "deref":
+    return (@[tInferred()], tInferred())  # T
+  of "rand":
+    # rand has 1-2 int params
+    return (@[tInt()], tInt())
+  of "seed":
+    # seed has 0-1 int params
+    return (@[], tVoid())
+  of "readFile":
+    return (@[tString()], tString())
+  of "parseInt":
+    return (@[tString()], tOption(tInt()))
+  of "parseFloat":
+    return (@[tString()], tOption(tFloat()))
+  of "parseBool":
+    return (@[tString()], tOption(tBool()))
+  of "toString":
+    return (@[tInferred()], tString())
+  of "isSome", "isNone":
+    return (@[tOption(tInferred())], tBool())
+  of "isOk", "isErr":
+    return (@[tResult(tInferred())], tBool())
+  else:
+    return (@[], tVoid())
+
 
 # Perform basic type checking for builtin functions
 # This is simplified to avoid circular dependencies

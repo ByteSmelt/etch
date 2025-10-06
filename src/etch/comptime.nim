@@ -258,6 +258,9 @@ proc foldStmt(prog: Program, s: var Stmt) =
   of skTypeDecl:
     # Type declarations don't need folding
     discard
+  of skImport:
+    # Import statements don't need folding
+    discard
 
 
 proc foldComptime*(prog: Program, root: var Program) =

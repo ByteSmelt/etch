@@ -1,0 +1,35 @@
+// mathlib.c - Simple C math library for testing Etch C FFI
+
+#include <stdint.h>
+
+// Simple integer operations
+int64_t c_add(int64_t a, int64_t b) {
+    return a + b;
+}
+
+int64_t c_multiply(int64_t a, int64_t b) {
+    return a * b;
+}
+
+int64_t c_power(int64_t base, int64_t exp) {
+    int64_t result = 1;
+    for (int64_t i = 0; i < exp; i++) {
+        result *= base;
+    }
+    return result;
+}
+
+// Simple factorial function
+int64_t c_factorial(int64_t n) {
+    if (n <= 1) return 1;
+    int64_t result = 1;
+    for (int64_t i = 2; i <= n; i++) {
+        result *= i;
+    }
+    return result;
+}
+
+// Simple abs function
+int64_t c_abs(int64_t x) {
+    return x < 0 ? -x : x;
+}

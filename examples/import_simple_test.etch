@@ -1,0 +1,9 @@
+// Simple test of import parsing
+
+import ffi std {
+  fn print(value: int) -> void;
+}
+
+fn main() {
+  print(42);
+}
