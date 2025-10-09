@@ -1,6 +1,12 @@
 # constants.nim
 # Program-wide constants for the Etch language implementation
 
+# VM types
+type
+  VMType* = enum
+    vmStack = 1    # Stack-based VM
+    vmRegister = 2 # Register-based VM
+
 # Module names for logging
 const
   MODULE_COMPILER* = "COMPILER"

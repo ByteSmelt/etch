@@ -1,10 +1,14 @@
 # vm.nim
 # Simple AST interpreter acting as Etch VM (used both at runtime and for comptime eval)
 
-import std/[tables, strformat, strutils, random, json]
+import std/[tables, strformat, strutils, json]
 import ../frontend/ast, bytecode, debugger
 import ../common/[constants, errors, types, builtins, cffi, values]
 
+
+# Use C's rand() and srand() for consistency between VM and C backend
+proc c_rand(): cint {.importc: "rand", header: "<stdlib.h>".}
+proc c_srand(seed: cuint) {.importc: "srand", header: "<stdlib.h>".}
 
 type
   # Forward declaration for jump table
@@ -16,23 +20,20 @@ type
   # Fast builtin function handler type
   BuiltinHandler = proc(vm: VM, argCount: int): bool {.nimcall.}
 
+  # Optimized value representation with tagged union style
   V* = object
     kind*: TypeKind
+    # Use union-like storage for better memory layout
     ival*: int64
     fval*: float64
     bval*: bool
     sval*: string
     cval*: char
-    # Ref represented as reference to heap slot
     refId*: int
-    # Array represented as sequence of values
     aval*: seq[V]
-    # Option/Result represented as wrapped value with presence flag
     hasValue*: bool        # true for Some/Ok, false for None/Err
     wrappedVal*: ref V     # the actual value for Some/Ok, or error msg for Err
-    # Object represented as field name -> value mapping
     oval*: Table[string, V]
-    # Union represented as type index and wrapped value
     unionTypeIdx*: int     # Index of the active type in the union
     unionVal*: ref V       # The actual value
 
@@ -66,6 +67,9 @@ type
     # Fast builtin function dispatch
     builtinTable*: array[BuiltinFuncId, BuiltinHandler]
 
+    # Lua-inspired string interning for faster string operations
+    stringIntern*: Table[string, string]  # Maps strings to their interned version
+
     # Debugger support (optional - zero cost when nil)
     debugger*: EtchDebugger
 
@@ -80,6 +84,14 @@ let
   vEmptyString* = V(kind: tkString, sval: "")
   vNilRef* = V(kind: tkRef, refId: -1)
   vVoidValue* = V(kind: tkVoid)
+
+proc internString(vm: VM, s: string): string {.inline.} =
+  # Lua-style string interning for faster comparisons
+  if vm.stringIntern.hasKey(s):
+    return vm.stringIntern[s]
+  else:
+    vm.stringIntern[s] = s
+    return s
 
 # Optimized value constructors with inline pragma for performance
 proc vInt(x: int64): V {.inline.} = V(kind: tkInt, ival: x)
@@ -222,7 +234,14 @@ proc setVar(vm: VM, name: string, value: V) =
 # Optimized individual operation functions for jump table dispatch
 # All functions return bool: true to continue execution, false to halt
 proc opLoadIntImpl(vm: VM, instr: Instruction): bool =
-  vm.push(vIntFast(instr.arg))
+  # Direct stack push for integers - optimized for common values
+  case instr.arg:
+  of 0:
+    vm.stack.add(vIntZero)
+  of 1:
+    vm.stack.add(vIntOne)
+  else:
+    vm.stack.add(V(kind: tkInt, ival: instr.arg))
   return true
 
 proc opLoadFloatImpl(vm: VM, instr: Instruction): bool =
@@ -242,11 +261,49 @@ proc opLoadBoolImpl(vm: VM, instr: Instruction): bool =
   return true
 
 proc opLoadVarImpl(vm: VM, instr: Instruction): bool =
-  vm.push(vm.getVar(instr.sarg))
+  # Fast variable loading - avoid hash lookups when possible
+  if vm.callStack.len > 0:
+    let frame = vm.callStack[^1]
+    # Check fast slots first (most locals should be here)
+    for i in 0..<frame.fastVarCount:
+      if frame.fastVarNames[i] == instr.sarg:
+        vm.stack.add(frame.fastVars[i])
+        return true
+    # Check regular vars
+    if frame.vars.hasKey(instr.sarg):
+      vm.stack.add(frame.vars[instr.sarg])
+      return true
+  # Check globals
+  if vm.globals.hasKey(instr.sarg):
+    vm.stack.add(vm.globals[instr.sarg])
+  else:
+    vm.raiseRuntimeError(&"Variable '{instr.sarg}' not found")
   return true
 
 proc opStoreVarImpl(vm: VM, instr: Instruction): bool =
-  vm.setVar(instr.sarg, vm.pop())
+  # Fast variable storage with fast slot caching
+  let value = vm.pop()
+
+  if vm.callStack.len > 0:
+    let frame = vm.callStack[^1]
+
+    # Check if already in fast slots
+    for i in 0..<frame.fastVarCount:
+      if frame.fastVarNames[i] == instr.sarg:
+        frame.fastVars[i] = value
+        return true
+
+    # Try to add to fast slots if space available
+    if frame.fastVarCount < VM_FAST_SLOTS_COUNT:
+      frame.fastVarNames[frame.fastVarCount] = instr.sarg
+      frame.fastVars[frame.fastVarCount] = value
+      frame.fastVarCount += 1
+    else:
+      # Fall back to regular storage
+      frame.vars[instr.sarg] = value
+  else:
+    vm.globals[instr.sarg] = value
+
   return true
 
 proc opLoadNilImpl(vm: VM, instr: Instruction): bool =
@@ -262,98 +319,110 @@ proc opDupImpl(vm: VM, instr: Instruction): bool =
   return true
 
 proc opAddImpl(vm: VM, instr: Instruction): bool =
-  # Unboxed arithmetic optimization - avoid V object field access when possible
-  let b = vm.pop()
-  let a = vm.pop()
+  # Optimized addition with stack slot reuse to minimize allocations
+  let stackLen = vm.stack.len
+  template a: untyped = vm.stack[stackLen - 2]
+  template b: untyped = vm.stack[stackLen - 1]
 
   # Fast path for integer addition (most common case in benchmarks)
   if likely(a.kind == tkInt and b.kind == tkInt):
-    # Direct unboxed computation - no V object manipulation during calculation
-    let computedResult = V(kind: tkInt, ival: a.ival + b.ival)
-    vm.stack.add(computedResult)
+    # Reuse stack slot - no new allocation
+    a.ival = a.ival + b.ival
+    vm.stack.setLen(stackLen - 1)
     return true
 
   # Fast path for float addition
   if a.kind == tkFloat and b.kind == tkFloat:
-    let computedResult = V(kind: tkFloat, fval: a.fval + b.fval)
-    vm.stack.add(computedResult)
+    a.fval = a.fval + b.fval
+    vm.stack.setLen(stackLen - 1)
     return true
 
-  # Slower paths for other types (string concat, array concat)
-  case a.kind:
+  # Slower paths need actual pop/push
+  let bVal = vm.pop()
+  let aVal = vm.pop()
+
+  case aVal.kind:
   of tkString:
-    vm.push(vString(a.sval & b.sval))
+    vm.push(vString(aVal.sval & bVal.sval))
   of tkArray:
-    vm.push(vArray(a.aval & b.aval))
+    vm.push(vArray(aVal.aval & bVal.aval))
   else:
     vm.raiseRuntimeError("Unsupported types in addition")
   return true
 
 proc opSubImpl(vm: VM, instr: Instruction): bool =
-  let b = vm.pop()
-  let a = vm.pop()
+  # Optimized subtraction with stack slot reuse
+  let stackLen = vm.stack.len
+  template a: untyped = vm.stack[stackLen - 2]
+  template b: untyped = vm.stack[stackLen - 1]
 
   # Fast unboxed integer subtraction
   if likely(a.kind == tkInt and b.kind == tkInt):
-    let computedResult = V(kind: tkInt, ival: a.ival - b.ival)
-    vm.stack.add(computedResult)
+    a.ival = a.ival - b.ival
+    vm.stack.setLen(stackLen - 1)
     return true
 
   # Fast unboxed float subtraction
   if a.kind == tkFloat and b.kind == tkFloat:
-    let computedResult = V(kind: tkFloat, fval: a.fval - b.fval)
-    vm.stack.add(computedResult)
+    a.fval = a.fval - b.fval
+    vm.stack.setLen(stackLen - 1)
     return true
 
   vm.raiseRuntimeError("Subtraction requires numeric types")
   return true
 
 proc opMulImpl(vm: VM, instr: Instruction): bool =
-  let b = vm.pop()
-  let a = vm.pop()
+  # Optimized multiplication with stack slot reuse
+  let stackLen = vm.stack.len
+  template a: untyped = vm.stack[stackLen - 2]
+  template b: untyped = vm.stack[stackLen - 1]
 
   # Fast unboxed integer multiplication
   if likely(a.kind == tkInt and b.kind == tkInt):
-    let computedResult = V(kind: tkInt, ival: a.ival * b.ival)
-    vm.stack.add(computedResult)
+    a.ival = a.ival * b.ival
+    vm.stack.setLen(stackLen - 1)
     return true
 
   # Fast unboxed float multiplication
   if a.kind == tkFloat and b.kind == tkFloat:
-    let computedResult = V(kind: tkFloat, fval: a.fval * b.fval)
-    vm.stack.add(computedResult)
+    a.fval = a.fval * b.fval
+    vm.stack.setLen(stackLen - 1)
     return true
 
   vm.raiseRuntimeError("Multiplication requires numeric types")
   return true
 
 proc opDivImpl(vm: VM, instr: Instruction): bool =
-  let b = vm.pop()
-  let a = vm.pop()
+  # Optimized division with stack slot reuse
+  let stackLen = vm.stack.len
+  template a: untyped = vm.stack[stackLen - 2]
+  template b: untyped = vm.stack[stackLen - 1]
 
   # Fast unboxed integer division
   if likely(a.kind == tkInt and b.kind == tkInt):
-    let computedResult = V(kind: tkInt, ival: a.ival div b.ival)
-    vm.stack.add(computedResult)
+    a.ival = a.ival div b.ival
+    vm.stack.setLen(stackLen - 1)
     return true
 
   # Fast unboxed float division
   if a.kind == tkFloat and b.kind == tkFloat:
-    let computedResult = V(kind: tkFloat, fval: a.fval / b.fval)
-    vm.stack.add(computedResult)
+    a.fval = a.fval / b.fval
+    vm.stack.setLen(stackLen - 1)
     return true
 
   vm.raiseRuntimeError("Division requires numeric types")
   return true
 
 proc opModImpl(vm: VM, instr: Instruction): bool =
-  let b = vm.pop()
-  let a = vm.pop()
+  # Optimized modulo with stack slot reuse
+  let stackLen = vm.stack.len
+  template a: untyped = vm.stack[stackLen - 2]
+  template b: untyped = vm.stack[stackLen - 1]
 
   # Fast unboxed integer modulo
   if likely(a.kind == tkInt and b.kind == tkInt):
-    let computedResult = V(kind: tkInt, ival: a.ival mod b.ival)
-    vm.stack.add(computedResult)
+    a.ival = a.ival mod b.ival
+    vm.stack.setLen(stackLen - 1)
     return true
 
   vm.raiseRuntimeError("Modulo requires integer types")
@@ -415,23 +484,31 @@ proc opNeImpl(vm: VM, instr: Instruction): bool =
   return true
 
 proc opLtImpl(vm: VM, instr: Instruction): bool =
-  let b = vm.pop()
-  let a = vm.pop()
+  # Optimized less-than with stack slot reuse (critical for loop conditions)
+  let stackLen = vm.stack.len
+  template a: untyped = vm.stack[stackLen - 2]
+  template b: untyped = vm.stack[stackLen - 1]
 
-  # Fast unboxed integer less-than (critical for loop conditions)
+  # Fast unboxed integer less-than (most common in loops)
   if likely(a.kind == tkInt and b.kind == tkInt):
-    let computedResult = V(kind: tkBool, bval: a.ival < b.ival)
-    vm.stack.add(computedResult)
+    # Reuse the stack slot for the boolean result
+    a.kind = tkBool
+    a.bval = a.ival < b.ival
+    vm.stack.setLen(stackLen - 1)
     return true
 
   # Fast unboxed float less-than
   if a.kind == tkFloat and b.kind == tkFloat:
-    let computedResult = V(kind: tkBool, bval: a.fval < b.fval)
-    vm.stack.add(computedResult)
+    let res = a.fval < b.fval
+    a.kind = tkBool
+    a.bval = res
+    vm.stack.setLen(stackLen - 1)
     return true
 
   # Fallback for unsupported types
-  vm.push(vBoolFalse)
+  a.kind = tkBool
+  a.bval = false
+  vm.stack.setLen(stackLen - 1)
   return true
 
 proc opLeImpl(vm: VM, instr: Instruction): bool =
@@ -798,29 +875,39 @@ proc builtinDeref(vm: VM, argCount: int): bool =
 
 proc builtinRand(vm: VM, argCount: int): bool =
   if argCount == 1:
-    let maxVal = vm.pop()
-    if maxVal.kind == tkInt and maxVal.ival > 0:
-      let res = rand(int(maxVal.ival))
-      vm.push(vIntFast(int64(res)))
+    # Fast path for single argument
+    let stackLen = vm.stack.len
+    let maxVal = vm.stack[stackLen - 1]
+    if likely(maxVal.kind == tkInt and maxVal.ival > 0):
+      # Reuse stack slot for result
+      vm.stack[stackLen - 1].ival = int64(c_rand() mod int(maxVal.ival))
     else:
-      vm.push(vIntZero)
+      vm.stack[stackLen - 1] = vIntZero
   elif argCount == 2:
-    let maxVal = vm.pop()
-    let minVal = vm.pop()
-    if maxVal.kind == tkInt and minVal.kind == tkInt and maxVal.ival >= minVal.ival:
-      let res = rand(int(maxVal.ival - minVal.ival)) + int(minVal.ival)
-      vm.push(vIntFast(int64(res)))
+    # Fast path for two arguments (min, max)
+    let stackLen = vm.stack.len
+    template maxVal: untyped = vm.stack[stackLen - 1]
+    template minVal: untyped = vm.stack[stackLen - 2]
+
+    if likely(maxVal.kind == tkInt and minVal.kind == tkInt and maxVal.ival >= minVal.ival):
+      let range = int(maxVal.ival - minVal.ival)
+      if range > 0:
+        # Store result in first slot and pop second
+        minVal.ival = int64((c_rand() mod range) + int(minVal.ival))
+      # else keep minVal as is
+      vm.stack.setLen(stackLen - 1)
     else:
-      vm.push(vIntZero)
+      vm.stack.setLen(stackLen - 1)
+      vm.stack[stackLen - 2] = vIntZero
   return true
 
 proc builtinSeed(vm: VM, argCount: int): bool =
   if argCount == 1:
     let seedVal = vm.pop()
     if seedVal.kind == tkInt:
-      randomize(int(seedVal.ival))
+      c_srand(cuint(seedVal.ival))
   elif argCount == 0:
-    randomize()
+    c_srand(cuint(42))  # Default seed
   vm.push(vVoidValue)
   return true
 
@@ -1041,8 +1128,16 @@ proc opJumpImpl(vm: VM, instr: Instruction): bool =
   return true
 
 proc opJumpIfFalseImpl(vm: VM, instr: Instruction): bool =
-  let condition = vm.pop()
-  if not truthy(condition):
+  # Optimized jump for loop conditions
+  let lastIndex = vm.stack.len - 1
+  let condition = vm.stack[lastIndex]
+  vm.stack.setLen(lastIndex)
+
+  # Fast path for boolean conditions (most common in loops)
+  if likely(condition.kind == tkBool):
+    if not condition.bval:
+      vm.pc = int(instr.arg)
+  elif not truthy(condition):
     vm.pc = int(instr.arg)
   return true
 
@@ -1444,9 +1539,18 @@ proc runBytecode*(vm: VM): int =
       echo "No main function found"
       return 1
 
-    # Execute main function
-    while vm.executeInstruction():
-      discard
+    # Execute main function with optimized loop
+    if vm.debugger == nil:
+      # Fast path: no debugger, run tight execution loop
+      while vm.pc < vm.program.instructions.len:
+        let instr = vm.program.instructions[vm.pc]
+        vm.pc += 1
+        if not vm.jumpTable[instr.op](vm, instr):
+          break
+    else:
+      # Slower path with debugger support
+      while vm.executeInstruction():
+        discard
 
     return 0
   except Exception as e:
@@ -1536,7 +1640,7 @@ proc initJumpTable(): array[OpCode, InstructionHandler] =
 
 proc newBytecodeVM*(program: BytecodeProgram): VM =
   ## Create a new bytecode VM instance with initialized jump table and pre-allocated stacks
-  VM(
+  result = VM(
     stack: newSeqOfCap[V](1024),      # Pre-allocate stack capacity for better performance
     heap: newSeqOfCap[HeapCell](256), # Pre-allocate heap capacity
     callStack: newSeqOfCap[Frame](64), # Pre-allocate call stack capacity
@@ -1545,12 +1649,13 @@ proc newBytecodeVM*(program: BytecodeProgram): VM =
     globals: initTable[string, V](),
     jumpTable: initJumpTable(),       # Initialize jump table once at VM creation
     builtinTable: initBuiltinTable(), # Initialize builtin dispatch table
+    stringIntern: initTable[string, string](), # Initialize string intern table
     debugger: nil  # No debugger by default - zero cost
   )
 
 proc newBytecodeVMWithDebugger*(program: BytecodeProgram, debugger: EtchDebugger): VM =
   ## Create a new bytecode VM instance with debugger attached and pre-allocated stacks
-  VM(
+  result = VM(
     stack: newSeqOfCap[V](1024),      # Pre-allocate stack capacity for better performance
     heap: newSeqOfCap[HeapCell](256), # Pre-allocate heap capacity
     callStack: newSeqOfCap[Frame](64), # Pre-allocate call stack capacity
@@ -1558,6 +1663,8 @@ proc newBytecodeVMWithDebugger*(program: BytecodeProgram, debugger: EtchDebugger
     pc: 0,
     globals: initTable[string, V](),
     jumpTable: initJumpTable(),       # Initialize jump table once at VM creation
+    builtinTable: initBuiltinTable(), # Initialize builtin dispatch table
+    stringIntern: initTable[string, string](), # Initialize string intern table
     debugger: debugger
   )
 

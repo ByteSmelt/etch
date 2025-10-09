@@ -5,6 +5,7 @@ import std/[os, tables, times, options, strformat]
 import frontend/[ast, lexer, parser]
 import typechecker/[core, types, statements, inference]
 import interpreter/[vm, bytecode, serialize]
+import interpreter/[regvm, regcompiler, regvm_exec]  # Register VM modules
 import prover/[core]
 import comptime, common/errors
 import common/[constants, logging, cffi, library_resolver, compiler_hash]
@@ -21,6 +22,8 @@ type
     runVM*: bool
     verbose*: bool
     debug*: bool
+    release*: bool
+    useRegisterVM*: bool  # Use register-based VM instead of stack-based
 
 proc getBytecodeFileName*(sourceFile: string): string =
   ## Get the .etcx filename for a source file in __etch__ subfolder
@@ -31,6 +34,10 @@ proc getBytecodeFileName*(sourceFile: string): string =
 proc shouldRecompile*(sourceFile, bytecodeFile: string, options: CompilerOptions): bool =
   ## Check if source file is newer than bytecode or if hash/flags don't match
   if not fileExists(bytecodeFile):
+    return true
+
+  # Always recompile when using register VM (for now, until we cache regvm bytecode)
+  if options.useRegisterVM:
     return true
 
   # Check modification times
@@ -168,11 +175,11 @@ proc canEvaluateAtCompileTime(expr: Expr, prog: Program): bool =
   else:
     return not hasImpureCall(expr)
 
-proc evaluateGlobalVariables(prog: Program): Table[string, V] =
+proc evaluateGlobalVariables(prog: Program): Table[string, vm.V] =
   ## Evaluate global variable initialization expressions using bytecode
   ## Returns a table of evaluated global values for bytecode compilation
   ## For complex expressions, returns empty table to let runtime handle them
-  var globalVars = initTable[string, V]()
+  var globalVars = initTable[string, vm.V]()
 
   # Only evaluate expressions without side effects at compile time
   # Let expressions with side effects execute at runtime
@@ -211,7 +218,7 @@ proc evaluateGlobalVariables(prog: Program): Table[string, V] =
 
   return globalVars
 
-proc compileProgramWithGlobals*(prog: Program, sourceHash: string, evaluatedGlobals: Table[string, V], sourceFile: string = "", flags: CompilerFlags = CompilerFlags(verbose: false, debug: false)): BytecodeProgram =
+proc compileProgramWithGlobals*(prog: Program, sourceHash: string, evaluatedGlobals: Table[string, vm.V], sourceFile: string = "", flags: CompilerFlags = CompilerFlags(verbose: false, debug: false)): BytecodeProgram =
   ## Compile an AST program to bytecode with pre-evaluated global values
   # Start with standard compilation
   result = compileProgram(prog, sourceHash, sourceFile, flags)
@@ -220,7 +227,7 @@ proc compileProgramWithGlobals*(prog: Program, sourceHash: string, evaluatedGlob
   for name, value in evaluatedGlobals:
     result.globalValues[name] = convertVMValueToGlobalValue(value)
 
-proc parseAndTypecheck*(options: CompilerOptions): (Program, string, Table[string, V]) =
+proc parseAndTypecheck*(options: CompilerOptions): (Program, string, Table[string, vm.V]) =
   ## Parse source file and perform type checking, return AST, hash, and evaluated globals
   let flags = CompilerFlags(verbose: options.verbose, debug: options.debug)
 
@@ -414,7 +421,7 @@ proc compileAndRun*(options: CompilerOptions): CompilerResult =
       for param in cffiFunc.signature.params:
         paramTypes.add($param.typ.kind)
 
-      bytecodeProg.cffiInfo.add(CFFIInfo(
+      bytecodeProg.cffiInfo.add(serialize.CFFIInfo(
         library: cffiFunc.library,
         symbol: cffiFunc.symbol,
         mangledName: funcName,
@@ -430,10 +437,18 @@ proc compileAndRun*(options: CompilerOptions): CompilerResult =
     # Check if we should run the VM
     var exitCode = 0
     if options.runVM:
-      logCompiler(flags, "Starting VM execution")
-      let vm = newBytecodeVM(bytecodeProg)
-      exitCode = vm.runBytecode()
-      logCompiler(flags, "VM execution finished with exit code: " & $exitCode)
+      if options.useRegisterVM:
+        # Use register-based VM for better performance
+        logCompiler(flags, "Starting Register VM execution")
+        let regProg = regcompiler.compileProgram(prog, bytecodeProg, optimizeLevel = 0, verbose = options.verbose)  # Disable optimizations during debugging
+        exitCode = runRegProgram(regProg, options.verbose)
+        logCompiler(flags, "Register VM execution finished with exit code: " & $exitCode)
+      else:
+        # Use traditional stack-based VM
+        logCompiler(flags, "Starting VM execution")
+        let vm = newBytecodeVM(bytecodeProg)
+        exitCode = vm.runBytecode()
+        logCompiler(flags, "VM execution finished with exit code: " & $exitCode)
 
     logCompiler(flags, "Compilation completed successfully")
     return CompilerResult(success: true, exitCode: 0)

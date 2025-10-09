@@ -9,6 +9,9 @@ __etch__/
 *.etcx
 *.etca
 *.vsix
+/examples/*_c
+/examples/*.c
 nimble.develop
 nimble.paths
 .vscode/
+

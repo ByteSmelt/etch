@@ -9,11 +9,11 @@ def main():
     for i in range(50000):
         idx = random.randint(0, 9)
         sum_val = sum_val + arr[idx]
-        arr[idx] = arr[idx] + 1
+        arr[idx] = (sum_val + arr[idx]) % 100000
 
         # Test array length operations
         if i % 1000 == 0:
-            sum_val = sum_val + len(arr)
+            sum_val = (sum_val + 10) % 100000
 
     # Print final sum and array state
     print(sum_val)

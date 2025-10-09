@@ -190,8 +190,9 @@ proc serializeToBinary*(prog: BytecodeProgram): string =
   ## Serialize bytecode program to binary format for storage
   var stream = newStringStream()
 
-  # Magic header: "ETCH" + version byte
-  stream.write(BYTECODE_MAGIC)
+  # Magic header: "ETCH" + VM type byte + version
+  stream.write(BYTECODE_MAGIC)  # "ETCH"
+  stream.write(uint8(vmStack))  # VM type: stack-based
   stream.write(uint32(BYTECODE_VERSION))
 
   # Source hash (32 bytes, padded with zeros if needed)
@@ -344,7 +345,15 @@ proc deserializeFromBinary*(data: string): BytecodeProgram =
   # Check magic header
   let magic = stream.readStr(4)
   if magic != BYTECODE_MAGIC:
-    raise newException(ValueError, "Invalid bytecode file: bad magic")
+    raise newException(ValueError, "Invalid bytecode file: bad magic (expected ETCH, got " & magic & ")")
+
+  # Check VM type
+  let vmTypeValue = stream.readUint8()
+  if vmTypeValue != uint8(vmStack):
+    if vmTypeValue == uint8(vmRegister):
+      raise newException(ValueError, "Cannot load register VM bytecode in stack VM - this file was compiled for the register-based VM")
+    else:
+      raise newException(ValueError, "Unknown VM type: " & $vmTypeValue & " (expected " & $uint8(vmStack) & " for stack VM)")
 
   let version = stream.readUint32()
   if version != uint32(BYTECODE_VERSION):

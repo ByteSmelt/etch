@@ -5,15 +5,20 @@ def main():
     result = 0
 
     # Arithmetic operations benchmark
-    for i in range(100000):
-        a = random.randint(1, 1000)
-        b = random.randint(1, 1000)
+    for _ in range(100000):
+        a = random.randint(1, 100)
+        b = random.randint(1, 100)
 
         # Mix of operations to test different arithmetic paths
-        result = result + a + b
-        result = result - a * b % 7
-        result = result + a // (b % 10 + 1)  # Avoid division by zero
-        result = result * 2
+        sum = a + b
+        diff = a - b
+        prod = a * b % 1000
+        quotient = a // (b % 10 + 1)
+
+        result = (result % 1000 + sum % 1000) % 10000
+        result = (result % 1000 + diff % 1000) % 10000
+        result = (result % 1000 + prod % 1000) % 10000
+        result = (result % 1000 + quotient % 1000) % 10000
 
     print(result)
 

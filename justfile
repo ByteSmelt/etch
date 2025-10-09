@@ -12,6 +12,15 @@ examples:
     @just libs
     nim r src/etch.nim --test examples/
 
+reg_examples:
+    @just libs
+    nim r src/etch.nim --regvm --test examples/
+
+# Test C backend by compiling examples to C and validating
+cexamples:
+    @just libs
+    nim r src/etch.nim --test-c examples/
+
 # Test compiling and running a specific example file
 test file:
     @just libs

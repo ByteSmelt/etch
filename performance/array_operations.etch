@@ -6,17 +6,18 @@ fn main() {
     // Array access benchmark
     for i in 0..<50000 {
         var idx = rand(9, 0);
-        sum = (sum + arr[idx]) % 100000;
+        sum_val = sum_val + arr[idx];
+        arr[idx] = (sum_val + arr[idx]) % 100000;
 
         // Add some computation periodically
         if i % 1000 == 0 {
-            sum = (sum + 10) % 100000;  // 10 is array length
+            sum_val = (sum_val + 10) % 100000;
         }
     }
 
     // Print final sum and array state
-    print(sum);
-    for i in 0..<10 {  // Hardcode array length
+    print(sum_val);
+    for i in 0 ..< #arr {
         print(arr[i]);
     }
 }
