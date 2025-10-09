@@ -1,0 +1,514 @@
+# regvm_debug_server.nim
+# Debug server for register VM communicating with VSCode Debug Adapter Protocol
+
+import std/[json, sequtils, tables, os, hashes]
+import regvm, regvm_exec, regvm_debugger
+
+type
+  RegDebugServer* = ref object
+    vm*: RegisterVM
+    debugger*: RegEtchDebugger
+    running*: bool
+    sourceFile*: string  # Source file being debugged
+    # Store variable references for expandable variables
+    variableRefs*: Table[int, string]  # variablesReference -> variable name
+    nextVarRef*: int
+    # Variable tracking - simplified for now
+    localVars*: Table[string, uint8]  # Variable name -> register mapping
+
+proc newRegDebugServer*(program: RegBytecodeProgram, sourceFile: string): RegDebugServer =
+  ## Create a new debug server instance for register VM
+  let debuggerInstance = newRegEtchDebugger()
+  let vmInstance = newRegisterVMWithDebugger(program, debuggerInstance)
+
+  result = RegDebugServer(
+    vm: vmInstance,
+    debugger: debuggerInstance,
+    running: false,
+    sourceFile: sourceFile,
+    variableRefs: initTable[int, string](),
+    nextVarRef: 2,  # Start at 2, since 1 is reserved for local scope
+    localVars: initTable[string, uint8]()
+  )
+
+  # Set up debug event handler to communicate with VSCode
+  debuggerInstance.onDebugEvent = proc(event: string, data: JsonNode) =
+    # Send event to VSCode via stdout
+    let eventMsg = %*{
+      "type": "event",
+      "event": event,
+      "body": data
+    }
+    echo $eventMsg
+
+proc executeUntilBreak(server: RegDebugServer, maxInstructions: int = 10000): bool =
+  ## Execute VM until next break or completion
+  ## Returns true if still running, false if terminated
+
+  var instructionCount = 0
+  while not server.debugger.paused and instructionCount < maxInstructions:
+    # Debug output
+    stderr.writeLine("DEBUG executeUntilBreak: instruction " & $instructionCount &
+                     " paused=" & $server.debugger.paused &
+                     " pc=" & $server.vm.currentFrame.pc &
+                     " lastLine=" & $server.debugger.lastLine)
+    stderr.flushFile()
+
+    if not executeInstruction(server.vm):
+      # Program terminated
+      stderr.writeLine("DEBUG executeUntilBreak: program terminated")
+      stderr.flushFile()
+      return false
+    inc instructionCount
+
+  stderr.writeLine("DEBUG executeUntilBreak: stopped, paused=" & $server.debugger.paused &
+                   " count=" & $instructionCount)
+  stderr.flushFile()
+
+  # Return true if we're still running (either paused or hit instruction limit)
+  return true
+
+proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
+  ## Handle a debug request from VSCode
+  let command = request["command"].getStr()
+
+  case command:
+  of "initialize":
+    # Return capabilities
+    return %*{
+      "success": true,
+      "body": {
+        "supportsConfigurationDoneRequest": true,
+        "supportsStepInRequest": true,
+        "supportsStepOutRequest": true,
+        "supportsContinueRequest": true,
+        "supportsSetBreakpointsRequest": true,
+        "supportsTerminateRequest": true
+      }
+    }
+
+  of "launch":
+    # Handle launch request - start the program in paused state if stopOnEntry
+    let args = request["arguments"]
+    let stopOnEntry = args{"stopOnEntry"}.getBool(false)
+
+    # Initialize VM state at entry point
+    server.vm.currentFrame.pc = server.vm.program.entryPoint
+
+    # Set initial debugger position based on first instruction
+    if server.vm.program.instructions.len > server.vm.program.entryPoint:
+      let firstInstr = server.vm.program.instructions[server.vm.program.entryPoint]
+      if firstInstr.debug.line > 0:
+        server.debugger.lastFile = firstInstr.debug.sourceFile
+        server.debugger.lastLine = firstInstr.debug.line
+      else:
+        server.debugger.lastFile = server.sourceFile
+        # Start at line 2 (first line inside function) instead of line 1 (function declaration)
+        server.debugger.lastLine = 2
+    else:
+      server.debugger.lastFile = server.sourceFile
+      server.debugger.lastLine = 2
+
+    # Get variable names from the program's variable map
+    # Start with main function's variables
+    if server.vm.program.variableMap.hasKey("main"):
+      server.localVars = server.vm.program.variableMap["main"]
+    else:
+      # Initialize empty if no variable map available
+      server.localVars = initTable[string, uint8]()
+
+    if stopOnEntry:
+      # Pause at entry point
+      server.debugger.pause()
+      server.running = true
+
+      # Send stopped event to indicate we're paused at entry
+      let stoppedEvent = %*{
+        "type": "event",
+        "event": "stopped",
+        "body": {
+          "reason": "entry",
+          "threadId": 1,
+          "allThreadsStopped": true
+        }
+      }
+      echo $stoppedEvent
+      stdout.flushFile()
+    else:
+      server.running = true
+
+    return %*{"success": true}
+
+  of "configurationDone":
+    # Configuration is complete, ready to run
+    return %*{"success": true}
+
+  of "threads":
+    # Return single thread (Etch is single-threaded)
+    return %*{
+      "success": true,
+      "body": {
+        "threads": [
+          %*{"id": 1, "name": "main"}
+        ]
+      }
+    }
+
+  of "setBreakpoints":
+    let args = request["arguments"]
+    let path = args["path"].getStr()
+    let lines = args["lines"].getElems()
+
+    # Clear existing breakpoints for this file
+    if server.debugger.breakpoints.hasKey(path):
+      server.debugger.breakpoints[path] = @[]
+
+    # Add new breakpoints
+    for lineNode in lines:
+      let line = lineNode.getInt()
+      server.debugger.addBreakpoint(path, line)
+
+    return %*{
+      "success": true,
+      "body": {
+        "breakpoints": lines.mapIt(%*{"verified": true, "line": it.getInt()})
+      }
+    }
+
+  of "continue":
+    server.debugger.continueExecution()
+
+    # Run VM until next break or completion
+    let stillRunning = executeUntilBreak(server)
+
+    if not stillRunning:
+      # Program terminated
+      let terminatedEvent = %*{
+        "type": "event",
+        "event": "terminated",
+        "body": {}
+      }
+      echo $terminatedEvent
+      stdout.flushFile()
+    elif server.debugger.paused:
+      # Hit a breakpoint
+      let stoppedEvent = %*{
+        "type": "event",
+        "event": "stopped",
+        "body": {
+          "reason": "breakpoint",
+          "threadId": 1,
+          "allThreadsStopped": true
+        }
+      }
+      echo $stoppedEvent
+      stdout.flushFile()
+
+    return %*{"success": true}
+
+  of "next":
+    # Step over - update lastFile/lastLine to current position before stepping
+    # This ensures we'll break on the NEXT line, not the current one
+    if server.vm.currentFrame != nil and server.vm.currentFrame.pc < server.vm.program.instructions.len:
+      let instr = server.vm.program.instructions[server.vm.currentFrame.pc]
+      if instr.debug.line > 0:
+        server.debugger.lastFile = instr.debug.sourceFile
+        server.debugger.lastLine = instr.debug.line
+
+    server.debugger.step(smStepOver)
+
+    stderr.writeLine("DEBUG: next - starting step, lastFile=" & server.debugger.lastFile &
+                     " lastLine=" & $server.debugger.lastLine &
+                     " stepCallDepth=" & $server.debugger.stepCallDepth)
+    stderr.flushFile()
+
+    # Execute until we step
+    let stillRunning = executeUntilBreak(server)
+
+    if not stillRunning:
+      # Program terminated
+      let terminatedEvent = %*{
+        "type": "event",
+        "event": "terminated",
+        "body": {}
+      }
+      echo $terminatedEvent
+      stdout.flushFile()
+    elif server.debugger.paused:
+      # Stopped at next line
+      let stoppedEvent = %*{
+        "type": "event",
+        "event": "stopped",
+        "body": {
+          "reason": "step",
+          "threadId": 1,
+          "allThreadsStopped": true
+        }
+      }
+      echo $stoppedEvent
+      stdout.flushFile()
+
+    return %*{"success": true}
+
+  of "stepIn":
+    # Step into functions
+    server.debugger.step(smStepInto)
+
+    # Execute until we step
+    let stillRunning = executeUntilBreak(server)
+
+    if not stillRunning:
+      # Program terminated
+      let terminatedEvent = %*{
+        "type": "event",
+        "event": "terminated",
+        "body": {}
+      }
+      echo $terminatedEvent
+      stdout.flushFile()
+    elif server.debugger.paused:
+      # Stopped at next line
+      let stoppedEvent = %*{
+        "type": "event",
+        "event": "stopped",
+        "body": {
+          "reason": "step",
+          "threadId": 1,
+          "allThreadsStopped": true
+        }
+      }
+      echo $stoppedEvent
+      stdout.flushFile()
+
+    return %*{"success": true}
+
+  of "stepOut":
+    # Step out of current function
+    server.debugger.step(smStepOut)
+
+    # Execute until function return
+    let stillRunning = executeUntilBreak(server)
+
+    if not stillRunning:
+      # Program terminated
+      let terminatedEvent = %*{
+        "type": "event",
+        "event": "terminated",
+        "body": {}
+      }
+      echo $terminatedEvent
+      stdout.flushFile()
+    elif server.debugger.paused:
+      # Stopped after return
+      let stoppedEvent = %*{
+        "type": "event",
+        "event": "stopped",
+        "body": {
+          "reason": "step",
+          "threadId": 1,
+          "allThreadsStopped": true
+        }
+      }
+      echo $stoppedEvent
+      stdout.flushFile()
+
+    return %*{"success": true}
+
+  of "pause":
+    server.debugger.pause()
+    return %*{"success": true}
+
+  of "stackTrace":
+    # Get current call stack
+    var stackFrames: seq[JsonNode] = @[]
+
+    # Check if we have stack frames from the debugger
+    if server.debugger.stackFrames.len > 0:
+      # Get actual call stack
+      for i, frame in server.debugger.stackFrames:
+        stackFrames.add(%*{
+          "id": i,
+          "name": frame.functionName,
+          "source": {
+            "path": frame.fileName,
+            "name": frame.fileName.splitFile().name & frame.fileName.splitFile().ext
+          },
+          "line": frame.line,
+          "column": 1
+        })
+    elif server.debugger.paused:
+      # If we're paused but have no stack frames, we're at entry or main
+      # Get the current line from the current instruction
+      var currentLine = 1
+      var currentFile = server.sourceFile
+
+      if server.vm.currentFrame != nil and server.vm.currentFrame.pc < server.vm.program.instructions.len:
+        let instr = server.vm.program.instructions[server.vm.currentFrame.pc]
+        if instr.debug.line > 0:
+          currentLine = instr.debug.line
+          currentFile = if instr.debug.sourceFile.len > 0:
+                          instr.debug.sourceFile
+                        else:
+                          server.sourceFile
+
+      stackFrames.add(%*{
+        "id": 0,
+        "name": "main",
+        "source": {
+          "path": currentFile,
+          "name": currentFile.splitFile().name & currentFile.splitFile().ext
+        },
+        "line": currentLine,
+        "column": 1
+      })
+
+    return %*{
+      "success": true,
+      "body": {
+        "stackFrames": stackFrames,
+        "totalFrames": stackFrames.len
+      }
+    }
+
+  of "scopes":
+    # Return scopes for the current frame
+    return %*{
+      "success": true,
+      "body": {
+        "scopes": [
+          %*{
+            "name": "Local Variables",
+            "variablesReference": 1,
+            "expensive": false
+          },
+          %*{
+            "name": "Globals",
+            "variablesReference": 2,
+            "expensive": false
+          },
+          %*{
+            "name": "Registers (Debug)",
+            "variablesReference": 3,
+            "expensive": false
+          }
+        ]
+      }
+    }
+
+  of "variables":
+    let reference = request["arguments"]["variablesReference"].getInt()
+    var variables: seq[JsonNode] = @[]
+
+    if reference == 1:
+      # Local Variables - show variable names with their values
+      if server.vm.currentFrame != nil:
+        for varName, regIndex in server.localVars:
+          let reg = server.vm.currentFrame.regs[regIndex]
+          if not reg.isNil():
+            variables.add(%*{
+              "name": varName,
+              "value": formatRegisterValue(reg),
+              "type": getValueType(reg),
+              "variablesReference": 0
+            })
+    elif reference == 2:
+      # Global variables
+      for name, value in server.vm.globals:
+        variables.add(%*{
+          "name": name,
+          "value": formatRegisterValue(value),
+          "type": getValueType(value),
+          "variablesReference": 0
+        })
+    elif reference == 3:
+      # Registers (Debug) - show raw registers for VM debugging
+      if server.vm.currentFrame != nil:
+        for i in 0'u8..15'u8:  # Show first 16 registers
+          let reg = server.vm.currentFrame.regs[i]
+          if not reg.isNil():
+            # Show which variable is using this register
+            var varInfo = ""
+            for varName, regIdx in server.localVars:
+              if regIdx == i:
+                varInfo = " (" & varName & ")"
+                break
+            variables.add(%*{
+              "name": "R" & $i & varInfo,
+              "value": formatRegisterValue(reg),
+              "type": "register",
+              "variablesReference": 0
+            })
+
+    return %*{
+      "success": true,
+      "body": {
+        "variables": variables
+      }
+    }
+
+  of "disconnect":
+    server.running = false
+    # Note: serverAlive will be set to false after response is sent
+    return %*{"success": true}
+
+  of "terminate":
+    server.running = false
+    return %*{"success": true}
+
+  else:
+    return %*{
+      "success": false,
+      "message": "Unsupported command: " & command
+    }
+
+proc runRegDebugServer*(program: RegBytecodeProgram, sourceFile: string) =
+  ## Run the debug server for register VM, handling DAP messages
+  let server = newRegDebugServer(program, sourceFile)
+  server.running = false  # VM not running until launched
+
+  stderr.writeLine("Debug server started for register VM")
+  stderr.flushFile()
+
+  var serverAlive = true  # Keep server alive for communication
+
+  # Main message loop
+  while serverAlive:
+    try:
+      let input = stdin.readLine()
+      if input.len == 0:
+        break
+
+      let request = parseJson(input)
+      let response = server.handleDebugRequest(request)
+
+      # Add request ID to response
+      if request.hasKey("seq"):
+        response["request_seq"] = request["seq"]
+      response["type"] = %"response"
+      response["command"] = request["command"]
+
+      echo $response
+      stdout.flushFile()
+
+      # Check if we should exit after disconnect
+      if request["command"].getStr() == "disconnect":
+        serverAlive = false
+
+    except EOFError:
+      break
+    except:
+      let error = getCurrentExceptionMsg()
+      stderr.writeLine("Debug server error: " & error)
+      stderr.flushFile()
+
+      # Send error response
+      let errorResponse = %*{
+        "type": "response",
+        "success": false,
+        "message": error
+      }
+      echo $errorResponse
+      stdout.flushFile()
+
+  stderr.writeLine("Debug server stopped")
+  stderr.flushFile()

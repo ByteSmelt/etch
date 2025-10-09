@@ -2,7 +2,7 @@
 # Execution engine for register-based VM with aggressive optimizations
 
 import std/[tables, math, strutils]
-import regvm
+import regvm, regvm_debugger
 
 # C rand for consistency
 proc c_rand(): cint {.importc: "rand", header: "<stdlib.h>".}
@@ -14,9 +14,25 @@ proc newRegisterVM*(prog: RegBytecodeProgram): RegisterVM =
     frames: @[RegisterFrame()],
     program: prog,
     constants: prog.constants,
-    globals: initTable[string, V]()
+    globals: initTable[string, V](),
+    debugger: nil,  # No debugger by default - zero cost
+    isDebugging: false  # Not in debug mode
   )
   result.currentFrame = addr result.frames[0]
+
+proc newRegisterVMWithDebugger*(prog: RegBytecodeProgram, debugger: RegEtchDebugger): RegisterVM =
+  result = RegisterVM(
+    frames: @[RegisterFrame()],
+    program: prog,
+    constants: prog.constants,
+    globals: initTable[string, V](),
+    debugger: cast[pointer](debugger),
+    isDebugging: true  # Set debug mode flag
+  )
+  result.currentFrame = addr result.frames[0]
+  # Attach the debugger to this VM
+  if debugger != nil:
+    debugger.attachToVM(cast[pointer](result))
 
 # Fast register access macros
 template getReg(vm: RegisterVM, idx: uint8): V =
@@ -27,6 +43,97 @@ template setReg(vm: RegisterVM, idx: uint8, val: V) =
 
 template getConst(vm: RegisterVM, idx: uint16): V =
   vm.constants[idx]
+
+# Debugger helper functions that need access to V type
+proc formatRegisterValue*(v: V): string =
+  ## Format a register value for display in debugger
+  case v.getTag()
+  of TAG_INT:
+    result = $v.getInt()
+  of TAG_FLOAT:
+    result = $v.getFloat()
+  of TAG_BOOL:
+    result = $v.getBool()
+  of TAG_NIL:
+    result = "nil"
+  of TAG_CHAR:
+    result = "'" & $v.getChar() & "'"
+  of TAG_STRING:
+    result = "\"" & v.sval & "\""
+  of TAG_ARRAY:
+    # Format array contents for debugger display
+    if v.aval.len == 0:
+      result = "[]"
+    elif v.aval.len <= 10:
+      # Show all elements for small arrays
+      var elements: seq[string] = @[]
+      for item in v.aval:
+        elements.add(formatRegisterValue(item))
+      result = "[" & elements.join(", ") & "]"
+    else:
+      # Show first 5 and last 2 elements for large arrays
+      var elements: seq[string] = @[]
+      for i in 0..4:
+        elements.add(formatRegisterValue(v.aval[i]))
+      elements.add("...")
+      for i in v.aval.len-2..<v.aval.len:
+        elements.add(formatRegisterValue(v.aval[i]))
+      result = "[" & elements.join(", ") & "] (" & $v.aval.len & " items)"
+  of TAG_TABLE:
+    result = "{table:" & $v.tval.len & " entries}"
+  of TAG_SOME:
+    let inner = v.unwrapOption()
+    result = "Some(" & formatRegisterValue(inner) & ")"
+  of TAG_NONE:
+    result = "None"
+  of TAG_OK:
+    let inner = v.unwrapResult()
+    result = "Ok(" & formatRegisterValue(inner) & ")"
+  of TAG_ERR:
+    let inner = v.unwrapResult()
+    result = "Err(" & formatRegisterValue(inner) & ")"
+  else:
+    result = "<unknown>"
+
+proc captureRegisters*(vm: RegisterVM): seq[tuple[index: uint8, value: string]] =
+  ## Capture current register state for debugging
+  result = @[]
+  if vm.currentFrame != nil:
+    for i in 0'u8..255'u8:
+      let reg = vm.currentFrame.regs[i]
+      # Only capture non-nil registers to save space
+      if not reg.isNil():
+        result.add((index: i, value: formatRegisterValue(reg)))
+
+proc getValueType*(v: V): string =
+  ## Get the type name of a register value for display in debugger
+  case v.getTag()
+  of TAG_INT:
+    result = "int"
+  of TAG_FLOAT:
+    result = "float"
+  of TAG_BOOL:
+    result = "bool"
+  of TAG_NIL:
+    result = "nil"
+  of TAG_CHAR:
+    result = "char"
+  of TAG_STRING:
+    result = "string"
+  of TAG_ARRAY:
+    result = "array[" & $v.aval.len & "]"
+  of TAG_TABLE:
+    result = "table"
+  of TAG_SOME:
+    result = "option"
+  of TAG_NONE:
+    result = "option"
+  of TAG_OK:
+    result = "result"
+  of TAG_ERR:
+    result = "result"
+  else:
+    result = "unknown"
 
 # Optimized arithmetic operations with type specialization
 proc doAdd(a, b: V): V {.inline.} =
@@ -119,11 +226,245 @@ proc doEq(a, b: V): bool {.inline.} =
   else:
     false
 
+proc doPow(a, b: V): V {.inline.} =
+  if isFloat(a) and isFloat(b):
+    makeFloat(pow(getFloat(a), getFloat(b)))
+  elif isInt(a) and isInt(b):
+    makeFloat(pow(float(getInt(a)), float(getInt(b))))
+  else:
+    makeNil()
+
+proc doNeg(a: V): V {.inline.} =
+  if isInt(a):
+    makeInt(-getInt(a))
+  elif isFloat(a):
+    makeFloat(-getFloat(a))
+  else:
+    makeNil()
+
+proc doNot(a: V): V {.inline.} =
+  let isTrue = getTag(a) != TAG_NIL and
+                not (getTag(a) == TAG_BOOL and (a.data and 1) == 0)
+  makeBool(not isTrue)
+
+# Execute a single instruction - used by debugger
+proc executeInstruction*(vm: RegisterVM, verbose: bool = false): bool =
+  ## Execute one instruction and return true if execution should continue
+  ## Returns false if program terminated or error occurred
+
+  if vm.currentFrame == nil or vm.currentFrame.pc >= vm.program.instructions.len:
+    return false  # Program terminated
+
+  var pc = vm.currentFrame.pc
+  let instr = vm.program.instructions[pc]
+
+  # Debugger hook - before instruction
+  if vm.debugger != nil:
+    let debugger = cast[RegEtchDebugger](vm.debugger)
+    let debug = instr.debug
+
+    # Update debugger's position
+    debugger.currentPC = pc
+    if debug.line > 0:
+      # Check if we should break BEFORE updating lastFile/lastLine
+      if debugger.shouldBreak(pc, debug.sourceFile, debug.line):
+        # Update last position AFTER we decide to break
+        debugger.lastFile = debug.sourceFile
+        debugger.lastLine = debug.line
+        debugger.pause()
+        # Don't execute if we should break here
+        return true  # Still running but paused
+
+    # Debug output when in debug mode
+    if vm.isDebugging and verbose:
+      stderr.writeLine("[DEBUG executeInstruction] PC=" & $pc &
+                      " op=" & $instr.op &
+                      " line=" & $debug.line &
+                      " file=" & debug.sourceFile &
+                      " paused=" & $debugger.paused)
+      stderr.flushFile()
+
+  # Actually execute the instruction
+  # Default: increment PC after executing instruction
+  var shouldContinue = true
+  inc pc
+
+  # Execute the instruction - we need to duplicate some of the execute loop logic
+  case instr.op
+  of ropLoadK:
+    # Load constant: R[A] = K[Bx] or immediate
+    if instr.opType == 1:  # ABx format - load from constant pool
+      setReg(vm, instr.a, getConst(vm, instr.bx))
+    elif instr.opType == 2:  # AsBx format - immediate integer
+      setReg(vm, instr.a, makeInt(int64(instr.sbx)))
+
+  of ropLoadNil:
+    # Load nil: R[A] = nil
+    setReg(vm, instr.a, makeNil())
+
+  of ropLoadBool:
+    # Load boolean: R[A] = B != 0
+    setReg(vm, instr.a, makeBool(instr.b != 0))
+    if instr.c != 0:
+      inc pc  # Skip next instruction if C != 0
+
+  of ropMove:
+    # Move: R[A] = R[B]
+    setReg(vm, instr.a, getReg(vm, instr.b))
+
+  of ropAdd:
+    setReg(vm, instr.a, doAdd(getReg(vm, instr.b), getReg(vm, instr.c)))
+
+  of ropSub:
+    setReg(vm, instr.a, doSub(getReg(vm, instr.b), getReg(vm, instr.c)))
+
+  of ropMul:
+    setReg(vm, instr.a, doMul(getReg(vm, instr.b), getReg(vm, instr.c)))
+
+  of ropDiv:
+    setReg(vm, instr.a, doDiv(getReg(vm, instr.b), getReg(vm, instr.c)))
+
+  of ropMod:
+    setReg(vm, instr.a, doMod(getReg(vm, instr.b), getReg(vm, instr.c)))
+
+  of ropPow:
+    setReg(vm, instr.a, doPow(getReg(vm, instr.b), getReg(vm, instr.c)))
+
+  of ropUnm:
+    setReg(vm, instr.a, doNeg(getReg(vm, instr.b)))
+
+  of ropNot:
+    setReg(vm, instr.a, doNot(getReg(vm, instr.b)))
+
+  of ropEqStore:
+    setReg(vm, instr.a, makeBool(doEq(getReg(vm, instr.b), getReg(vm, instr.c))))
+
+  of ropLtStore:
+    setReg(vm, instr.a, makeBool(doLt(getReg(vm, instr.b), getReg(vm, instr.c))))
+
+  of ropLeStore:
+    setReg(vm, instr.a, makeBool(doLe(getReg(vm, instr.b), getReg(vm, instr.c))))
+
+  of ropJmp:
+    pc += int(instr.sbx)
+
+  of ropTest:
+    let val = getReg(vm, instr.a)
+    let isTrue = getTag(val) != TAG_NIL and
+                  not (getTag(val) == TAG_BOOL and (val.data and 1) == 0)
+    if isTrue != (instr.c != 0):
+      inc pc  # Skip next instruction
+
+  of ropCall:
+    # Handle function calls (simplified for single-step execution)
+    let funcReg = instr.a
+    let numArgs = instr.b
+    #let numResults = instr.c
+
+    let funcNameVal = getReg(vm, funcReg)
+    if getTag(funcNameVal) == TAG_STRING:
+      let funcName = funcNameVal.sval
+
+      # Check for user-defined functions
+      if vm.program.functions.hasKey(funcName):
+        let funcInfo = vm.program.functions[funcName]
+
+        # Debugger hook - push stack frame
+        if vm.debugger != nil:
+          let debugger = cast[RegEtchDebugger](vm.debugger)
+          let currentFile = if instr.debug.sourceFile.len > 0: instr.debug.sourceFile else: "main"
+          debugger.pushStackFrame(funcName, currentFile, instr.debug.line, false)
+
+        # Create new frame
+        var newFrame = RegisterFrame()
+        newFrame.returnAddr = pc  # Return to instruction after call
+        newFrame.baseReg = funcReg
+        newFrame.pc = funcInfo.startPos
+
+        # Copy arguments
+        for i in 0'u8..<numArgs:
+          newFrame.regs[i] = getReg(vm, funcReg + 1'u8 + i)
+
+        # Push frame
+        vm.frames.add(newFrame)
+        vm.currentFrame = addr vm.frames[^1]
+
+        # PC is now at function start
+        pc = funcInfo.startPos
+      else:
+        # Handle builtin functions inline
+        # Debugger hook for builtin
+        if vm.debugger != nil:
+          let debugger = cast[RegEtchDebugger](vm.debugger)
+          let currentFile = if instr.debug.sourceFile.len > 0: instr.debug.sourceFile else: "main"
+          debugger.pushStackFrame(funcName, currentFile, instr.debug.line, true)
+
+        case funcName
+        of "print":
+          if numArgs == 1:
+            let val = getReg(vm, funcReg + 1)
+            let output = if isInt(val): $getInt(val)
+                        elif isFloat(val): $getFloat(val)
+                        elif getTag(val) == TAG_STRING: val.sval
+                        elif getTag(val) == TAG_BOOL:
+                          if (val.data and 1) != 0: "true" else: "false"
+                        else: "nil"
+            # In debug mode, output to stderr to avoid interfering with JSON protocol
+            if vm.isDebugging:
+              stderr.writeLine(output)
+              stderr.flushFile()
+            else:
+              echo output
+            setReg(vm, funcReg, makeNil())
+        else:
+          # Other builtins would go here
+          setReg(vm, funcReg, makeNil())
+
+        # Pop builtin frame immediately
+        if vm.debugger != nil:
+          let debugger = cast[RegEtchDebugger](vm.debugger)
+          debugger.popStackFrame()
+
+  of ropReturn:
+    # Return from function
+    let numResults = instr.b
+    let returnValue = if numResults > 0: getReg(vm, instr.a) else: makeNil()
+
+    # Debugger hook - pop stack frame
+    if vm.debugger != nil:
+      let debugger = cast[RegEtchDebugger](vm.debugger)
+      debugger.popStackFrame()
+
+    # Pop frame
+    let returnAddr = vm.currentFrame.returnAddr
+    let resultReg = vm.currentFrame.baseReg
+    vm.frames.setLen(vm.frames.len - 1)
+
+    if vm.frames.len > 0:
+      vm.currentFrame = addr vm.frames[^1]
+      if numResults > 0:
+        setReg(vm, resultReg, returnValue)
+      pc = returnAddr
+    else:
+      # No more frames - program terminated
+      shouldContinue = false
+
+  else:
+    # For unhandled instructions, just continue
+    # In a complete implementation, all instructions would be handled
+    discard
+
+  # Update PC in the frame
+  vm.currentFrame.pc = pc
+
+  return shouldContinue
+
 # Main execution loop - highly optimized with computed goto if available
 proc execute*(vm: RegisterVM, verbose: bool = false): int =
   var pc = vm.program.entryPoint
   let instructions = vm.program.instructions
   let maxInstr = instructions.len
+  vm.currentFrame.pc = pc  # Initialize PC in frame
 
   # Output buffer for print statements - significantly improves performance
   var outputBuffer: string = ""
@@ -132,13 +473,35 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
 
   template flushOutput() =
     if outputBuffer.len > 0:
-      stdout.write(outputBuffer)
+      if vm.isDebugging:
+        stderr.write(outputBuffer)
+      else:
+        stdout.write(outputBuffer)
       outputBuffer.setLen(0)
       outputCount = 0
 
   # Main dispatch loop - unrolled for common instructions
   while pc < maxInstr:
     let instr = instructions[pc]
+    vm.currentFrame.pc = pc  # Update frame PC for debugger
+
+    # Debugger hook - before instruction
+    if vm.debugger != nil:
+      let debugger = cast[RegEtchDebugger](vm.debugger)
+      let debug = instr.debug
+      if debug.line > 0:  # Valid debug info
+        if debugger.shouldBreak(pc, debug.sourceFile, debug.line):
+          # Update last position AFTER we decide to break
+          debugger.lastFile = debug.sourceFile
+          debugger.lastLine = debug.line
+          debugger.pause()
+          # Send break event
+          debugger.sendBreakpointHit(debug.sourceFile, debug.line)
+          # Wait for debugger to continue
+          while debugger.paused:
+            # In a real implementation, this would yield to debugger
+            # For now, we just break the pause
+            break
 
     when defined(debugRegVM):
       echo "[", pc, "] ", instr.op, " a=", instr.a,
@@ -833,6 +1196,12 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
         if verbose:
           echo "[REGVM] Calling user function ", funcName, " at ", funcInfo.startPos, " with ", numArgs, " args, result reg=", funcReg
 
+        # Debugger hook - push stack frame
+        if vm.debugger != nil:
+          let debugger = cast[RegEtchDebugger](vm.debugger)
+          let currentFile = if instr.debug.sourceFile.len > 0: instr.debug.sourceFile else: "main"
+          debugger.pushStackFrame(funcName, currentFile, instr.debug.line, false)
+
         # Create new frame for the function
         var newFrame = RegisterFrame()
         newFrame.returnAddr = pc + 1  # Save position AFTER this call instruction
@@ -860,6 +1229,13 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
       # Handle builtin functions inline for performance
       # For builtin and C FFI functions, we need to handle both the mangled
       # names (with type info) and base names for compatibility
+
+      # Debugger hook - track builtin function call
+      if vm.debugger != nil:
+        let debugger = cast[RegEtchDebugger](vm.debugger)
+        let currentFile = if instr.debug.sourceFile.len > 0: instr.debug.sourceFile else: "main"
+        debugger.pushStackFrame(funcName, currentFile, instr.debug.line, true)  # isBuiltIn = true
+
       case funcName:
       of "seed":
         if numArgs == 1:
@@ -1087,6 +1463,11 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
         res.sval = funcName
         setReg(vm, funcReg, res)
 
+      # Debugger hook - pop builtin function frame
+      if vm.debugger != nil:
+        let debugger = cast[RegEtchDebugger](vm.debugger)
+        debugger.popStackFrame()
+
     of ropReturn:
       # Return from function
       let numResults = instr.a
@@ -1094,6 +1475,11 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
 
       if verbose:
         echo "[REGVM] ropReturn: numResults=", numResults, " firstResultReg=", firstResultReg, " frames.len=", vm.frames.len
+
+      # Debugger hook - pop stack frame
+      if vm.debugger != nil:
+        let debugger = cast[RegEtchDebugger](vm.debugger)
+        debugger.popStackFrame()
 
       # Check if we're returning from main (only 1 frame)
       if vm.frames.len <= 1:

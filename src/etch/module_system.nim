@@ -272,7 +272,7 @@ proc processImports*(registry: ModuleRegistry, program: var Program, mainFile: s
               isCFFI: true  # Mark as C FFI function
             )
 
-            # Generate the mangled name for the function (used in bytecode)
+            # Generate the mangled name for the function
             let mangledName = generateOverloadSignature(funcDecl)
 
             # Load the function with the mangled name

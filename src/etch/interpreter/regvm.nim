@@ -4,6 +4,7 @@
 
 import std/tables
 
+
 const
   MAX_REGISTERS* = 255  # Maximum number of registers per function frame (must fit in uint8)
   MAX_CONSTANTS* = 65536  # Maximum constants per function (16-bit index)
@@ -89,6 +90,14 @@ type
     ropLoadAddStore,  # Load, add, store pattern
     ropGetAddSet,     # Array[i] += value pattern
 
+  # Debug information for instructions
+  RegDebugInfo* = object
+    line*: int
+    col*: int
+    sourceFile*: string
+    functionName*: string
+    localVars*: seq[string]
+
   RegInstruction* = object
     op*: RegOpCode
     a*: uint8         # Destination register (8-bit = 256 registers)
@@ -104,6 +113,7 @@ type
       ax*: uint32
     else:
       discard
+    debug*: RegDebugInfo  # Debug information for this instruction
 
   RegisterFrame* = object
     regs*: array[256, V]  # Register file (actual size 256, indexed 0-255)
@@ -118,6 +128,8 @@ type
     constants*: seq[V]               # Constant pool
     globals*: Table[string, V]      # Global variables
     program*: RegBytecodeProgram    # The program being executed
+    debugger*: pointer               # Optional debugger (nil for production)
+    isDebugging*: bool               # True when running in debug server mode
 
   FunctionInfo* = object
     name*: string
@@ -139,6 +151,7 @@ type
     entryPoint*: int
     functions*: Table[string, FunctionInfo]  # Function table
     cffiInfo*: Table[string, CFFIInfo]  # C FFI function metadata
+    variableMap*: Table[string, Table[string, uint8]]  # Function -> Variable name -> Register mapping
 
   # Reuse V type from main VM but with optimizations
   V* = object
@@ -336,29 +349,35 @@ proc freeReg*(ra: var RegAllocator, reg: uint8) =
     dec ra.nextReg
 
 # Bytecode generation helpers
-proc emitABC*(prog: var RegBytecodeProgram, op: RegOpCode, a, b, c: uint8) =
+proc emitABC*(prog: var RegBytecodeProgram, op: RegOpCode, a, b, c: uint8,
+              debug: RegDebugInfo = RegDebugInfo()) =
   prog.instructions.add RegInstruction(
     op: op,
     a: a,
     opType: 0,
     b: b,
-    c: c
+    c: c,
+    debug: debug
   )
 
-proc emitABx*(prog: var RegBytecodeProgram, op: RegOpCode, a: uint8, bx: uint16) =
+proc emitABx*(prog: var RegBytecodeProgram, op: RegOpCode, a: uint8, bx: uint16,
+              debug: RegDebugInfo = RegDebugInfo()) =
   prog.instructions.add RegInstruction(
     op: op,
     a: a,
     opType: 1,
-    bx: bx
+    bx: bx,
+    debug: debug
   )
   when defined(debugRegCompiler):
     echo "[EMIT] ", prog.instructions.len - 1, ": ", op, " a=", a, " bx=", bx
 
-proc emitAsBx*(prog: var RegBytecodeProgram, op: RegOpCode, a: uint8, sbx: int16) =
+proc emitAsBx*(prog: var RegBytecodeProgram, op: RegOpCode, a: uint8, sbx: int16,
+               debug: RegDebugInfo = RegDebugInfo()) =
   prog.instructions.add RegInstruction(
     op: op,
     a: a,
     opType: 2,
-    sbx: sbx
+    sbx: sbx,
+    debug: debug
   )

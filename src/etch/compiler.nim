@@ -5,7 +5,7 @@ import std/[os, tables, times, options, strformat]
 import frontend/[ast, lexer, parser]
 import typechecker/[core, types, statements, inference]
 import interpreter/[bytecode]  # Still needed for initial compilation
-import interpreter/[regvm, regcompiler, regvm_exec, regvm_serialize]  # Register VM
+import interpreter/[regvm, regvm_compiler, regvm_exec, regvm_serialize]  # Register VM
 import prover/[core]
 import comptime, common/errors
 import common/[constants, logging, cffi, library_resolver]
@@ -156,10 +156,25 @@ proc evaluateGlobalVariables(prog: Program): Table[string, GlobalValue] =
 
 proc compileProgramWithGlobals*(prog: Program, sourceHash: string, evaluatedGlobals: Table[string, GlobalValue], sourceFile: string = "", flags: CompilerFlags = CompilerFlags(verbose: false, debug: false)): RegBytecodeProgram =
   ## Compile an AST program to register VM bytecode
-  # For now, just use the regular register compiler
-  # Global evaluation is handled at runtime
-  let oldBytecode = compileProgram(prog, sourceHash, sourceFile, flags)
-  result = regcompiler.compileProgram(prog, oldBytecode, optimizeLevel = 0, verbose = flags.verbose)
+  # Compile directly to register VM without needing old bytecode
+  result = regvm_compiler.compileProgram(prog, optimizeLevel = 0, verbose = flags.verbose, debug = flags.debug)
+
+  # Fill in CFFI details from the global registry
+  for funcName, cffiInfo in result.cffiInfo:
+    if globalCFFIRegistry.functions.hasKey(funcName):
+      let cffiFunc = globalCFFIRegistry.functions[funcName]
+
+      # Update the CFFIInfo with actual library and type information
+      result.cffiInfo[funcName].library = cffiFunc.library
+      result.cffiInfo[funcName].symbol = cffiFunc.symbol
+
+      # Convert parameter types to strings
+      result.cffiInfo[funcName].paramTypes = @[]
+      for param in cffiFunc.signature.params:
+        result.cffiInfo[funcName].paramTypes.add($param.typ.kind)
+
+      # Convert return type to string
+      result.cffiInfo[funcName].returnType = $cffiFunc.signature.returnType.kind
 
 proc parseAndTypecheck*(options: CompilerOptions): (Program, string, Table[string, GlobalValue]) =
   ## Parse source file and perform type checking, return AST, hash, and evaluated globals

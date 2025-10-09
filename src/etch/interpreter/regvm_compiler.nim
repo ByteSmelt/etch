@@ -3,8 +3,8 @@
 
 import std/[tables, options, strutils]
 import ../frontend/ast
+import ../common/types
 import regvm
-import serialize
 
 type
   RegCompiler* = object
@@ -14,6 +14,7 @@ type
     loopStack*: seq[LoopInfo]
     optimizeLevel*: int               # 0=none, 1=basic, 2=aggressive
     verbose*: bool                    # Enable debug output
+    debug*: bool                      # Include debug info in bytecode
     funInstances*: Table[string, FunDecl]  # Function declarations for default params
 
   LoopInfo = object
@@ -63,9 +64,22 @@ proc addStringConst*(c: var RegCompiler, s: string): uint16 =
 # Forward declarations
 proc compileExpr*(c: var RegCompiler, e: Expr): uint8
 proc compileStmt*(c: var RegCompiler, s: Stmt)
-proc compileBinOp(c: var RegCompiler, op: BinOp, dest, left, right: uint8)
+proc compileBinOp(c: var RegCompiler, op: BinOp, dest, left, right: uint8, debug: RegDebugInfo = RegDebugInfo())
 proc compileCall(c: var RegCompiler, e: Expr): uint8
 proc optimizeBytecode*(prog: var RegBytecodeProgram)
+
+proc makeDebugInfo(c: RegCompiler, pos: Pos): RegDebugInfo =
+  ## Create debug info from AST position (only if debug mode enabled)
+  if c.debug:
+    result = RegDebugInfo(
+      line: pos.line,
+      col: pos.col,
+      sourceFile: pos.filename
+    )
+  else:
+    result = RegDebugInfo()  # Empty debug info in release mode
+  when defined(debugRegCompiler):
+    echo "[DEBUG] makeDebugInfo: line=", pos.line, " col=", pos.col, " file=", pos.filename
 
 # Pattern matching for instruction fusion
 proc tryFuseArithmetic(c: var RegCompiler, e: Expr): bool =
@@ -122,33 +136,33 @@ proc compileExpr*(c: var RegCompiler, e: Expr): uint8 =
       echo "[REGCOMPILER] Compiling integer ", e.ival, " to reg ", result
     if e.ival >= -32768 and e.ival <= 32767:
       # Small integer - can use immediate encoding
-      c.prog.emitAsBx(ropLoadK, result, int16(e.ival))
+      c.prog.emitAsBx(ropLoadK, result, int16(e.ival), c.makeDebugInfo(e.pos))
     else:
       # Large integer - need constant pool
       let constIdx = c.addConst(regvm.makeInt(e.ival))
-      c.prog.emitABx(ropLoadK, result, constIdx)
+      c.prog.emitABx(ropLoadK, result, constIdx, c.makeDebugInfo(e.pos))
 
   of ekFloat:
     result = c.allocator.allocReg()
     let constIdx = c.addConst(regvm.makeFloat(e.fval))
-    c.prog.emitABx(ropLoadK, result, constIdx)
+    c.prog.emitABx(ropLoadK, result, constIdx, c.makeDebugInfo(e.pos))
 
   of ekString:
     result = c.allocator.allocReg()
     if c.verbose:
       echo "[REGCOMPILER] Compiling string expression: '", e.sval, "'"
     let constIdx = c.addStringConst(e.sval)
-    c.prog.emitABx(ropLoadK, result, constIdx)
+    c.prog.emitABx(ropLoadK, result, constIdx, c.makeDebugInfo(e.pos))
     if c.verbose:
       echo "[REGCOMPILER]   Loaded to register ", result, " from const[", constIdx, "]"
 
   of ekBool:
     result = c.allocator.allocReg()
-    c.prog.emitABC(ropLoadBool, result, if e.bval: 1 else: 0, 0)
+    c.prog.emitABC(ropLoadBool, result, if e.bval: 1 else: 0, 0, c.makeDebugInfo(e.pos))
 
   of ekNil:
     result = c.allocator.allocReg()
-    c.prog.emitABC(ropLoadNil, result, result, 0)  # Load nil to single register
+    c.prog.emitABC(ropLoadNil, result, result, 0, c.makeDebugInfo(e.pos))  # Load nil to single register
 
   of ekCast:
     # Compile the expression to cast
@@ -197,16 +211,16 @@ proc compileExpr*(c: var RegCompiler, e: Expr): uint8 =
       # Can use immediate version
       case e.bop:
       of boAdd:
-        c.prog.emitABx(ropAddI, result, uint16(leftReg) or (uint16(e.rhs.ival) shl 8))
+        c.prog.emitABx(ropAddI, result, uint16(leftReg) or (uint16(e.rhs.ival) shl 8), c.makeDebugInfo(e.pos))
       of boSub:
-        c.prog.emitABx(ropSubI, result, uint16(leftReg) or (uint16(e.rhs.ival) shl 8))
+        c.prog.emitABx(ropSubI, result, uint16(leftReg) or (uint16(e.rhs.ival) shl 8), c.makeDebugInfo(e.pos))
       of boMul:
-        c.prog.emitABx(ropMulI, result, uint16(leftReg) or (uint16(e.rhs.ival) shl 8))
+        c.prog.emitABx(ropMulI, result, uint16(leftReg) or (uint16(e.rhs.ival) shl 8), c.makeDebugInfo(e.pos))
       else:
         # Fall back to regular instruction
-        c.compileBinOp(e.bop, result, leftReg, rightReg)
+        c.compileBinOp(e.bop, result, leftReg, rightReg, c.makeDebugInfo(e.pos))
     else:
-      c.compileBinOp(e.bop, result, leftReg, rightReg)
+      c.compileBinOp(e.bop, result, leftReg, rightReg, c.makeDebugInfo(e.pos))
 
     # Free temporary registers if they're not named variables
     if e.lhs.kind != ekVar:
@@ -229,7 +243,7 @@ proc compileExpr*(c: var RegCompiler, e: Expr): uint8 =
 
   of ekArray:
     result = c.allocator.allocReg()
-    c.prog.emitABx(ropNewArray, result, uint16(e.elements.len))
+    c.prog.emitABx(ropNewArray, result, uint16(e.elements.len), c.makeDebugInfo(e.pos))
 
     # Set array elements
     for i, elem in e.elements:
@@ -238,8 +252,8 @@ proc compileExpr*(c: var RegCompiler, e: Expr): uint8 =
       # TODO: Optimize with immediate index using different encoding
       let idxReg = c.allocator.allocReg()
       let constIdx = c.addConst(regvm.makeInt(int64(i)))
-      c.prog.emitABx(ropLoadK, idxReg, constIdx)
-      c.prog.emitABC(ropSetIndex, result, idxReg, elemReg)
+      c.prog.emitABx(ropLoadK, idxReg, constIdx, c.makeDebugInfo(e.pos))
+      c.prog.emitABC(ropSetIndex, result, idxReg, elemReg, c.makeDebugInfo(e.pos))
       c.allocator.freeReg(idxReg)
       c.allocator.freeReg(elemReg)
 
@@ -661,21 +675,21 @@ proc compileExpr*(c: var RegCompiler, e: Expr): uint8 =
     if c.verbose:
       echo "[REGCOMPILER] Get field '", e.fieldName, "' (const[", fieldConstIdx, "]) from reg ", objReg, " to reg ", result
 
-proc compileBinOp(c: var RegCompiler, op: BinOp, dest, left, right: uint8) =
+proc compileBinOp(c: var RegCompiler, op: BinOp, dest, left, right: uint8, debug: RegDebugInfo = RegDebugInfo()) =
   case op:
-  of boAdd: c.prog.emitABC(ropAdd, dest, left, right)
-  of boSub: c.prog.emitABC(ropSub, dest, left, right)
-  of boMul: c.prog.emitABC(ropMul, dest, left, right)
-  of boDiv: c.prog.emitABC(ropDiv, dest, left, right)
-  of boMod: c.prog.emitABC(ropMod, dest, left, right)
-  of boEq: c.prog.emitABC(ropEqStore, dest, left, right)
-  of boNe: c.prog.emitABC(ropNeStore, dest, left, right)
-  of boLt: c.prog.emitABC(ropLtStore, dest, left, right)
-  of boLe: c.prog.emitABC(ropLeStore, dest, left, right)
-  of boGt: c.prog.emitABC(ropLtStore, dest, right, left)  # Swap operands
-  of boGe: c.prog.emitABC(ropLeStore, dest, right, left)  # Swap operands
-  of boAnd: c.prog.emitABC(ropAnd, dest, left, right)
-  of boOr: c.prog.emitABC(ropOr, dest, left, right)
+  of boAdd: c.prog.emitABC(ropAdd, dest, left, right, debug)
+  of boSub: c.prog.emitABC(ropSub, dest, left, right, debug)
+  of boMul: c.prog.emitABC(ropMul, dest, left, right, debug)
+  of boDiv: c.prog.emitABC(ropDiv, dest, left, right, debug)
+  of boMod: c.prog.emitABC(ropMod, dest, left, right, debug)
+  of boEq: c.prog.emitABC(ropEqStore, dest, left, right, debug)
+  of boNe: c.prog.emitABC(ropNeStore, dest, left, right, debug)
+  of boLt: c.prog.emitABC(ropLtStore, dest, left, right, debug)
+  of boLe: c.prog.emitABC(ropLeStore, dest, left, right, debug)
+  of boGt: c.prog.emitABC(ropLtStore, dest, right, left, debug)  # Swap operands
+  of boGe: c.prog.emitABC(ropLeStore, dest, right, left, debug)  # Swap operands
+  of boAnd: c.prog.emitABC(ropAnd, dest, left, right, debug)
+  of boOr: c.prog.emitABC(ropOr, dest, left, right, debug)
 
 proc compileCall(c: var RegCompiler, e: Expr): uint8 =
   ## Compile function call
@@ -705,7 +719,7 @@ proc compileCall(c: var RegCompiler, e: Expr): uint8 =
 
   # First, load the function name into the result register
   let funcNameIdx = c.addStringConst(e.fname)
-  c.prog.emitABx(ropLoadK, result, funcNameIdx)
+  c.prog.emitABx(ropLoadK, result, funcNameIdx, c.makeDebugInfo(e.pos))
   if c.verbose:
     echo "[REGCOMPILER] Emitted ropLoadK for function name '", e.fname, "' to reg ", result, " from const[", funcNameIdx, "] at PC=", c.prog.instructions.len - 1
 
@@ -930,7 +944,7 @@ proc compileStmt*(c: var RegCompiler, s: Stmt) =
   of skVar:
     # Variable declaration (let or var) - allocate register for the new variable
     if c.verbose:
-      echo "[REGCOMPILER] Compiling ", (if s.vflag == vfLet: "let" else: "var"), " statement for variable: ", s.vname
+      echo "[REGCOMPILER] Compiling ", (if s.vflag == vfLet: "let" else: "var"), " statement for variable: ", s.vname, " at line ", s.pos.line
     if s.vinit.isSome:
       if c.verbose:
         echo "[REGCOMPILER] Compiling init expression for ", s.vname, ", expr kind: ", s.vinit.get.kind
@@ -976,33 +990,34 @@ proc compileStmt*(c: var RegCompiler, s: Stmt) =
       let rightReg = c.compileExpr(s.cond.rhs)
 
       # Emit comparison that jumps if condition is FALSE
+      let debugInfo = c.makeDebugInfo(s.pos)
       case s.cond.bop:
       of boEq:
-        c.prog.emitABC(ropEq, 0, leftReg, rightReg)  # Skip if NOT equal
+        c.prog.emitABC(ropEq, 0, leftReg, rightReg, debugInfo)  # Skip if NOT equal
       of boNe:
-        c.prog.emitABC(ropEq, 1, leftReg, rightReg)  # Skip if equal
+        c.prog.emitABC(ropEq, 1, leftReg, rightReg, debugInfo)  # Skip if equal
       of boLt:
-        c.prog.emitABC(ropLt, 0, leftReg, rightReg)  # Skip if NOT less than
+        c.prog.emitABC(ropLt, 0, leftReg, rightReg, debugInfo)  # Skip if NOT less than
       of boLe:
-        c.prog.emitABC(ropLe, 0, leftReg, rightReg)  # Skip if NOT less or equal
+        c.prog.emitABC(ropLe, 0, leftReg, rightReg, debugInfo)  # Skip if NOT less or equal
       of boGt:
-        c.prog.emitABC(ropLt, 0, rightReg, leftReg)  # Skip if NOT greater (swap operands)
+        c.prog.emitABC(ropLt, 0, rightReg, leftReg, debugInfo)  # Skip if NOT greater (swap operands)
       of boGe:
-        c.prog.emitABC(ropLe, 0, rightReg, leftReg)  # Skip if NOT greater or equal (swap operands)
+        c.prog.emitABC(ropLe, 0, rightReg, leftReg, debugInfo)  # Skip if NOT greater or equal (swap operands)
       else:
         discard
 
       jmpPos = c.prog.instructions.len
-      c.prog.emitAsBx(ropJmp, 0, 0)  # Jump to else/end if condition false
+      c.prog.emitAsBx(ropJmp, 0, 0, c.makeDebugInfo(s.pos))  # Jump to else/end if condition false
 
       c.allocator.freeReg(leftReg)
       c.allocator.freeReg(rightReg)
     else:
       # General expression condition
       let condReg = c.compileExpr(s.cond)
-      c.prog.emitABC(ropTest, condReg, 0, 0)
+      c.prog.emitABC(ropTest, condReg, 0, 0, c.makeDebugInfo(s.pos))
       jmpPos = c.prog.instructions.len
-      c.prog.emitAsBx(ropJmp, 0, 0)  # Placeholder jump
+      c.prog.emitAsBx(ropJmp, 0, 0, c.makeDebugInfo(s.pos))  # Placeholder jump
       c.allocator.freeReg(condReg)
 
     # Then branch
@@ -1013,7 +1028,7 @@ proc compileStmt*(c: var RegCompiler, s: Stmt) =
     var jumpToEndPositions: seq[int] = @[]
     if s.elifChain.len > 0 or s.elseBody.len > 0:
       let jumpPos = c.prog.instructions.len
-      c.prog.emitAsBx(ropJmp, 0, 0)  # Jump to end after then branch
+      c.prog.emitAsBx(ropJmp, 0, 0, c.makeDebugInfo(s.pos))  # Jump to end after then branch
       jumpToEndPositions.add(jumpPos)
 
     # Patch first condition's false jump to here (start of elif chain or else)
@@ -1031,19 +1046,20 @@ proc compileStmt*(c: var RegCompiler, s: Stmt) =
         let rightReg = c.compileExpr(elifClause.cond.rhs)
 
         # Emit comparison that jumps if condition is FALSE
+        let debugInfo = c.makeDebugInfo(elifClause.cond.pos)
         case elifClause.cond.bop:
         of boEq:
-          c.prog.emitABC(ropEq, 0, leftReg, rightReg)
+          c.prog.emitABC(ropEq, 0, leftReg, rightReg, debugInfo)
         of boNe:
-          c.prog.emitABC(ropEq, 1, leftReg, rightReg)
+          c.prog.emitABC(ropEq, 1, leftReg, rightReg, debugInfo)
         of boLt:
-          c.prog.emitABC(ropLt, 0, leftReg, rightReg)
+          c.prog.emitABC(ropLt, 0, leftReg, rightReg, debugInfo)
         of boLe:
-          c.prog.emitABC(ropLe, 0, leftReg, rightReg)
+          c.prog.emitABC(ropLe, 0, leftReg, rightReg, debugInfo)
         of boGt:
-          c.prog.emitABC(ropLt, 0, rightReg, leftReg)
+          c.prog.emitABC(ropLt, 0, rightReg, leftReg, debugInfo)
         of boGe:
-          c.prog.emitABC(ropLe, 0, rightReg, leftReg)
+          c.prog.emitABC(ropLe, 0, rightReg, leftReg, debugInfo)
         else:
           discard
 
@@ -1052,12 +1068,12 @@ proc compileStmt*(c: var RegCompiler, s: Stmt) =
       else:
         # General expression condition
         let condReg = c.compileExpr(elifClause.cond)
-        c.prog.emitABC(ropTest, condReg, 0, 0)
+        c.prog.emitABC(ropTest, condReg, 0, 0, c.makeDebugInfo(elifClause.cond.pos))
         c.allocator.freeReg(condReg)
 
       # Jump to next elif/else if condition is false
       let elifJmpPos = c.prog.instructions.len
-      c.prog.emitAsBx(ropJmp, 0, 0)
+      c.prog.emitAsBx(ropJmp, 0, 0, c.makeDebugInfo(elifClause.cond.pos))
 
       # Compile elif body
       for stmt in elifClause.body:
@@ -1065,7 +1081,7 @@ proc compileStmt*(c: var RegCompiler, s: Stmt) =
 
       # Jump to end after elif body
       let jumpPos = c.prog.instructions.len
-      c.prog.emitAsBx(ropJmp, 0, 0)
+      c.prog.emitAsBx(ropJmp, 0, 0, c.makeDebugInfo(elifClause.cond.pos))
       jumpToEndPositions.add(jumpPos)
 
       # Patch elif condition jump to here (next elif or else)
@@ -1249,12 +1265,15 @@ proc compileFunDecl*(c: var RegCompiler, name: string, params: seq[Param], retTy
   for stmt in body:
     c.compileStmt(stmt)
 
+  # Save variable mappings for this function
+  c.prog.variableMap[name] = c.allocator.regMap
+
   # Add implicit return if needed
   if c.prog.instructions.len == 0 or
      c.prog.instructions[^1].op != ropReturn:
     c.prog.emitABC(ropReturn, 0, 0, 0)  # No results
 
-proc compileProgram*(p: ast.Program, bytecodeProgram: serialize.BytecodeProgram, optimizeLevel: int = 2, verbose: bool = false): RegBytecodeProgram =
+proc compileProgram*(p: ast.Program, optimizeLevel: int = 2, verbose: bool = false, debug: bool = true): RegBytecodeProgram =
   ## Compile AST to register-based bytecode with optimizations
   if verbose:
     echo "[REGCOMPILER] Starting compilation, funInstances count: ", p.funInstances.len
@@ -1264,7 +1283,8 @@ proc compileProgram*(p: ast.Program, bytecodeProgram: serialize.BytecodeProgram,
   var compiler = RegCompiler(
     prog: RegBytecodeProgram(
       functions: initTable[string, regvm.FunctionInfo](),
-      cffiInfo: initTable[string, regvm.CFFIInfo]()
+      cffiInfo: initTable[string, regvm.CFFIInfo](),
+      variableMap: initTable[string, Table[string, uint8]]()
     ),
     allocator: RegAllocator(
       nextReg: 0,
@@ -1275,27 +1295,30 @@ proc compileProgram*(p: ast.Program, bytecodeProgram: serialize.BytecodeProgram,
     loopStack: @[],
     optimizeLevel: optimizeLevel,
     verbose: verbose,
+    debug: debug,
     funInstances: p.funInstances
   )
 
-  # First, populate C FFI info from bytecode
-  if bytecodeProgram.cffiInfo.len > 0:
-    for cffi in bytecodeProgram.cffiInfo:
+  # Populate C FFI info from AST - identify CFFI functions by their isCFFI flag
+  for fname, funcDecl in p.funInstances:
+    if funcDecl.isCFFI:
       # Extract base name from mangled name
-      var baseName = cffi.mangledName
-      let underscorePos = cffi.mangledName.find("__")
+      var baseName = fname
+      let underscorePos = fname.find("__")
       if underscorePos >= 0:
-        baseName = cffi.mangledName[0..<underscorePos]
+        baseName = fname[0..<underscorePos]
 
-      compiler.prog.cffiInfo[cffi.mangledName] = regvm.CFFIInfo(
-        library: cffi.library,
-        symbol: cffi.symbol,
+      # For now, store minimal info - the runtime will handle the actual FFI calls
+      # The library and symbol info will be populated by the compiler.nim from the global registry
+      compiler.prog.cffiInfo[fname] = regvm.CFFIInfo(
+        library: "",  # Will be filled by compiler.nim
+        symbol: baseName,  # Use base name as symbol for now
         baseName: baseName,
-        paramTypes: cffi.paramTypes,
-        returnType: cffi.returnType
+        paramTypes: @[],  # Will be filled by compiler.nim
+        returnType: ""    # Will be filled by compiler.nim
       )
       if verbose:
-        echo "[REGCOMPILER] Added C FFI function: ", cffi.mangledName, " -> ", baseName
+        echo "[REGCOMPILER] Identified C FFI function: ", fname, " -> ", baseName
 
   # Compile all functions except main first
   for fname, funcDecl in p.funInstances:
@@ -1325,6 +1348,9 @@ proc compileProgram*(p: ast.Program, bytecodeProgram: serialize.BytecodeProgram,
       # Compile function body
       for stmt in funcDecl.body:
         compiler.compileStmt(stmt)
+
+      # Save variable mappings for this function
+      compiler.prog.variableMap[fname] = compiler.allocator.regMap
 
       # Add implicit return if needed
       if compiler.prog.instructions.len == startPos or

@@ -38,6 +38,8 @@ class EtchDebugAdapter extends DebugSession {
     private nextSeq = 1;
     private currentFile: string = '';
     private currentLine: number = 0;
+    private initialized = false;
+    private pendingRequests: Array<{command: string, args: any, response?: any}> = [];
 
     // Pending responses waiting for Etch server replies
     private pendingStackTraceResponse: DebugProtocol.StackTraceResponse | undefined;
@@ -146,7 +148,16 @@ class EtchDebugAdapter extends DebugSession {
 
                 // Send launch request to Etch debug server
                 setTimeout(() => {
-                    this.sendToEtch('launch', { program: program });
+                    const stopOnEntry = launchArgs.stopOnEntry || false;
+                    log(`Sending launch with stopOnEntry: ${stopOnEntry}`);
+                    this.sendToEtch('launch', {
+                        program: program,
+                        stopOnEntry: stopOnEntry
+                    });
+
+                    // After launch, mark as initialized and process pending requests
+                    this.initialized = true;
+                    this.processPendingRequests();
                 }, 100);
             }, 500); // Give Etch process time to start
 
@@ -166,6 +177,27 @@ class EtchDebugAdapter extends DebugSession {
         }
 
         this.sendResponse(response);
+    }
+
+    private processPendingRequests(): void {
+        log(`Processing ${this.pendingRequests.length} pending requests`);
+
+        const requests = this.pendingRequests;
+        this.pendingRequests = [];
+
+        for (const req of requests) {
+            this.sendToEtch(req.command, req.args);
+
+            // Send response if provided
+            if (req.response) {
+                if (req.command === 'setBreakpoints') {
+                    req.response.body = {
+                        breakpoints: req.args.lines.map((line: number) => ({ verified: true, line: line }))
+                    };
+                }
+                this.sendResponse(req.response);
+            }
+        }
     }
 
 
@@ -292,6 +324,20 @@ class EtchDebugAdapter extends DebugSession {
     // Override debug protocol methods to forward to Etch
     protected setBreakPointsRequest(response: DebugProtocol.SetBreakpointsResponse, args: DebugProtocol.SetBreakpointsArguments): void {
         log('Setting breakpoints');
+
+        if (!this.initialized) {
+            // Queue request until after initialization
+            this.pendingRequests.push({
+                command: 'setBreakpoints',
+                args: {
+                    path: args.source.path,
+                    lines: args.breakpoints?.map(bp => bp.line) || []
+                },
+                response: response
+            });
+            return;
+        }
+
         this.sendToEtch('setBreakpoints', {
             path: args.source.path,
             lines: args.breakpoints?.map(bp => bp.line) || []
