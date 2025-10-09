@@ -8,7 +8,7 @@ libs:
     make
 
 # Test compiling and running all examples
-examples:
+tests:
     @just libs
     nim r src/etch.nim --test examples/
 

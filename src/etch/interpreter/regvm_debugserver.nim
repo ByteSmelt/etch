@@ -68,6 +68,30 @@ proc executeUntilBreak(server: RegDebugServer, maxInstructions: int = 10000): bo
   # Return true if we're still running (either paused or hit instruction limit)
   return true
 
+proc sendCompilationError*(errorMsg: string) =
+  ## Send compilation error as JSON response for debug adapter
+  let errorResponse = %*{
+    "seq": 999,
+    "type": "event",
+    "event": "output",
+    "body": {
+      "category": "stderr",
+      "output": "Error: " & errorMsg & "\n"
+    }
+  }
+  echo $errorResponse
+  stdout.flushFile()
+
+  # Send terminated event to signal end of debugging session
+  let terminatedEvent = %*{
+    "seq": 1000,
+    "type": "event",
+    "event": "terminated",
+    "body": {}
+  }
+  echo $terminatedEvent
+  stdout.flushFile()
+
 proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
   ## Handle a debug request from VSCode
   let command = request["command"].getStr()

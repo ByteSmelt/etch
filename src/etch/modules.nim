@@ -1,4 +1,4 @@
-# module_system.nim
+# modules.nim
 # Module loading and resolution for Etch
 
 import std/[tables, os, sets, options]

@@ -1,10 +1,36 @@
 # types.nim
 # Common types used across the Etch implementation
 
+import std/[tables]
+
+
 type
+  CompilerFlags* = object
+    verbose*: bool
+    debug*: bool
+
   Pos* = object
     line*, col*: int
     filename*: string
+
+  TypeKind* = enum
+    tkInt, tkFloat, tkString, tkChar, tkBool, tkVoid, tkRef, tkGeneric, tkArray, tkOption, tkResult,
+    tkUserDefined, tkDistinct, tkObject, tkInferred, tkUnion
+
+  GlobalValue* = object
+    kind*: TypeKind
+    ival*: int64
+    fval*: float64
+    bval*: bool
+    sval*: string
+    cval*: char
+    refId*: int
+    aval*: seq[GlobalValue]
+    hasValue*: bool
+    wrappedVal*: ref GlobalValue
+    oval*: Table[string, GlobalValue]
+    unionTypeIdx*: int
+    unionVal*: ref GlobalValue
 
 
 # Branch prediction hints for performance optimization

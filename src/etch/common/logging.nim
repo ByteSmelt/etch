@@ -1,7 +1,7 @@
 # logging.nim
 # Centralized logging utilities for the Etch language implementation
 
-import ../interpreter/serialize
+import types
 import constants
 
 proc verboseLog*(flags: CompilerFlags, module: string, msg: string) =

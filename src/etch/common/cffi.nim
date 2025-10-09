@@ -2,8 +2,10 @@
 # C FFI (Foreign Function Interface) for calling C library functions
 
 import std/[dynlib, tables]
-import values
+import ../common/types
 import ../frontend/ast
+import values
+
 
 type
   CFunctionPtr = pointer

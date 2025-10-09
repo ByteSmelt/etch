@@ -3,7 +3,7 @@
 
 
 import std/[tables]
-import ../frontend/ast, ../common/errors, ../interpreter/serialize
+import ../frontend/ast, ../common/errors
 import ../common/[constants, logging, types]
 import types, expression_analysis
 

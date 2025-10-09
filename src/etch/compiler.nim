@@ -1,15 +1,13 @@
 # compiler.nim
 # Etch compiler: compilation and execution orchestration
 
-import std/[os, tables, times, options, strformat]
+import std/[os, tables, times, options, strformat, hashes]
+import common/[constants, types, errors, logging, cffi, library_resolver]
 import frontend/[ast, lexer, parser]
-import typechecker/[core, types, statements, inference]
-import interpreter/[bytecode]  # Still needed for initial compilation
 import interpreter/[regvm, regvm_compiler, regvm_exec, regvm_serialize]  # Register VM
 import prover/[core]
-import comptime, common/errors
-import common/[constants, logging, cffi, library_resolver]
-import module_system
+import typechecker/[core, types, statements, inference]
+import ./[comptime, modules]
 
 type
   CompilerResult* = object
@@ -29,6 +27,11 @@ proc getBytecodeFileName*(sourceFile: string): string =
   let (dir, name, _) = splitFile(sourceFile)
   let etchDir = joinPath(dir, "__etch__")
   joinPath(etchDir, name & ".etcx")
+
+proc hashSourceAndFlags*(source: string, flags: CompilerFlags): string =
+  ## Generate a hash of the source code + compiler flags for cache validation
+  let sourceHash = hashes.hash(source)
+  $sourceHash
 
 proc shouldRecompile*(sourceFile, bytecodeFile: string, options: CompilerOptions): bool =
   ## Check if source file is newer than bytecode or if hash/flags don't match

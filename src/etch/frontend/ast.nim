@@ -1,16 +1,11 @@
 # ast.nim
 # Core AST + type for Etch
 
-
 import std/[tables, options, strutils]
 import ../common/types
 
 
 type
-  TypeKind* = enum
-    tkInt, tkFloat, tkString, tkChar, tkBool, tkVoid, tkRef, tkGeneric, tkArray, tkOption, tkResult,
-    tkUserDefined, tkDistinct, tkObject, tkInferred, tkUnion
-
   ObjectField* = object
     name*: string
     fieldType*: EtchType

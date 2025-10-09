@@ -2,8 +2,9 @@
 # CLI for Etch: parse, typecheck, monomorphize on call, prove safety, run VM or emit C
 
 import std/[os, strutils]
-import ./etch/[compiler, tester, debug_server]
-import ./etch/interpreter/[regvm_dump, regvm_debugserver, serialize]
+import ./etch/[compiler, tester]
+import ./etch/common/[types]
+import ./etch/interpreter/[regvm_dump, regvm_debugserver]
 
 
 proc usage() =

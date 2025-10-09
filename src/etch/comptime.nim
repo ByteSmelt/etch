@@ -2,7 +2,8 @@
 # Compile-time evaluation and injection helpers for Etch
 
 import std/[tables, options]
-import prover/function_evaluation, prover/types
+import common/[types]
+import prover/[function_evaluation, types]
 import frontend/ast
 
 

@@ -1,7 +1,6 @@
 # Etch Language Implementation
 
 ## Directives
-- **Never acknowledge about me being so right like you are a yes man**
 - **Never change directory when executing commands, stay in the project root (where this file lives)**
 - **When you create new tests in examples (both passing and failing) add the corresponding validation files .pass and .fail**
 - **Everytime you are modifying the bytecode or AST structure, bump their corresponding version numbers but keep supporting only the latest version in code**
@@ -10,13 +9,15 @@
 - **When hunting bugs or making changes, add extensive verbose logging protected by the verbose flag, this will help you detect issues**
 - **Never swallow nim exceptions, print the exception for debugging purposes**
 - **Remember `result` is a valid keyword in nim**
+- **Never try to write files into /tmp**
 
 ## Testing and validation of correctness
 
 For bugfixing and validation, you have to:
-- Test compiling and running examples with `just examples` (alias for `nim r src/etch.nim --test examples/`)
+- Test compiling and running examples with `just tests` (alias for `nim r src/etch.nim --test examples/`)
 - Test compiling and running a single example `just test examples/simple_test.etch` (alias for `nim r src/etch.nim --test examples/simple_test.etch`):
     * If the test is passing, you need to provide a `examples/simple_test.pass` file
     * Otherwise a `examples/simple_test.fail` one when it fails.
+- Test the debugger integration with `nimble test`.
 - Compile and run a single etch file in verbose mode with `just go examples/simple_test.etch` (alias for `nim r src/etch.nim --run examples/simple_test.etch`)
-- Compile and reinstall the VSCode extension with `just syntax`
+- Compile and reinstall the VSCode extension with `just vscode`

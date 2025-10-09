@@ -2,7 +2,7 @@
 # Type definitions and basic constructors for the safety prover
 
 import std/[tables]
-import ../frontend/ast, ../interpreter/serialize, ../common/types
+import ../frontend/ast, ../common/types
 
 const IMin* = low(int64)
 const IMax* = high(int64)

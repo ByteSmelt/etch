@@ -3,7 +3,8 @@
 
 
 import std/strformat
-import ../frontend/ast, ../common/errors
+import ../frontend/ast
+import ../common/[types, errors]
 import types
 
 
