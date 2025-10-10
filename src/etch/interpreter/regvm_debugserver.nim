@@ -122,11 +122,13 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
     server.vm.currentFrame.pc = server.vm.program.entryPoint
 
     # Set initial debugger position based on first instruction
+    var startLine = 6  # Default to line 6 for main function body
     if server.vm.program.instructions.len > server.vm.program.entryPoint:
       let firstInstr = server.vm.program.instructions[server.vm.program.entryPoint]
       if firstInstr.debug.line > 0:
         server.debugger.lastFile = firstInstr.debug.sourceFile
         server.debugger.lastLine = firstInstr.debug.line
+        startLine = firstInstr.debug.line
       else:
         server.debugger.lastFile = server.sourceFile
         # Start at line 2 (first line inside function) instead of line 1 (function declaration)
@@ -134,6 +136,10 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
     else:
       server.debugger.lastFile = server.sourceFile
       server.debugger.lastLine = 2
+
+    # Push main function frame to the debugger's stack
+    let debugger = cast[RegEtchDebugger](server.debugger)
+    debugger.pushStackFrame("main", server.sourceFile, startLine, false)
 
     # Get variable names from the program's variable map
     # Start with main function's variables
@@ -359,35 +365,50 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
     # Get current call stack
     var stackFrames: seq[JsonNode] = @[]
 
+    # Always include the current frame based on PC
+    var currentLine = 1
+    var currentFile = server.sourceFile
+    var currentFuncName = "main"
+
+    if server.vm.currentFrame != nil and server.vm.currentFrame.pc < server.vm.program.instructions.len:
+      let instr = server.vm.program.instructions[server.vm.currentFrame.pc]
+      if instr.debug.line > 0:
+        currentLine = instr.debug.line
+        currentFile = if instr.debug.sourceFile.len > 0:
+                        instr.debug.sourceFile
+                      else:
+                        server.sourceFile
+
     # Check if we have stack frames from the debugger
     if server.debugger.stackFrames.len > 0:
-      # Get actual call stack
+      # Get actual call stack with current frame
       for i, frame in server.debugger.stackFrames:
-        stackFrames.add(%*{
-          "id": i,
-          "name": frame.functionName,
-          "source": {
-            "path": frame.fileName,
-            "name": frame.fileName.splitFile().name & frame.fileName.splitFile().ext
-          },
-          "line": frame.line,
-          "column": 1
-        })
-    elif server.debugger.paused:
+        if i == server.debugger.stackFrames.len - 1:
+          # Top frame - use current line
+          stackFrames.add(%*{
+            "id": i,
+            "name": frame.functionName,
+            "source": {
+              "path": currentFile,
+              "name": currentFile.splitFile().name & currentFile.splitFile().ext
+            },
+            "line": currentLine,
+            "column": 1
+          })
+        else:
+          # Previous frames - use their stored line
+          stackFrames.add(%*{
+            "id": i,
+            "name": frame.functionName,
+            "source": {
+              "path": frame.fileName,
+              "name": frame.fileName.splitFile().name & frame.fileName.splitFile().ext
+            },
+            "line": frame.line,
+            "column": 1
+          })
+    else:
       # If we're paused but have no stack frames, we're at entry or main
-      # Get the current line from the current instruction
-      var currentLine = 1
-      var currentFile = server.sourceFile
-
-      if server.vm.currentFrame != nil and server.vm.currentFrame.pc < server.vm.program.instructions.len:
-        let instr = server.vm.program.instructions[server.vm.currentFrame.pc]
-        if instr.debug.line > 0:
-          currentLine = instr.debug.line
-          currentFile = if instr.debug.sourceFile.len > 0:
-                          instr.debug.sourceFile
-                        else:
-                          server.sourceFile
-
       stackFrames.add(%*{
         "id": 0,
         "name": "main",
@@ -408,6 +429,28 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
     }
 
   of "scopes":
+    # Update current function context for variable tracking
+    if server.debugger.stackFrames.len > 0:
+      let topFrame = server.debugger.stackFrames[^1]
+      if topFrame.functionName != server.currentFunctionName:
+        server.currentFunctionName = topFrame.functionName
+
+        # Update local variables for the new function
+        if server.vm.program.variableMap.hasKey(server.currentFunctionName):
+          server.localVars = server.vm.program.variableMap[server.currentFunctionName]
+        else:
+          server.localVars = initTable[string, uint8]()
+
+        # Update lifetime data for the new function
+        if server.vm.program.lifetimeData.hasKey(server.currentFunctionName):
+          let rawPointer = server.vm.program.lifetimeData[server.currentFunctionName]
+          if rawPointer != nil:
+            server.lifetimeData = cast[ptr FunctionLifetimeData](rawPointer)
+          else:
+            server.lifetimeData = nil
+        else:
+          server.lifetimeData = nil
+
     # Return scopes for the current frame
     return %*{
       "success": true,
@@ -435,6 +478,28 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
   of "variables":
     let reference = request["arguments"]["variablesReference"].getInt()
     var variables: seq[JsonNode] = @[]
+
+    # Update current function context for variable tracking if needed
+    if server.debugger.stackFrames.len > 0:
+      let topFrame = server.debugger.stackFrames[^1]
+      if topFrame.functionName != server.currentFunctionName:
+        server.currentFunctionName = topFrame.functionName
+
+        # Update local variables for the new function
+        if server.vm.program.variableMap.hasKey(server.currentFunctionName):
+          server.localVars = server.vm.program.variableMap[server.currentFunctionName]
+        else:
+          server.localVars = initTable[string, uint8]()
+
+        # Update lifetime data for the new function
+        if server.vm.program.lifetimeData.hasKey(server.currentFunctionName):
+          let rawPointer = server.vm.program.lifetimeData[server.currentFunctionName]
+          if rawPointer != nil:
+            server.lifetimeData = cast[ptr FunctionLifetimeData](rawPointer)
+          else:
+            server.lifetimeData = nil
+        else:
+          server.lifetimeData = nil
 
     if reference == 1:
       # Local Variables - show only defined variables using lifetime data

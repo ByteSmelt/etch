@@ -1,5 +1,4 @@
 fn main() {
-    seed(42);
     var sum = 0;
 
     // Nested loops to test loop overhead and variable access

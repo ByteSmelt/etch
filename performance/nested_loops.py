@@ -1,7 +1,4 @@
-import random
-
 def main():
-    random.seed(42)
     sum_val = 0
 
     # Nested loops to test loop overhead and variable access
