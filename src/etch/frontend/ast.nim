@@ -10,14 +10,14 @@ type
     name*: string
     fieldType*: EtchType
     defaultValue*: Option[Expr]
-    generationalRef*: bool  # Whether this field uses generational references
+    generationalRef*: bool     # Whether this field uses generational references
 
   EtchType* = ref object
     kind*: TypeKind
-    name*: string           # for tkGeneric, tkUserDefined, tkDistinct, tkObject
-    inner*: EtchType        # for tkRef and tkArray, base type for tkDistinct
+    name*: string              # for tkGeneric, tkUserDefined, tkDistinct, tkObject
+    inner*: EtchType           # for tkRef and tkArray, base type for tkDistinct
     fields*: seq[ObjectField]  # for tkObject
-    generation*: uint32     # for generational reference tracking
+    generation*: uint32        # for generational reference tracking
     unionTypes*: seq[EtchType] # for tkUnion - list of possible types
 
   TypeEnv* = Table[string, EtchType]
@@ -39,7 +39,7 @@ type
   Pattern* = ref object
     case kind*: PatternKind
     of pkSome, pkOk, pkErr:
-      bindName*: string  # variable name to bind the extracted value
+      bindName*: string       # variable name to bind the extracted value
     of pkNone, pkWildcard:
       discard
     of pkType:
@@ -48,7 +48,7 @@ type
 
   MatchCase* = object
     pattern*: Pattern
-    body*: seq[Stmt]  # statements to execute if pattern matches
+    body*: seq[Stmt]          # statements to execute if pattern matches
 
   ExprKind* = enum
     ekBool, ekChar, ekInt, ekFloat, ekString, ekVar, ekBin, ekUn,
@@ -132,7 +132,7 @@ type
 
   Stmt* = ref object
     pos*: Pos
-    isExported*: bool  # Whether this is exported from the module
+    isExported*: bool        # Whether this is exported from the module
     case kind*: StmtKind
     of skVar:
       vflag*: VarFlag
@@ -180,11 +180,11 @@ type
 
   ImportItem* = object
     itemKind*: string       # "function", "const", "type"
-    name*: string          # item name
+    name*: string           # item name
     signature*: FunctionSignature  # for functions
-    typ*: EtchType         # for constants and types
-    isExported*: bool      # whether item is exported from module
-    alias*: string         # optional alias for C FFI symbols
+    typ*: EtchType          # for constants and types
+    isExported*: bool       # whether item is exported from module
+    alias*: string          # optional alias for C FFI symbols
 
   FunctionSignature* = object
     params*: seq[Param]
@@ -253,20 +253,16 @@ proc `$`*(t: EtchType): string =
     types.join(" | ")
 
 proc isCompatibleWith*(actual: EtchType, expected: EtchType): bool =
-  ## Check if actual type is compatible with expected type
   if expected.kind == tkGeneric and expected.name == "Any":
-    return true  # Any accepts all types
+    return true
 
-  # Check if expected is a union and actual is one of its types
   if expected.kind == tkUnion:
     for ut in expected.unionTypes:
       if actual.isCompatibleWith(ut):
         return true
     return false
 
-  # Check if actual is a union (shouldn't normally happen, but handle it)
   if actual.kind == tkUnion:
-    # All types in actual union must be compatible with expected
     for ut in actual.unionTypes:
       if not ut.isCompatibleWith(expected):
         return false
@@ -344,7 +340,7 @@ proc copyType*(t: EtchType): EtchType =
   of tkResult: tResult(copyType(t.inner))
   of tkUserDefined: tUserDefined(t.name)
   of tkDistinct: tDistinct(t.name, if t.inner != nil: copyType(t.inner) else: nil)
-  of tkObject: tObject(t.name, t.fields)  # Fields are shared - this is intentional for type definitions
+  of tkObject: tObject(t.name, t.fields)
   of tkInferred: tInferred()
   of tkUnion:
     var copiedTypes: seq[EtchType] = @[]
@@ -353,9 +349,7 @@ proc copyType*(t: EtchType): EtchType =
     tUnion(copiedTypes)
 
 
-# Function overload management helpers
 proc addFunction*(prog: Program, funDecl: FunDecl) =
-  ## Add a function declaration, supporting overloads
   if prog.funs.hasKey(funDecl.name):
     prog.funs[funDecl.name].add(funDecl)
   else:
@@ -363,7 +357,6 @@ proc addFunction*(prog: Program, funDecl: FunDecl) =
 
 
 proc getFunctionOverloads*(prog: Program, name: string): seq[FunDecl] =
-  ## Get all overloads for a function name
   if prog.funs.hasKey(name):
     result = prog.funs[name]
   else:
@@ -372,7 +365,7 @@ proc getFunctionOverloads*(prog: Program, name: string): seq[FunDecl] =
 
 proc generateOverloadSignature*(funDecl: FunDecl): string =
   ## Generate a unique signature string for overload resolution using compact name mangling
-  ## Format: funcName__paramTypes_returnType (inspired by JNI/C++ mangling but simplified)
+  ## Format: funcName__paramTypes_returnType
   result = funDecl.name & "__"
 
   # Compact type encoding: v=void, b=bool, c=char, i=int, f=float, s=string, A=array, R=ref, O=option, E=result, U=user-defined, D=distinct, T=object, N=union
@@ -392,17 +385,15 @@ proc generateOverloadSignature*(funDecl: FunDecl): string =
     of tkUserDefined: return "U" & $t.name.len & t.name
     of tkDistinct: return "D" & $t.name.len & t.name
     of tkObject: return "T" & $t.name.len & t.name
-    of tkInferred: return "I"  # Inferred type (shouldn't appear in function signatures)
+    of tkInferred: return "I" # Inferred type (shouldn't appear in function signatures)
     of tkUnion:
       result = "N" & $t.unionTypes.len
       for ut in t.unionTypes:
         result.add(encodeType(ut))
 
-  # Encode parameters
   for param in funDecl.params:
     result.add(encodeType(param.typ))
 
-  # Add return type separator and return type
   result.add("_")
   if funDecl.ret != nil:
     result.add(encodeType(funDecl.ret))
@@ -418,24 +409,22 @@ proc functionNameFromSignature*(mangledName: string): string =
 
 
 proc demangleFunctionSignature*(mangledName: string): string =
-  ## Demangle function signatures from their internal representation to human-readable form
-  ## Format: funcName__paramTypes_returnType -> funcName(paramTypes) -> returnType
   if "__" notin mangledName:
-    return mangledName  # Not mangled, return as-is
+    return mangledName
 
   let parts = mangledName.split("__")
   if parts.len != 2:
-    return mangledName  # Invalid format, return as-is
+    return mangledName
 
   let funcName = parts[0]
   let signature = parts[1]
 
   if "_" notin signature:
-    return mangledName  # Invalid format, return as-is
+    return mangledName
 
   let sigParts = signature.split("_")
   if sigParts.len != 2:
-    return mangledName  # Invalid format, return as-is
+    return mangledName
 
   let paramTypes = sigParts[0]
   let returnType = sigParts[1]
