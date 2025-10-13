@@ -38,7 +38,6 @@ proc expect(p: Parser, kind: TokKind, lex: string = ""): Token =
   inc p.i
   t
 
-# Forward declarations
 proc parseExpr*(p: Parser; rbp=0): Expr
 proc parseStmt*(p: Parser): Stmt
 proc parseMatchExpr(p: Parser; t: Token): Expr

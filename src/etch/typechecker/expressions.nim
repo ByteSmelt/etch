@@ -308,7 +308,6 @@ proc inferObjectLiteralExpr(prog: Program; fd: FunDecl; sc: Scope; e: Expr; subs
 
 
 proc inferMatchExpr(prog: Program; fd: FunDecl; sc: Scope; e: Expr; subst: var TySubst): EtchType =
-  # Match expressions need special handling - implemented in statements due to circular import
   # Return a default type for now - the real type will be set by inferMatchExpr
   if e.typ == nil:
     return tVoid()  # Placeholder

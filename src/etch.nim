@@ -26,28 +26,24 @@ proc usage() =
 when isMainModule:
   if paramCount() < 1: usage()
 
-  # Parse flags first (before mode commands)
   var verbose = false
   var debug = true
   var mode = ""
   var modeArg = ""
   var runVm = false
-  var useClang = false
   var files: seq[string] = @[]
 
   var i = 1
   while i <= paramCount():
     let a = paramStr(i)
-    # Parse flags first
+
     if a == "--verbose":
       verbose = true
     elif a == "--release":
       debug = false
     elif a == "--run":
       runVm = true
-    elif a == "--clang":
-      useClang = true
-    # Then parse mode commands
+
     elif a == "--test":
       mode = "test"
       if i + 1 <= paramCount() and not paramStr(i + 1).startsWith("--"):
@@ -67,24 +63,20 @@ when isMainModule:
       files.add a
     inc i
 
-  # Handle test mode
   if mode == "test":
     let testDir = if modeArg != "": modeArg else: "tests"
     quit runTests(testDir, verbose, not debug)
 
-  # Handle debug server mode
   if mode == "debug-server":
     if modeArg == "":
       echo "Error: --debug-server requires a file argument"
       quit 1
     let sourceFile = modeArg
 
-    # Check if source file exists and is valid
     if not fileExists(sourceFile):
       echo "Error: cannot open: ", sourceFile
       quit 1
 
-    # Compile with debug info enabled
     let options = CompilerOptions(
       sourceFile: sourceFile,
       runVM: false,
@@ -93,33 +85,26 @@ when isMainModule:
     )
 
     try:
-      # Parse, typecheck and compile to register bytecode
       let (prog, sourceHash, evaluatedGlobals) = parseAndTypecheck(options)
       let flags = CompilerFlags(verbose: verbose, debug: true)
       let regBytecode = compileProgramWithGlobals(prog, sourceHash, evaluatedGlobals, sourceFile, flags)
-
-      # Run debug server for register VM
       runRegDebugServer(regBytecode, sourceFile)
     except Exception as e:
-      # Send compilation error as JSON response for debug adapter
       sendCompilationError(e.msg)
       quit 1
 
     quit 0
 
-  # Handle bytecode dump mode
   if mode == "dump-bytecode":
     if modeArg == "":
       echo "Error: --dump-bytecode requires a file argument"
       quit 1
     let sourceFile = modeArg
 
-    # Check if source file exists and is valid
     if not fileExists(sourceFile):
       echo "Error: cannot open: ", sourceFile
       quit 1
 
-    # Compile with debug info enabled
     let options = CompilerOptions(
       sourceFile: sourceFile,
       runVM: false,
@@ -128,26 +113,20 @@ when isMainModule:
     )
 
     try:
-      # Parse, typecheck and compile to bytecode
       let (prog, sourceHash, evaluatedGlobals) = parseAndTypecheck(options)
       let flags = CompilerFlags(verbose: verbose, debug: debug)
       let bytecodeProgram = compileProgramWithGlobals(prog, sourceHash, evaluatedGlobals, sourceFile, flags)
-
-      # Use enhanced dump functionality
       dumpBytecodeProgram(bytecodeProgram, sourceFile)
-
     except Exception as e:
       echo "Error: ", e.msg
       quit 1
 
     quit 0
 
-  # Regular file execution - ensure we have exactly one file
   if files.len != 1: usage()
 
   let sourceFile = files[0]
 
-  # Normal execution path
   let options = CompilerOptions(
     sourceFile: sourceFile,
     runVM: runVm,
@@ -156,7 +135,6 @@ when isMainModule:
     release: not debug
   )
 
-  # Use the compiler module to handle compilation and execution
   let compilerResult = tryRunCachedOrCompile(options)
 
   if not compilerResult.success:

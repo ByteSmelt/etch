@@ -1,7 +1,7 @@
 # regvm_exec.nim
 # Execution engine for register-based VM with aggressive optimizations
 
-import std/[tables, math, strutils, dynlib]
+import std/[tables, math, strutils]
 import regvm, regvm_debugger, regvm_lifetime
 import ../common/[cffi, values]
 
@@ -324,8 +324,8 @@ proc callCFFIFunction(vm: RegisterVM, funcName: string, funcReg: uint8, numArgs:
 
   # Call the C function
   try:
-    let result = registry.callFunction(funcName, args)
-    setReg(vm, funcReg, fromValue(result))
+    let res = registry.callFunction(funcName, args)
+    setReg(vm, funcReg, fromValue(res))
     return true
   except:
     # On error, set result to nil

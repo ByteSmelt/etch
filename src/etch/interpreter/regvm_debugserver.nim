@@ -368,7 +368,6 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
     # Always include the current frame based on PC
     var currentLine = 1
     var currentFile = server.sourceFile
-    var currentFuncName = "main"
 
     if server.vm.currentFrame != nil and server.vm.currentFrame.pc < server.vm.program.instructions.len:
       let instr = server.vm.program.instructions[server.vm.currentFrame.pc]
@@ -382,11 +381,15 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
     # Check if we have stack frames from the debugger
     if server.debugger.stackFrames.len > 0:
       # Get actual call stack with current frame
-      for i, frame in server.debugger.stackFrames:
+      # Iterate in reverse order: top frame (most recent) first, then callers
+      for i in countdown(server.debugger.stackFrames.len - 1, 0):
+        let frame = server.debugger.stackFrames[i]
+        let frameId = server.debugger.stackFrames.len - 1 - i  # Reverse ID for VSCode
+
         if i == server.debugger.stackFrames.len - 1:
           # Top frame - use current line
           stackFrames.add(%*{
-            "id": i,
+            "id": frameId,
             "name": frame.functionName,
             "source": {
               "path": currentFile,
@@ -559,7 +562,7 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
                   # We're at the definition point but haven't executed yet
                   isStale = true
                   break
-            except Exception as e:
+            except Exception:
               discard  # Ignore errors, isStale remains false
 
           let displayValue = if isStale:
