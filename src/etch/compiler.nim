@@ -1,7 +1,7 @@
 # compiler.nim
 # Etch compiler: compilation and execution orchestration
 
-import std/[os, tables, times, options, strformat, hashes]
+import std/[os, tables, times, strformat, hashes]
 import common/[constants, types, errors, logging, cffi, library_resolver]
 import frontend/[ast, lexer, parser]
 import interpreter/[regvm, regvm_compiler, regvm_exec, regvm_serialize]  # Register VM
@@ -95,7 +95,6 @@ proc ensureAllNonGenericInst(prog: Program, flags: CompilerFlags) =
 
 # Forward declarations
 proc hasImpureCall(expr: Expr): bool
-proc hasImpureCallInStmt(stmt: Stmt): bool
 
 proc hasImpureCall(expr: Expr): bool =
   ## Simple check for expressions with side effects
@@ -113,44 +112,6 @@ proc hasImpureCall(expr: Expr): bool =
     return hasImpureCall(expr.lhs) or hasImpureCall(expr.rhs)
   else:
     return false
-
-proc hasImpureCallInStmt(stmt: Stmt): bool =
-  ## Check if a statement contains impure calls
-  case stmt.kind
-  of skExpr:
-    return hasImpureCall(stmt.sexpr)
-  of skReturn:
-    if stmt.re.isSome:
-      return hasImpureCall(stmt.re.get)
-  of skVar:
-    if stmt.vinit.isSome:
-      return hasImpureCall(stmt.vinit.get)
-  of skAssign:
-    return hasImpureCall(stmt.aval)
-  else:
-    return false
-
-proc hasImpureCallInFunction(fn: FunDecl): bool =
-  ## Check if a function body contains impure calls
-  for stmt in fn.body:
-    if hasImpureCallInStmt(stmt):
-      return true
-  return false
-
-proc canEvaluateAtCompileTime(expr: Expr, prog: Program): bool =
-  ## Check if an expression should be evaluated at compile time
-  ## Returns false for expressions with side effects
-  case expr.kind
-  of ekCall:
-    # Check if this is a user-defined function with side effects
-    if prog.funInstances.hasKey(expr.fname):
-      let fn = prog.funInstances[expr.fname]
-      if hasImpureCallInFunction(fn):
-        return false
-    # Also check if it's a built-in impure function
-    return not hasImpureCall(expr)
-  else:
-    return not hasImpureCall(expr)
 
 proc evaluateGlobalVariables(prog: Program): Table[string, GlobalValue] =
   ## Skip compile-time evaluation of globals for now (register VM only)

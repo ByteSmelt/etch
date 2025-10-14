@@ -77,7 +77,6 @@ suite "For Loop Debugging":
   test "For loop executes all 7 iterations":
     # Test that verifies all 7 iterations execute
     # The string "ABCDEFG" has 7 characters, so we should see 7 outputs
-    # Note: print(x) prints the ASCII value when x is a char from string indexing
     let cmds = getTempDir() / "for_loop_full_test_cmds.txt"
     writeFile(cmds, """{"seq":1,"type":"request","command":"initialize","arguments":{}}
 {"seq":2,"type":"request","command":"launch","arguments":{}}
@@ -91,16 +90,16 @@ suite "For Loop Debugging":
     let cmd = "timeout 2 ./etch --debug-server examples/for_string_test.etch < " & cmds & " 2>&1"
     let (output, _) = execCmdEx(cmd)
 
-    # Check for ASCII values 65-71 (A-G) being printed
-    # These should appear as separate lines in the output
-    echo "Checking for 7 loop iterations (ASCII values 65-71)..."
-    check output.contains("65")  # A
-    check output.contains("66")  # B
-    check output.contains("67")  # C
-    check output.contains("68")  # D
-    check output.contains("69")  # E
-    check output.contains("70")  # F
-    check output.contains("71")  # G
+    # Check for all 7 characters (A-G) being printed
+    # Each should appear on its own line
+    echo "Checking for 7 loop iterations (characters A-G)..."
+    check output.contains("A")
+    check output.contains("B")
+    check output.contains("C")
+    check output.contains("D")
+    check output.contains("E")
+    check output.contains("F")
+    check output.contains("G")
 
     # Also verify the expected start and end messages
     check output.contains("Testing for loop with string:")

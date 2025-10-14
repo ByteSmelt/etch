@@ -45,34 +45,28 @@ proc newRegDebugServer*(program: RegBytecodeProgram, sourceFile: string): RegDeb
 
 proc executeUntilBreak(server: RegDebugServer, maxInstructions: int = 10000): bool =
   ## Execute VM until next break or completion
-  ## Returns true if still running, false if terminated
 
-  var instructionCount = 0
-  while not server.debugger.paused and instructionCount < maxInstructions:
-    # Debug output
-    let pc = server.vm.currentFrame.pc
-    let instr = server.vm.program.instructions[pc]
-    let debug = instr.debug
-    stderr.writeLine("DEBUG executeUntilBreak: instruction " & $instructionCount &
-                     " paused=" & $server.debugger.paused &
-                     " pc=" & $pc &
-                     " instrLine=" & $debug.line &
-                     " lastLine=" & $server.debugger.lastLine)
+  # Unpause the debugger before executing
+  server.debugger.paused = false
+
+  # Call the main execute loop - it will return when paused or completed
+  let exitCode = execute(server.vm, verbose = false)
+
+  if exitCode == -1:
+    # Paused for debugging
+    stderr.writeLine("DEBUG executeUntilBreak: paused at PC=" & $server.vm.currentFrame.pc)
     stderr.flushFile()
-
-    if not executeInstruction(server.vm):
-      # Program terminated
-      stderr.writeLine("DEBUG executeUntilBreak: program terminated")
-      stderr.flushFile()
-      return false
-    inc instructionCount
-
-  stderr.writeLine("DEBUG executeUntilBreak: stopped, paused=" & $server.debugger.paused &
-                   " count=" & $instructionCount)
-  stderr.flushFile()
-
-  # Return true if we're still running (either paused or hit instruction limit)
-  return true
+    return true  # Still running, just paused
+  elif exitCode == 0:
+    # Normal termination
+    stderr.writeLine("DEBUG executeUntilBreak: program completed")
+    stderr.flushFile()
+    return false  # Program terminated
+  else:
+    # Error
+    stderr.writeLine("DEBUG executeUntilBreak: program error, code=" & $exitCode)
+    stderr.flushFile()
+    return false
 
 proc sendCompilationError*(errorMsg: string) =
   ## Send compilation error as JSON response for debug adapter

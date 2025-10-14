@@ -812,11 +812,11 @@ proc compileForLoop(c: var RegCompiler, s: Stmt) =
     # Loop start
     let loopStart = c.prog.instructions.len
 
-    # Check if index < length (internal operation - no debug info)
+    # Check if index < length - add debug info so we break here on each iteration
     # ropLt with A=0: skip next if (B < C) is true
     # So when idx < len (should continue), skip the exit jump ✓
     # When idx >= len (should exit), execute the exit jump ✓
-    c.prog.emitABC(ropLt, 0, idxReg, lenReg)  # Skip exit jump when idx < len
+    c.prog.emitABC(ropLt, 0, idxReg, lenReg, c.makeDebugInfo(s.pos))  # Skip exit jump when idx < len
     let exitJmp = c.prog.instructions.len
     c.prog.emitAsBx(ropJmp, 0, 0)  # Jump to exit if idx >= len
 
@@ -1172,7 +1172,8 @@ proc compileStmt*(c: var RegCompiler, s: Stmt) =
       let rightReg = c.compileExpr(s.wcond.rhs)
 
       # Emit comparison that jumps if condition is FALSE
-      let debugInfo = c.makeDebugInfo(s.wcond.pos)
+      # Use s.pos (while statement) not s.wcond.pos (condition expression) for debugging
+      let debugInfo = c.makeDebugInfo(s.pos)
       case s.wcond.bop:
       of boLt:
         c.prog.emitABC(ropLt, 0, leftReg, rightReg, debugInfo)  # Skip next if NOT less than
@@ -1195,7 +1196,7 @@ proc compileStmt*(c: var RegCompiler, s: Stmt) =
     else:
       # General expression condition
       let condReg = c.compileExpr(s.wcond)
-      c.prog.emitABC(ropTest, condReg, 0, 0, c.makeDebugInfo(s.wcond.pos))
+      c.prog.emitABC(ropTest, condReg, 0, 0, c.makeDebugInfo(s.pos))
       c.allocator.freeReg(condReg)
 
     # Jump to exit if condition is false

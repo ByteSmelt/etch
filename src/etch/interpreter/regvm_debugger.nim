@@ -45,6 +45,7 @@ type
     paused*: bool
     lastFile*: string
     lastLine*: int
+    lastPC*: int            # Last program counter where we stopped
     currentPC*: int         # Current program counter
 
     # Event callback for communication with debug adapter
@@ -64,6 +65,7 @@ proc newRegEtchDebugger*(): RegEtchDebugger =
     paused: false,
     lastFile: "",
     lastLine: 0,
+    lastPC: -1,
     currentPC: 0,
     onDebugEvent: nil,
     vm: nil
@@ -149,32 +151,42 @@ proc shouldBreak*(debugger: RegEtchDebugger, pc: int, file: string, line: int): 
   if debugger.hasBreakpoint(file, line):
     return true
 
+  # Check if we should break BEFORE updating lastPC
+  var shouldBreakNow = false
+
   case debugger.stepMode
   of smContinue:
-    return false
+    discard
 
   of smStepInto:
-    if line > 0 and (file != debugger.lastFile or line != debugger.lastLine):
-      return true
+    # Break on new line OR when PC jumps backward (loop iteration)
+    if line > 0 and (file != debugger.lastFile or line != debugger.lastLine or (pc < debugger.lastPC and debugger.lastPC >= 0)):
+      shouldBreakNow = true
 
   of smStepOver:
     if debugger.userCallDepth <= debugger.stepCallDepth:
       stderr.writeLine("DEBUG shouldBreak StepOver: depth=" & $debugger.userCallDepth &
                        " stepDepth=" & $debugger.stepCallDepth &
                        " file=" & file & " line=" & $line &
-                       " lastFile=" & debugger.lastFile & " lastLine=" & $debugger.lastLine)
+                       " lastFile=" & debugger.lastFile & " lastLine=" & $debugger.lastLine &
+                       " pc=" & $pc & " lastPC=" & $debugger.lastPC)
       stderr.flushFile()
 
-      if line > 0 and (file != debugger.lastFile or line != debugger.lastLine):
-        stderr.writeLine("DEBUG shouldBreak: BREAKING at line " & $line)
+      # Break on new line OR when PC jumps backward (loop iteration)
+      if line > 0 and (file != debugger.lastFile or line != debugger.lastLine or (pc < debugger.lastPC and debugger.lastPC >= 0)):
+        stderr.writeLine("DEBUG shouldBreak: BREAKING at line " & $line & " PC " & $pc)
         stderr.flushFile()
-        return true
+        shouldBreakNow = true
 
   of smStepOut:
     if debugger.userCallDepth < debugger.stepCallDepth and line > 0:
-      return true
+      shouldBreakNow = true
 
-  return false
+  # Update lastPC after checking for breaks (for next iteration detection)
+  if line > 0:
+    debugger.lastPC = pc
+
+  return shouldBreakNow
 
 proc attachToVM*(debugger: RegEtchDebugger, vm: pointer) =
   debugger.vm = vm

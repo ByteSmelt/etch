@@ -2,12 +2,18 @@
 # Execution engine for register-based VM with aggressive optimizations
 
 import std/[tables, math, strutils]
-import regvm, regvm_debugger, regvm_lifetime
-import ../common/[cffi, values]
+import regvm, regvm_debugger
+import ../common/[cffi, values, types, logging]
 
 # C rand for consistency
 proc c_rand(): cint {.importc: "rand", header: "<stdlib.h>".}
 proc c_srand(seed: cuint) {.importc: "srand", header: "<stdlib.h>".}
+
+# Logging helper for VM execution
+template log(verbose: bool, msg: string) =
+  if verbose:
+    let flags = CompilerFlags(verbose: true, debug: false)
+    logVM(flags, msg)
 
 # Create new VM instance
 proc newRegisterVM*(prog: RegBytecodeProgram): RegisterVM =
@@ -245,27 +251,6 @@ template doEq(a, b: V): bool =
   else:
     false
 
-proc doPow(a, b: V): V {.inline.} =
-  if isFloat(a) and isFloat(b):
-    makeFloat(pow(getFloat(a), getFloat(b)))
-  elif isInt(a) and isInt(b):
-    makeFloat(pow(float(getInt(a)), float(getInt(b))))
-  else:
-    makeNil()
-
-proc doNeg(a: V): V {.inline.} =
-  if isInt(a):
-    makeInt(-getInt(a))
-  elif isFloat(a):
-    makeFloat(-getFloat(a))
-  else:
-    makeNil()
-
-proc doNot(a: V): V {.inline.} =
-  let isTrue = getTag(a) != TAG_NIL and
-                not (getTag(a) == TAG_BOOL and (a.data and 1) == 0)
-  makeBool(not isTrue)
-
 # Converter between V type (VM value) and Value type (C FFI value)
 proc toValue(v: V): Value =
   ## Convert VM value to C FFI Value type
@@ -351,482 +336,10 @@ proc vmPrint(vm: RegisterVM, output: string, outputBuffer: var string, outputCou
       # No buffer (debug path in non-debug mode)
       echo output
 
-# Shared implementation for builtin functions to ensure consistent behavior
-proc handleBuiltinFunction(vm: RegisterVM, funcName: string, funcReg: uint8, numArgs: uint8,
-                          outputBuffer: var string, outputCount: var int): bool =
-  ## Handle builtin function execution. Returns true if function was handled.
-  case funcName
-  of "print":
-    if numArgs == 1:
-      let val = getReg(vm, funcReg + 1)
-      let output = if isInt(val): $getInt(val)
-                  elif isFloat(val): $getFloat(val)
-                  elif isChar(val): $getChar(val)
-                  elif getTag(val) == TAG_STRING: val.sval
-                  elif getTag(val) == TAG_BOOL:
-                    if (val.data and 1) != 0: "true" else: "false"
-                  elif getTag(val) == TAG_ARRAY:
-                    # Print array elements
-                    var res = "["
-                    for i, elem in val.aval:
-                      if i > 0: res.add(", ")
-                      if isInt(elem): res.add($getInt(elem))
-                      elif isFloat(elem): res.add($getFloat(elem))
-                      elif getTag(elem) == TAG_STRING: res.add("\"" & elem.sval & "\"")
-                      elif getTag(elem) == TAG_BOOL:
-                        res.add(if (elem.data and 1) != 0: "true" else: "false")
-                      else: res.add("nil")
-                    res.add("]")
-                    res
-                  else: "nil"
-      vmPrint(vm, output, outputBuffer, outputCount)
-      setReg(vm, funcReg, makeNil())
-    return true
-
-  of "toString":
-    if numArgs == 1:
-      let val = getReg(vm, funcReg + 1)
-      var res: V
-      res.data = TAG_STRING shl 48
-      if isInt(val):
-        res.sval = $getInt(val)
-      elif isFloat(val):
-        res.sval = $getFloat(val)
-      elif isChar(val):
-        res.sval = $getChar(val)
-      elif getTag(val) == TAG_BOOL:
-        res.sval = if (val.data and 1) != 0: "true" else: "false"
-      elif getTag(val) == TAG_STRING:
-        res.sval = val.sval
-      else:
-        res.sval = "nil"
-      setReg(vm, funcReg, res)
-    return true
-
-  of "seed":
-    if numArgs == 1:
-      let seedVal = getReg(vm, funcReg + 1)
-      if isInt(seedVal):
-        c_srand(cuint(getInt(seedVal)))
-      setReg(vm, funcReg, makeNil())
-    return true
-
-  of "rand":
-    if numArgs == 1:
-      # Single argument: rand(max) means rand from 0 to max
-      let maxVal = getReg(vm, funcReg + 1)
-      if isInt(maxVal):
-        let maxInt = getInt(maxVal)
-        if maxInt > 0:
-          let randVal = c_rand() mod cint(maxInt)
-          setReg(vm, funcReg, makeInt(int64(randVal)))
-        else:
-          setReg(vm, funcReg, makeInt(0))
-    elif numArgs == 2:
-      # Arguments: rand(max, min)
-      let maxVal = getReg(vm, funcReg + 1)  # First argument is max
-      let minVal = getReg(vm, funcReg + 2)  # Second argument is min
-      if isInt(minVal) and isInt(maxVal):
-        let minInt = getInt(minVal)
-        let maxInt = getInt(maxVal)
-        let range = maxInt - minInt
-        if range > 0:
-          let randVal = (c_rand() mod cint(range)) + cint(minInt)
-          setReg(vm, funcReg, makeInt(int64(randVal)))
-        else:
-          setReg(vm, funcReg, makeInt(minInt))
-    return true
-
-  # Reference operations
-  of "new":
-    if numArgs == 1:
-      # For now, just pass through the value (references are not truly implemented)
-      let val = getReg(vm, funcReg + 1)
-      setReg(vm, funcReg, val)
-    else:
-      setReg(vm, funcReg, makeNil())
-    return true
-
-  of "deref":
-    if numArgs == 1:
-      # For now, just pass through the value (references are not truly implemented)
-      let val = getReg(vm, funcReg + 1)
-      setReg(vm, funcReg, val)
-    else:
-      setReg(vm, funcReg, makeNil())
-    return true
-
-  # File I/O operations
-  of "readFile":
-    if numArgs == 1:
-      let pathVal = getReg(vm, funcReg + 1)
-      if isString(pathVal):
-        try:
-          let content = readFile(pathVal.sval)
-          setReg(vm, funcReg, makeString(content))
-        except:
-          setReg(vm, funcReg, makeString(""))
-      else:
-        setReg(vm, funcReg, makeString(""))
-    else:
-      setReg(vm, funcReg, makeString(""))
-    return true
-
-  # Parsing functions
-  of "parseInt":
-    if numArgs == 1:
-      let strVal = getReg(vm, funcReg + 1)
-      if getTag(strVal) == TAG_STRING:
-        try:
-          let intVal = parseInt(strVal.sval)
-          setReg(vm, funcReg, makeInt(intVal))
-        except:
-          setReg(vm, funcReg, makeNil())
-      else:
-        setReg(vm, funcReg, makeNil())
-    return true
-
-  of "parseFloat":
-    if numArgs == 1:
-      let strVal = getReg(vm, funcReg + 1)
-      if getTag(strVal) == TAG_STRING:
-        try:
-          let floatVal = parseFloat(strVal.sval)
-          setReg(vm, funcReg, makeFloat(floatVal))
-        except:
-          setReg(vm, funcReg, makeNil())
-      else:
-        setReg(vm, funcReg, makeNil())
-    return true
-
-  of "parseBool":
-    if numArgs == 1:
-      let strVal = getReg(vm, funcReg + 1)
-      if isString(strVal):
-        if strVal.sval == "true":
-          setReg(vm, funcReg, makeSome(makeBool(true)))
-        elif strVal.sval == "false":
-          setReg(vm, funcReg, makeSome(makeBool(false)))
-        else:
-          setReg(vm, funcReg, makeNone())
-      else:
-        setReg(vm, funcReg, makeNone())
-    else:
-      setReg(vm, funcReg, makeNone())
-    return true
-
-  of "isSome":
-    if numArgs == 1:
-      let val = getReg(vm, funcReg + 1)
-      setReg(vm, funcReg, makeBool(isSome(val)))
-    else:
-      setReg(vm, funcReg, makeBool(false))
-    return true
-
-  of "isNone":
-    if numArgs == 1:
-      let val = getReg(vm, funcReg + 1)
-      setReg(vm, funcReg, makeBool(isNone(val)))
-    else:
-      setReg(vm, funcReg, makeBool(true))
-    return true
-
-  of "isOk":
-    if numArgs == 1:
-      let val = getReg(vm, funcReg + 1)
-      setReg(vm, funcReg, makeBool(isOk(val)))
-    else:
-      setReg(vm, funcReg, makeBool(false))
-    return true
-
-  of "isErr":
-    if numArgs == 1:
-      let val = getReg(vm, funcReg + 1)
-      setReg(vm, funcReg, makeBool(isErr(val)))
-    else:
-      setReg(vm, funcReg, makeBool(true))
-    return true
-
-  else:
-    return false  # Function not handled
-
-# Execute a single instruction - used by debugger
-proc executeInstruction*(vm: RegisterVM, verbose: bool = false): bool =
-  ## Execute one instruction and return true if execution should continue
-  ## Returns false if program terminated or error occurred
-
-  if vm.currentFrame == nil or vm.currentFrame.pc >= vm.program.instructions.len:
-    return false  # Program terminated
-
-  var pc = vm.currentFrame.pc
-  let instr = vm.program.instructions[pc]
-
-  # Debugger hook - before instruction
-  if vm.debugger != nil:
-    let debugger = cast[RegEtchDebugger](vm.debugger)
-    let debug = instr.debug
-
-    # Update debugger's position
-    debugger.currentPC = pc
-    if debug.line > 0:
-      # Check if we should break BEFORE updating lastFile/lastLine
-      if debugger.shouldBreak(pc, debug.sourceFile, debug.line):
-        # Update last position AFTER we decide to break
-        debugger.lastFile = debug.sourceFile
-        debugger.lastLine = debug.line
-        debugger.pause()
-        # Don't execute if we should break here
-        return true  # Still running but paused
-
-    # Debug output when in debug mode
-    if vm.isDebugging and verbose:
-      stderr.writeLine("[DEBUG executeInstruction] PC=" & $pc &
-                      " op=" & $instr.op &
-                      " line=" & $debug.line &
-                      " file=" & debug.sourceFile &
-                      " paused=" & $debugger.paused)
-      stderr.flushFile()
-
-  # Check for destructor injection points
-  # This is where we would clean up variables going out of scope
-  # For now, we just log when variables would be destroyed
-  if vm.isDebugging and verbose:
-    # Check if current function has lifetime data
-    for fname, finfo in vm.program.functions:
-      if pc >= finfo.startPos and pc <= finfo.endPos:
-        # We're in this function
-        if vm.program.lifetimeData.hasKey(fname):
-          let lifetimeData = cast[ptr FunctionLifetimeData](vm.program.lifetimeData[fname])
-          if lifetimeData.destructorPoints.hasKey(pc):
-            let varsToDestroy = lifetimeData.destructorPoints[pc]
-            for varName in varsToDestroy:
-              stderr.writeLine("[DESTRUCTOR] Would destroy variable '" & varName & "' at PC " & $pc)
-              stderr.flushFile()
-        break
-
-  # Actually execute the instruction
-  # Default: increment PC after executing instruction
-  var shouldContinue = true
-  inc pc
-
-  # Execute the instruction - we need to duplicate some of the execute loop logic
-  case instr.op
-  of ropLoadK:
-    # Load constant: R[A] = K[Bx] or immediate
-    if instr.opType == 1:  # ABx format - load from constant pool
-      setReg(vm, instr.a, getConst(vm, instr.bx))
-    elif instr.opType == 2:  # AsBx format - immediate integer
-      setReg(vm, instr.a, makeInt(int64(instr.sbx)))
-
-  of ropLoadNil:
-    # Load nil: R[A] = nil
-    setReg(vm, instr.a, makeNil())
-
-  of ropLoadBool:
-    # Load boolean: R[A] = B != 0
-    setReg(vm, instr.a, makeBool(instr.b != 0))
-    if instr.c != 0:
-      inc pc  # Skip next instruction if C != 0
-
-  of ropMove:
-    # Move: R[A] = R[B]
-    setReg(vm, instr.a, getReg(vm, instr.b))
-
-  of ropAdd:
-    setReg(vm, instr.a, doAdd(getReg(vm, instr.b), getReg(vm, instr.c)))
-
-  of ropSub:
-    setReg(vm, instr.a, doSub(getReg(vm, instr.b), getReg(vm, instr.c)))
-
-  of ropMul:
-    setReg(vm, instr.a, doMul(getReg(vm, instr.b), getReg(vm, instr.c)))
-
-  of ropDiv:
-    setReg(vm, instr.a, doDiv(getReg(vm, instr.b), getReg(vm, instr.c)))
-
-  of ropMod:
-    setReg(vm, instr.a, doMod(getReg(vm, instr.b), getReg(vm, instr.c)))
-
-  of ropPow:
-    setReg(vm, instr.a, doPow(getReg(vm, instr.b), getReg(vm, instr.c)))
-
-  of ropLen:
-    let val = getReg(vm, instr.b)
-    let length = if getTag(val) == TAG_ARRAY: val.aval.len
-                 elif getTag(val) == TAG_STRING: val.sval.len
-                 else: 0
-    setReg(vm, instr.a, makeInt(int64(length)))
-
-  of ropLt:
-    if doLt(getReg(vm, instr.b), getReg(vm, instr.c)) != (instr.a != 0):
-      inc pc
-
-  of ropGetIndex:
-    let arr = getReg(vm, instr.b)
-    let idx = getReg(vm, instr.c)
-    if getTag(arr) == TAG_ARRAY and isInt(idx):
-      let i = int(getInt(idx))
-      if i >= 0 and i < arr.aval.len:
-        setReg(vm, instr.a, arr.aval[i])
-      else:
-        setReg(vm, instr.a, makeNil())
-    elif getTag(arr) == TAG_STRING and isInt(idx):
-      let i = int(getInt(idx))
-      if i >= 0 and i < arr.sval.len:
-        setReg(vm, instr.a, makeInt(int64(arr.sval[i].ord)))
-      else:
-        setReg(vm, instr.a, makeNil())
-    else:
-      setReg(vm, instr.a, makeNil())
-
-  of ropAddI:
-    let val = getReg(vm, instr.a)
-    if isInt(val):
-      setReg(vm, instr.a, makeInt(getInt(val) + int64(instr.bx)))
-
-  of ropUnm:
-    setReg(vm, instr.a, doNeg(getReg(vm, instr.b)))
-
-  of ropNot:
-    setReg(vm, instr.a, doNot(getReg(vm, instr.b)))
-
-  of ropEqStore:
-    setReg(vm, instr.a, makeBool(doEq(getReg(vm, instr.b), getReg(vm, instr.c))))
-
-  of ropLtStore:
-    setReg(vm, instr.a, makeBool(doLt(getReg(vm, instr.b), getReg(vm, instr.c))))
-
-  of ropLeStore:
-    setReg(vm, instr.a, makeBool(doLe(getReg(vm, instr.b), getReg(vm, instr.c))))
-
-  of ropJmp:
-    pc += int(instr.sbx)
-
-  of ropTest:
-    let val = getReg(vm, instr.a)
-    let isTrue = getTag(val) != TAG_NIL and
-                  not (getTag(val) == TAG_BOOL and (val.data and 1) == 0)
-    if isTrue != (instr.c != 0):
-      inc pc  # Skip next instruction
-
-  of ropCall:
-    # Handle function calls (simplified for single-step execution)
-    let funcReg = instr.a
-    let numArgs = instr.b
-    #let numResults = instr.c
-
-    let funcNameVal = getReg(vm, funcReg)
-    if getTag(funcNameVal) == TAG_STRING:
-      let funcName = funcNameVal.sval
-
-      # Check for user-defined functions
-      if vm.program.functions.hasKey(funcName):
-        let funcInfo = vm.program.functions[funcName]
-
-        # Debugger hook - push stack frame
-        if vm.debugger != nil:
-          let debugger = cast[RegEtchDebugger](vm.debugger)
-          # Get debug info from the first instruction of the function being called
-          let funcFirstInstr = if funcInfo.startPos < vm.program.instructions.len:
-            vm.program.instructions[funcInfo.startPos]
-          else:
-            instr
-          let targetFile = if funcFirstInstr.debug.sourceFile.len > 0:
-            funcFirstInstr.debug.sourceFile
-          else:
-            "main"
-          let targetLine = if funcFirstInstr.debug.line > 0:
-            funcFirstInstr.debug.line
-          else:
-            1  # Default to line 1 if no debug info
-          debugger.pushStackFrame(funcName, targetFile, targetLine, false)
-
-        # Create new frame
-        var newFrame = RegisterFrame()
-        newFrame.returnAddr = pc  # Return to instruction after call
-        newFrame.baseReg = funcReg
-        newFrame.pc = funcInfo.startPos
-
-        # Copy arguments
-        for i in 0'u8..<numArgs:
-          newFrame.regs[i] = getReg(vm, funcReg + 1'u8 + i)
-
-        # Push frame
-        vm.frames.add(newFrame)
-        vm.currentFrame = addr vm.frames[^1]
-
-        # PC is now at function start
-        pc = funcInfo.startPos
-      else:
-        # Try C FFI first
-        if callCFFIFunction(vm, funcName, funcReg, numArgs):
-          # C FFI function handled
-          discard
-        else:
-          # Handle builtin functions using shared implementation
-          # Debugger hook for builtin
-          if vm.debugger != nil:
-            let debugger = cast[RegEtchDebugger](vm.debugger)
-            let currentFile = if instr.debug.sourceFile.len > 0: instr.debug.sourceFile else: "main"
-            debugger.pushStackFrame(funcName, currentFile, instr.debug.line, true)
-
-          # Use shared builtin handler - no buffering in debug path
-          var dummyBuffer = ""
-          var dummyCount = 0
-          if not handleBuiltinFunction(vm, funcName, funcReg, numArgs, dummyBuffer, dummyCount):
-            # Unknown function - check if it's an unloaded C FFI function
-            if vm.program.cffiInfo.hasKey(funcName):
-              let cffiInfo = vm.program.cffiInfo[funcName]
-              if verbose:
-                echo "[DEBUG] C FFI function not loaded: ", funcName, " (library: ", cffiInfo.library, ")"
-            else:
-              # Unknown function
-              if verbose:
-                echo "[DEBUG] Unknown function: ", funcName
-            setReg(vm, funcReg, makeNil())
-
-        # Pop builtin frame immediately
-        if vm.debugger != nil:
-          let debugger = cast[RegEtchDebugger](vm.debugger)
-          debugger.popStackFrame()
-
-  of ropReturn:
-    # Return from function
-    let numResults = instr.b
-    let returnValue = if numResults > 0: getReg(vm, instr.a) else: makeNil()
-
-    # Debugger hook - pop stack frame
-    if vm.debugger != nil:
-      let debugger = cast[RegEtchDebugger](vm.debugger)
-      debugger.popStackFrame()
-
-    # Pop frame
-    let returnAddr = vm.currentFrame.returnAddr
-    let resultReg = vm.currentFrame.baseReg
-    vm.frames.setLen(vm.frames.len - 1)
-
-    if vm.frames.len > 0:
-      vm.currentFrame = addr vm.frames[^1]
-      if numResults > 0:
-        setReg(vm, resultReg, returnValue)
-      pc = returnAddr
-    else:
-      # No more frames - program terminated
-      shouldContinue = false
-
-  else:
-    # For unhandled instructions, just continue
-    # In a complete implementation, all instructions would be handled
-    discard
-
-  # Update PC in the frame
-  vm.currentFrame.pc = pc
-
-  return shouldContinue
-
 # Main execution loop - highly optimized with computed goto if available
 proc execute*(vm: RegisterVM, verbose: bool = false): int =
-  var pc = vm.program.entryPoint
+  # When debugging, resume from where we left off; otherwise start from entry point
+  var pc = if vm.isDebugging and vm.currentFrame.pc > 0: vm.currentFrame.pc else: vm.program.entryPoint
   let instructions = vm.program.instructions
   let maxInstr = instructions.len
   vm.currentFrame.pc = pc  # Initialize PC in frame
@@ -859,14 +372,15 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
           # Update last position AFTER we decide to break
           debugger.lastFile = debug.sourceFile
           debugger.lastLine = debug.line
+          debugger.lastPC = pc
           debugger.pause()
           # Send break event
           debugger.sendBreakpointHit(debug.sourceFile, debug.line)
-          # Wait for debugger to continue
-          while debugger.paused:
-            # In a real implementation, this would yield to debugger
-            # For now, we just break the pause
-            break
+          # Return to debug server - it will call execute() again when continuing
+          # NOTE: We DON'T execute the instruction at this PC yet. When we resume,
+          # we'll start from this PC and execute it then.
+          flushOutput()
+          return -1  # Special return code: paused for debugging
 
     when defined(debugRegVM):
       echo "[", pc, "] ", instr.op, " a=", instr.a,
@@ -876,7 +390,7 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
             else: " ax=" & $instr.ax)
 
     if verbose and pc >= 4:  # Only log main function instructions
-      echo "[REGVM] PC=", pc, " op=", instr.op
+      log(verbose, "PC=" & $pc & " op=" & $instr.op)
 
     inc pc
 
@@ -888,20 +402,17 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
     of ropMove:
       let val = getReg(vm, instr.b)
       setReg(vm, instr.a, val)
-      if verbose:
-        echo "[REGVM] ropMove: reg", instr.b, " -> reg", instr.a,
-             " value tag=", val.getTag().toHex,
-             if val.isInt(): " int=" & $val.getInt() else: ""
+      log(verbose, "ropMove: reg" & $instr.b & " -> reg" & $instr.a &
+          " value tag=" & val.getTag().toHex &
+          (if val.isInt(): " int=" & $val.getInt() else: ""))
 
     of ropLoadK:
       # Handle both ABx (constant pool) and AsBx (immediate) formats
       if instr.opType == 1:  # ABx format - load from constant pool
-        if verbose:
-          echo "[REGVM] ropLoadK: loading const[", instr.bx, "] to reg ", instr.a
+        log(verbose, "ropLoadK: loading const[" & $instr.bx & "] to reg " & $instr.a)
         setReg(vm, instr.a, getConst(vm, instr.bx))
       elif instr.opType == 2:  # AsBx format - immediate integer
-        if verbose:
-          echo "[REGVM] ropLoadK: loading immediate ", instr.sbx, " to reg ", instr.a
+        log(verbose, "ropLoadK: loading immediate " & $instr.sbx & " to reg " & $instr.a)
         setReg(vm, instr.a, makeInt(int64(instr.sbx)))
       else:
         setReg(vm, instr.a, makeNil())
@@ -912,8 +423,7 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
         inc pc  # Skip next instruction
 
     of ropLoadNil:
-      if verbose:
-        echo "[REGVM] ropLoadNil: setting reg", instr.a, "..", instr.b, " to nil"
+      log(verbose, "ropLoadNil: setting reg" & $instr.a & ".." & $instr.b & " to nil")
       for i in instr.a..instr.b:
         setReg(vm, i, makeNil())
 
@@ -997,9 +507,8 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
       let c = getReg(vm, instr.c)
       let isEqual = doEq(b, c)
       let skipIfNot = instr.a != 0
-      if verbose:
-        echo "[REGVM] ropEq: reg", instr.b, "=", b.data.toHex, " reg", instr.c, "=", c.data.toHex,
-             " equal=", isEqual, " skipIfNot=", skipIfNot, " willSkip=", (isEqual != skipIfNot)
+      log(verbose, "ropEq: reg" & $instr.b & "=" & b.data.toHex & " reg" & $instr.c & "=" & c.data.toHex &
+          " equal=" & $isEqual & " skipIfNot=" & $skipIfNot & " willSkip=" & $(isEqual != skipIfNot))
       if isEqual != skipIfNot:
         inc pc  # Skip next instruction
 
@@ -1054,16 +563,14 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
       let b = getReg(vm, instr.b)
       let c = getReg(vm, instr.c)
       let res = makeBool(doLt(b, c))
-      if verbose:
-        echo "[REGVM] ropLtStore: reg", instr.a, " = reg", instr.b, "(", $b, ") < reg", instr.c, "(", $c, ") = ", $res
+      log(verbose, "ropLtStore: reg" & $instr.a & " = reg" & $instr.b & "(" & $b & ") < reg" & $instr.c & "(" & $c & ") = " & $res)
       setReg(vm, instr.a, res)
 
     of ropLeStore:
       let b = getReg(vm, instr.b)
       let c = getReg(vm, instr.c)
       let res = makeBool(doLe(b, c))
-      if verbose:
-        echo "[REGVM] ropLeStore: reg", instr.a, " = reg", instr.b, "(", $b, ") <= reg", instr.c, "(", $c, ") = ", $res
+      log(verbose, "ropLeStore: reg" & $instr.a & " = reg" & $instr.b & "(" & $b & ") <= reg" & $instr.c & "(" & $c & ") = " & $res)
       setReg(vm, instr.a, res)
 
     # --- Logical Operations ---
@@ -1074,16 +581,14 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
     of ropAnd:
       let b = getReg(vm, instr.b)
       let c = getReg(vm, instr.c)
-      if verbose:
-        echo "[REGVM] ropAnd: reg", instr.b, " tag=", getTag(b), " data=", b.data,
-             " AND reg", instr.c, " tag=", getTag(c), " data=", c.data
+      log(verbose, "ropAnd: reg" & $instr.b & " tag=" & $getTag(b) & " data=" & $b.data &
+          " AND reg" & $instr.c & " tag=" & $getTag(c) & " data=" & $c.data)
       # Both values should be booleans - perform logical AND
       if getTag(b) == TAG_BOOL and getTag(c) == TAG_BOOL:
         let bVal = (b.data and 1) != 0
         let cVal = (c.data and 1) != 0
         setReg(vm, instr.a, makeBool(bVal and cVal))
-        if verbose:
-          echo "[REGVM] ropAnd: ", bVal, " AND ", cVal, " = ", bVal and cVal
+        log(verbose, "ropAnd: " & $bVal & " AND " & $cVal & " = " & $(bVal and cVal))
       else:
         # Fallback to old behavior for non-boolean values
         if getTag(b) == TAG_NIL or (getTag(b) == TAG_BOOL and (b.data and 1) == 0):
@@ -1179,11 +684,9 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
       let val = getReg(vm, instr.a)
       let expectedTag = instr.b.uint64
       let actualTag = getTag(val)
-      if verbose:
-        echo "[REGVM] ropTestTag: reg=", instr.a, " expected=", expectedTag, " actual=", actualTag, " match=", actualTag == expectedTag
+      log(verbose, "ropTestTag: reg=" & $instr.a & " expected=" & $expectedTag & " actual=" & $actualTag & " match=" & $(actualTag == expectedTag))
       if actualTag == expectedTag:
-        if verbose:
-          echo "[REGVM] ropTestTag: tags match, skipping next instruction (PC ", pc, " -> ", pc + 1, ")"
+        log(verbose, "ropTestTag: tags match, skipping next instruction (PC " & $pc & " -> " & $(pc + 1) & ")")
         inc pc  # Skip next instruction if tags match
 
     of ropUnwrapOption:
@@ -1192,16 +695,14 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
       if isSome(val):
         let unwrapped = unwrapOption(val)
         setReg(vm, instr.a, unwrapped)
-        if verbose:
-          echo "[REGVM] ropUnwrapOption: unwrapped Some value to reg ", instr.a, " value: ",
-            if isInt(unwrapped): $getInt(unwrapped)
-            elif isFloat(unwrapped): $getFloat(unwrapped)
-            elif isString(unwrapped): unwrapped.sval
-            else: "unknown"
+        log(verbose, "ropUnwrapOption: unwrapped Some value to reg " & $instr.a & " value: " &
+            (if isInt(unwrapped): $getInt(unwrapped)
+             elif isFloat(unwrapped): $getFloat(unwrapped)
+             elif isString(unwrapped): unwrapped.sval
+             else: "unknown"))
       else:
         setReg(vm, instr.a, makeNil())
-        if verbose:
-          echo "[REGVM] ropUnwrapOption: value was None, set nil in reg ", instr.a
+        log(verbose, "ropUnwrapOption: value was None, set nil in reg " & $instr.a)
 
     of ropUnwrapResult:
       # Unwrap Result value
@@ -1220,18 +721,7 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
       for i in 0'u16..<instr.bx:
         arr.aval[i] = makeNil()
       setReg(vm, instr.a, arr)
-      if verbose:
-        let checkReg = getReg(vm, instr.a)
-        echo "[REGVM] ropNewArray: created array of size ", instr.bx, " in reg ", instr.a,
-             " tag=", checkReg.getTag().toHex, " verify isArray=", checkReg.isArray()
-        # Also check what's actually in register 3 right now
-        if instr.a == 3:
-          let r3 = vm.currentFrame.regs[3]
-          echo "[REGVM] Register 3 check: tag=", r3.getTag().toHex,
-               " isInt=", r3.isInt(),
-               " isArray=", r3.isArray(),
-               if r3.isInt(): " intVal=" & $r3.getInt() else: "",
-               if r3.isArray(): " arrayLen=" & $r3.aval.len else: ""
+      log(verbose, "ropNewArray: created array of size " & $instr.bx & " in reg " & $instr.a)
 
     of ropGetIndex:
       let arr = getReg(vm, instr.b)
@@ -1336,32 +826,23 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
 
     of ropLen:
       let val = getReg(vm, instr.b)
-      if verbose:
-        echo "[REGVM] ropLen: getting length of reg", instr.b, " tag=", getTag(val),
-             " (", if getTag(val) == TAG_ARRAY: "Array"
-                   elif getTag(val) == TAG_STRING: "String"
-                   else: "Other", ")"
       if getTag(val) == TAG_ARRAY:
         let lenVal = makeInt(int64(val.aval.len))
-        if verbose:
-          echo "[REGVM] ropLen: array length = ", val.aval.len, " -> reg", instr.a
+        log(verbose, "ropLen: array length = " & $val.aval.len & " -> reg" & $instr.a)
         setReg(vm, instr.a, lenVal)
       elif getTag(val) == TAG_STRING:
         let lenVal = makeInt(int64(val.sval.len))
-        if verbose:
-          echo "[REGVM] ropLen: string length = ", val.sval.len, " -> reg", instr.a
+        log(verbose, "ropLen: string length = " & $val.sval.len & " -> reg" & $instr.a)
         setReg(vm, instr.a, lenVal)
       else:
-        if verbose:
-          echo "[REGVM] ropLen: not array/string, setting 0 -> reg", instr.a
+        log(verbose, "ropLen: not array/string, setting 0 -> reg" & $instr.a)
         setReg(vm, instr.a, makeInt(0))
 
     # --- Objects/Tables ---
     of ropNewTable:
       # Create a new empty table
       setReg(vm, instr.a, makeTable())
-      if verbose:
-        echo "[REGVM] ropNewTable: created new table in reg ", instr.a
+      log(verbose, "ropNewTable: created new table in reg " & $instr.a)
 
     of ropGetField:
       # Get field from table: R[A] = R[B][K[C]]
@@ -1372,12 +853,10 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
           setReg(vm, instr.a, table.tval[fieldName])
         else:
           setReg(vm, instr.a, makeNil())
-          if verbose:
-            echo "[REGVM] ropGetField: field '", fieldName, "' not found in table"
+          log(verbose, "ropGetField: field '" & fieldName & "' not found in table")
       else:
         setReg(vm, instr.a, makeNil())
-        if verbose:
-          echo "[REGVM] ropGetField: ERROR - reg ", instr.b, " is not a table"
+        log(verbose, "ropGetField: ERROR - reg " & $instr.b & " is not a table")
 
     of ropSetField:
       # Set field in table: R[B][K[C]] = R[A]
@@ -1387,11 +866,9 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
         let value = getReg(vm, instr.a)
         table.tval[fieldName] = value
         setReg(vm, instr.b, table)
-        if verbose:
-          echo "[REGVM] ropSetField: set field '", fieldName, "' in table"
+        log(verbose, "ropSetField: set field '" & fieldName & "' in table")
       else:
-        if verbose:
-          echo "[REGVM] ropSetField: ERROR - reg ", instr.b, " is not a table"
+        log(verbose, "ropSetField: ERROR - reg " & $instr.b & " is not a table")
 
     # --- Control Flow ---
     of ropJmp:
@@ -1401,8 +878,8 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
       let val = getReg(vm, instr.a)
       let isTrue = getTag(val) != TAG_NIL and
                     not (getTag(val) == TAG_BOOL and (val.data and 1) == 0)
-      if verbose:
-        echo "[REGVM] ropTest: reg", instr.a, " val=", $val, " isTrue=", isTrue, " expected=", instr.c != 0, " skip=", isTrue != (instr.c != 0)
+      log(verbose, "ropTest: reg" & $instr.a & " val=" & $val & " isTrue=" & $isTrue &
+          " expected=" & $(instr.c != 0) & " skip=" & $(isTrue != (instr.c != 0)))
       if isTrue != (instr.c != 0):
         inc pc
 
@@ -1483,39 +960,33 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
 
       # Get function name from the register
       let funcNameVal = getReg(vm, funcReg)
-      if verbose:
-        echo "[REGVM] ropCall: funcReg=", funcReg, " numArgs=", numArgs, " numResults=", numResults
-        if getTag(funcNameVal) == TAG_STRING:
-          echo "[REGVM] ropCall: funcName='", funcNameVal.sval, "'"
-        else:
-          echo "[REGVM] ropCall: ERROR - funcReg doesn't contain a string!"
       if getTag(funcNameVal) != TAG_STRING:
         # Not a valid function name
+        log(verbose, "ropCall: ERROR - funcReg doesn't contain a string!")
         setReg(vm, funcReg, makeNil())
         continue
 
       let funcName = funcNameVal.sval
+      log(verbose, "ropCall: funcName='" & funcName & "' funcReg=" & $funcReg &
+          " numArgs=" & $numArgs & " numResults=" & $numResults)
 
       # Check for C FFI functions first - try to call through the registry
       if callCFFIFunction(vm, funcName, funcReg, numArgs):
-        if verbose:
-          echo "[REGVM] Called C FFI function: ", funcName
+        log(verbose, "Called C FFI function: " & funcName)
         continue
 
       # If not in registry but in cffiInfo, it means the library wasn't loaded
       if vm.program.cffiInfo.hasKey(funcName):
         let cffiInfo = vm.program.cffiInfo[funcName]
-        if verbose:
-          echo "[REGVM] C FFI function not loaded: ", funcName, " (library: ", cffiInfo.library, ")"
+        log(verbose, "C FFI function not loaded: " & funcName & " (library: " & cffiInfo.library & ")")
         setReg(vm, funcReg, makeNil())
         continue
 
       # Check for user-defined functions
       elif vm.program.functions.hasKey(funcName):
         let funcInfo = vm.program.functions[funcName]
-
-        if verbose:
-          echo "[REGVM] Calling user function ", funcName, " at ", funcInfo.startPos, " with ", numArgs, " args, result reg=", funcReg
+        log(verbose, "Calling user function " & funcName & " at " & $funcInfo.startPos &
+            " with " & $numArgs & " args, result reg=" & $funcReg)
 
         # Debugger hook - push stack frame
         if vm.debugger != nil:
@@ -1544,12 +1015,8 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
         for i in 0'u8..<numArgs:
           let argVal = getReg(vm, funcReg + 1'u8 + i)
           newFrame.regs[i] = argVal
-          if verbose:
-            echo "[REGVM] Copying arg ", i, " from reg ", funcReg + 1'u8 + i, " to new frame reg ", i,
-                 " tag=", getTag(argVal),
-                 if getTag(argVal) == TAG_ARRAY: " (Array len=" & $argVal.aval.len & ")"
-                 elif getTag(argVal) == TAG_INT: " (Int=" & $getInt(argVal) & ")"
-                 else: ""
+          log(verbose, "Copying arg " & $i & " from reg " & $(funcReg + 1'u8 + i) &
+              " to new frame reg " & $i & " tag=" & $getTag(argVal))
 
         # Push frame
         vm.frames.add(newFrame)
@@ -1659,25 +1126,6 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
           else:
             res.sval = "nil"
           setReg(vm, funcReg, res)
-
-      # Mock C functions for testing
-      of "c_add":
-        if numArgs == 2:
-          let a = getReg(vm, funcReg + 1)
-          let b = getReg(vm, funcReg + 2)
-          if isInt(a) and isInt(b):
-            setReg(vm, funcReg, makeInt(getInt(a) + getInt(b)))
-          else:
-            setReg(vm, funcReg, makeNil())
-
-      of "c_multiply":
-        if numArgs == 2:
-          let a = getReg(vm, funcReg + 1)
-          let b = getReg(vm, funcReg + 2)
-          if isInt(a) and isInt(b):
-            setReg(vm, funcReg, makeInt(getInt(a) * getInt(b)))
-          else:
-            setReg(vm, funcReg, makeNil())
 
       # Reference operations
       of "new":
@@ -1797,8 +1245,7 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
       else:
         # Check if it's an unimplemented builtin that just returns the function name
         # (This is a placeholder for unimplemented builtins)
-        if verbose:
-          echo "[REGVM] Unknown function: ", funcName, " - returning function name as string"
+        log(verbose, "Unknown function: " & funcName & " - returning function name as string")
         var res: V
         res.data = TAG_STRING shl 48
         res.sval = funcName
@@ -1813,9 +1260,7 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
       # Return from function
       let numResults = instr.a
       let firstResultReg = instr.b
-
-      if verbose:
-        echo "[REGVM] ropReturn: numResults=", numResults, " firstResultReg=", firstResultReg, " frames.len=", vm.frames.len
+      log(verbose, "ropReturn: numResults=" & $numResults & " firstResultReg=" & $firstResultReg & " frames.len=" & $vm.frames.len)
 
       # Debugger hook - pop stack frame
       if vm.debugger != nil:
