@@ -3,6 +3,7 @@
 
 import std/[tables, json, options, sequtils]
 import ../common/constants
+import ../frontend/ast
 
 type
   StepMode* = enum
@@ -40,6 +41,7 @@ type
     stepTarget*: int        # Target instruction for step operations
     userCallDepth*: int     # Depth of user-defined function calls only
     stepCallDepth*: int     # User call depth when step was initiated
+    callSiteLine*: int      # Line where we made the function call (to skip on return)
 
     # State
     paused*: bool
@@ -62,6 +64,7 @@ proc newRegEtchDebugger*(): RegEtchDebugger =
     stepTarget: -1,
     userCallDepth: 0,
     stepCallDepth: 0,
+    callSiteLine: -1,
     paused: false,
     lastFile: "",
     lastLine: 0,
@@ -97,8 +100,11 @@ proc hasBreakpoint*(debugger: RegEtchDebugger, file: string, line: int): bool =
 
 proc pushStackFrame*(debugger: RegEtchDebugger, functionName: string, fileName: string,
                      line: int, isBuiltIn: bool = false) =
+  # Demangle the function name for display
+  let displayName = demangleFunctionSignature(functionName)
+
   var frame = RegDebugStackFrame(
-    functionName: functionName,
+    functionName: displayName,
     fileName: fileName,
     line: line,
     isBuiltIn: isBuiltIn,
@@ -109,13 +115,28 @@ proc pushStackFrame*(debugger: RegEtchDebugger, functionName: string, fileName: 
   debugger.stackFrames.add(frame)
 
   if not isBuiltIn:
+    # When entering a function during stepping, save the call site line
+    if debugger.stepMode != smContinue and debugger.userCallDepth == debugger.stepCallDepth:
+      debugger.callSiteLine = debugger.lastLine
+      stderr.writeLine("[PUSH_FRAME] ", displayName, " line=", line, " depth=", debugger.userCallDepth, " -> saving callSiteLine=", debugger.callSiteLine)
+      stderr.flushFile()
     debugger.userCallDepth += 1
+    stderr.writeLine("[PUSH_FRAME] ", displayName, " line=", line, " depth=", debugger.userCallDepth)
+    stderr.flushFile()
+  else:
+    stderr.writeLine("[PUSH_FRAME] ", displayName, " (builtin) line=", line)
+    stderr.flushFile()
 
 proc popStackFrame*(debugger: RegEtchDebugger) =
   if debugger.stackFrames.len > 0:
     let frame = debugger.stackFrames.pop()
     if not frame.isBuiltIn:
       debugger.userCallDepth -= 1
+      stderr.writeLine("[POP_FRAME] ", frame.functionName, " depth=", debugger.userCallDepth)
+      stderr.flushFile()
+    else:
+      stderr.writeLine("[POP_FRAME] ", frame.functionName, " (builtin)")
+      stderr.flushFile()
 
 proc getCurrentStackFrame*(debugger: RegEtchDebugger): RegDebugStackFrame =
   if debugger.stackFrames.len > 0:
@@ -138,6 +159,8 @@ proc step*(debugger: RegEtchDebugger, mode: StepMode) =
   debugger.stepMode = mode
   debugger.stepCallDepth = debugger.userCallDepth
   debugger.paused = false
+  stderr.writeLine("[STEP] mode=", mode, " depth=", debugger.userCallDepth)
+  stderr.flushFile()
 
 proc continueExecution*(debugger: RegEtchDebugger) =
   debugger.stepMode = smContinue
@@ -159,28 +182,51 @@ proc shouldBreak*(debugger: RegEtchDebugger, pc: int, file: string, line: int): 
     discard
 
   of smStepInto:
+    # Skip the call site line when returning from a function
+    if line > 0 and line == debugger.callSiteLine and debugger.userCallDepth <= debugger.stepCallDepth:
+      stderr.writeLine("[STEP_INTO] pc=", pc, " line=", line, " callSiteLine=", debugger.callSiteLine, " -> skip call site")
+      stderr.flushFile()
     # Break on new line OR when PC jumps backward (loop iteration)
-    if line > 0 and (file != debugger.lastFile or line != debugger.lastLine or (pc < debugger.lastPC and debugger.lastPC >= 0)):
+    elif line > 0 and (file != debugger.lastFile or line != debugger.lastLine or (pc < debugger.lastPC and debugger.lastPC >= 0)):
+      stderr.writeLine("[STEP_INTO] pc=", pc, " line=", line, " lastLine=", debugger.lastLine, " depth=", debugger.userCallDepth, " -> BREAK")
+      stderr.flushFile()
       shouldBreakNow = true
+    elif line > 0:
+      stderr.writeLine("[STEP_INTO] pc=", pc, " line=", line, " lastLine=", debugger.lastLine, " depth=", debugger.userCallDepth, " -> continue")
+      stderr.flushFile()
 
   of smStepOver:
     if debugger.userCallDepth <= debugger.stepCallDepth:
-      stderr.writeLine("DEBUG shouldBreak StepOver: depth=" & $debugger.userCallDepth &
-                       " stepDepth=" & $debugger.stepCallDepth &
-                       " file=" & file & " line=" & $line &
-                       " lastFile=" & debugger.lastFile & " lastLine=" & $debugger.lastLine &
-                       " pc=" & $pc & " lastPC=" & $debugger.lastPC)
+      stderr.writeLine("[STEP_OVER] pc=", pc, " line=", line, " lastLine=", debugger.lastLine, " depth=", debugger.userCallDepth, " stepDepth=", debugger.stepCallDepth)
       stderr.flushFile()
-
+      # Skip the call site line when returning from a function
+      if line > 0 and line == debugger.callSiteLine:
+        stderr.writeLine("[STEP_OVER] -> skip call site line ", debugger.callSiteLine)
+        stderr.flushFile()
       # Break on new line OR when PC jumps backward (loop iteration)
-      if line > 0 and (file != debugger.lastFile or line != debugger.lastLine or (pc < debugger.lastPC and debugger.lastPC >= 0)):
-        stderr.writeLine("DEBUG shouldBreak: BREAKING at line " & $line & " PC " & $pc)
+      elif line > 0 and (file != debugger.lastFile or line != debugger.lastLine or (pc < debugger.lastPC and debugger.lastPC >= 0)):
+        stderr.writeLine("[STEP_OVER] -> BREAK")
         stderr.flushFile()
         shouldBreakNow = true
+      else:
+        stderr.writeLine("[STEP_OVER] -> continue")
+        stderr.flushFile()
+    else:
+      stderr.writeLine("[STEP_OVER] pc=", pc, " depth=", debugger.userCallDepth, " > stepDepth=", debugger.stepCallDepth, " -> skip")
+      stderr.flushFile()
 
   of smStepOut:
+    stderr.writeLine("[STEP_OUT] pc=", pc, " line=", line, " depth=", debugger.userCallDepth, " stepDepth=", debugger.stepCallDepth, " callSiteLine=", debugger.callSiteLine)
+    stderr.flushFile()
     if debugger.userCallDepth < debugger.stepCallDepth and line > 0:
-      shouldBreakNow = true
+      # Skip the call site line when returning
+      if line == debugger.callSiteLine:
+        stderr.writeLine("[STEP_OUT] -> skip call site line ", debugger.callSiteLine)
+        stderr.flushFile()
+      else:
+        stderr.writeLine("[STEP_OUT] -> BREAK")
+        stderr.flushFile()
+        shouldBreakNow = true
 
   # Update lastPC after checking for breaks (for next iteration detection)
   if line > 0:

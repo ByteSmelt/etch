@@ -1487,6 +1487,13 @@ proc compileProgram*(p: ast.Program, optimizeLevel: int = 2, verbose: bool = fal
     # Save position for global init
     let globalInitStart = compiler.prog.instructions.len
 
+    # Reset allocator for global init scope
+    compiler.allocator = RegAllocator(
+      nextReg: 0,
+      maxRegs: uint8(MAX_REGISTERS),
+      regMap: initTable[string, uint8]()
+    )
+
     # Compile global variable initialization
     for globalStmt in p.globals:
       if globalStmt.kind == skVar:
@@ -1507,6 +1514,21 @@ proc compileProgram*(p: ast.Program, optimizeLevel: int = 2, verbose: bool = fal
 
     # Set entry point to global initialization
     compiler.prog.entryPoint = globalInitStart
+    if verbose:
+      echo "[REGCOMPILER] Entry point set to PC ", globalInitStart, " (<global> function)"
+
+    # Register the global initialization code as a special function for debugging
+    let globalInitEnd = compiler.prog.instructions.len - 1
+    compiler.prog.functions["<global>"] = regvm.FunctionInfo(
+      name: "<global>",
+      startPos: globalInitStart,
+      endPos: globalInitEnd,
+      numParams: 0,
+      numLocals: 0
+    )
+
+    if verbose:
+      echo "[REGCOMPILER] Registered <global> initialization function at PC ", globalInitStart, "..", globalInitEnd
   else:
     # Set entry point to main (will be compiled next)
     compiler.prog.entryPoint = compiler.prog.instructions.len

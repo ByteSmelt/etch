@@ -339,10 +339,11 @@ proc vmPrint(vm: RegisterVM, output: string, outputBuffer: var string, outputCou
 # Main execution loop - highly optimized with computed goto if available
 proc execute*(vm: RegisterVM, verbose: bool = false): int =
   # When debugging, resume from where we left off; otherwise start from entry point
-  var pc = if vm.isDebugging and vm.currentFrame.pc > 0: vm.currentFrame.pc else: vm.program.entryPoint
+  var pc = if vm.isDebugging and vm.currentFrame.pc >= 0: vm.currentFrame.pc else: vm.program.entryPoint
   let instructions = vm.program.instructions
   let maxInstr = instructions.len
   vm.currentFrame.pc = pc  # Initialize PC in frame
+
 
   # Output buffer for print statements - significantly improves performance
   var outputBuffer: string = ""
@@ -389,7 +390,7 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
             elif instr.opType == 2: " sbx=" & $instr.sbx
             else: " ax=" & $instr.ax)
 
-    if verbose and pc >= 4:  # Only log main function instructions
+    if verbose:
       log(verbose, "PC=" & $pc & " op=" & $instr.op)
 
     inc pc
@@ -1004,6 +1005,13 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
             funcFirstInstr.debug.line
           else:
             1  # Default to line 1 if no debug info
+
+          # Special case: calling main from <global> is a transition, not a nested call
+          # Pop <global> and push main at the same depth
+          if funcName == "main" and debugger.stackFrames.len > 0 and
+             debugger.stackFrames[^1].functionName == "<global>":
+            debugger.popStackFrame()  # Remove <global>
+
           debugger.pushStackFrame(funcName, targetFile, targetLine, false)
 
         # Create new frame for the function

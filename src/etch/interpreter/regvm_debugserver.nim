@@ -1,8 +1,91 @@
 # regvm_debug_server.nim
 # Debug server for register VM communicating with VSCode Debug Adapter Protocol
 
-import std/[json, sequtils, tables, os, hashes, algorithm]
+import std/[json, sequtils, tables, os, hashes, algorithm, strutils]
 import regvm, regvm_exec, regvm_debugger, regvm_lifetime
+import ../common/values
+
+# Helper function to format a register value for display in debugger
+proc formatRegisterValue(val: V): string =
+  if val.isNil():
+    return "nil"
+
+  if val.isInt():
+    return $val.ival
+  elif val.isFloat():
+    return $val.fval
+  elif val.isString():
+    return "\"" & val.sval & "\""
+  elif val.isBool():
+    return $((val.data and 1) != 0)
+  elif val.isChar():
+    return "'" & $val.getChar() & "'"
+  elif val.isSome():
+    # Extract the wrapped value
+    var inner = val
+    let innerTag = (val.data shr 32) and 0xFFFF
+    inner.data = (innerTag shl 48) or (val.data and 0xFFFFFFFF'u64)
+    return "Some(" & formatRegisterValue(inner) & ")"
+  elif val.isNone():
+    return "None"
+  elif val.isOk():
+    # Extract the wrapped value
+    var inner = val
+    let innerTag = (val.data shr 32) and 0xFFFF
+    inner.data = (innerTag shl 48) or (val.data and 0xFFFFFFFF'u64)
+    return "Ok(" & formatRegisterValue(inner) & ")"
+  elif val.isErr():
+    # Extract the error value
+    var inner = val
+    let innerTag = (val.data shr 32) and 0xFFFF
+    inner.data = (innerTag shl 48) or (val.data and 0xFFFFFFFF'u64)
+    return "Err(" & formatRegisterValue(inner) & ")"
+  elif val.isArray():
+    if val.aval.len == 0:
+      return "[]"
+    elif val.aval.len <= 3:
+      var items: seq[string] = @[]
+      for item in val.aval:
+        items.add(formatRegisterValue(item))
+      return "[" & items.join(", ") & "]"
+    else:
+      return "[" & formatRegisterValue(val.aval[0]) & ", ... (" & $val.aval.len & " items)]"
+  elif val.isTable():
+    if val.tval.len == 0:
+      return "{}"
+    else:
+      return "{...} (" & $val.tval.len & " entries)"
+  else:
+    return "<unknown>"
+
+# Helper function to get the type of a register value for display
+proc getValueType(val: V): string =
+  if val.isNil():
+    return "nil"
+  elif val.isInt():
+    return "int"
+  elif val.isFloat():
+    return "float"
+  elif val.isString():
+    return "string"
+  elif val.isBool():
+    return "bool"
+  elif val.isChar():
+    return "char"
+  elif val.isSome():
+    return "Option"
+  elif val.isNone():
+    return "Option"
+  elif val.isOk():
+    return "Result"
+  elif val.isErr():
+    return "Result"
+  elif val.isArray():
+    return "array"
+  elif val.isTable():
+    return "table"
+  else:
+    return "unknown"
 
 type
   RegDebugServer* = ref object
@@ -54,18 +137,12 @@ proc executeUntilBreak(server: RegDebugServer, maxInstructions: int = 10000): bo
 
   if exitCode == -1:
     # Paused for debugging
-    stderr.writeLine("DEBUG executeUntilBreak: paused at PC=" & $server.vm.currentFrame.pc)
-    stderr.flushFile()
     return true  # Still running, just paused
   elif exitCode == 0:
     # Normal termination
-    stderr.writeLine("DEBUG executeUntilBreak: program completed")
-    stderr.flushFile()
     return false  # Program terminated
   else:
     # Error
-    stderr.writeLine("DEBUG executeUntilBreak: program error, code=" & $exitCode)
-    stderr.flushFile()
     return false
 
 proc sendCompilationError*(errorMsg: string) =
@@ -119,8 +196,27 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
     # Initialize VM state at entry point
     server.vm.currentFrame.pc = server.vm.program.entryPoint
 
+    # Determine which function we're starting in (global init or main)
+    var startFunctionName = "main"
+    var startLine = 2  # Default to line 2 for main function body
+
+    # Check if entry point is in <global> function (global initialization)
+    if server.vm.program.functions.hasKey("<global>"):
+      let globalInfo = server.vm.program.functions["<global>"]
+      if server.vm.program.entryPoint >= globalInfo.startPos and
+         server.vm.program.entryPoint <= globalInfo.endPos:
+        startFunctionName = "<global>"
+        # Use debug info from first instruction in global init
+        if server.vm.program.instructions.len > server.vm.program.entryPoint:
+          let firstInstr = server.vm.program.instructions[server.vm.program.entryPoint]
+          if firstInstr.debug.line > 0:
+            startLine = firstInstr.debug.line
+          else:
+            startLine = 1  # Default to line 1 for global scope
+        else:
+          startLine = 1
+
     # Set initial debugger position based on first instruction
-    var startLine = 6  # Default to line 6 for main function body
     if server.vm.program.instructions.len > server.vm.program.entryPoint:
       let firstInstr = server.vm.program.instructions[server.vm.program.entryPoint]
       if firstInstr.debug.line > 0:
@@ -129,28 +225,27 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
         startLine = firstInstr.debug.line
       else:
         server.debugger.lastFile = server.sourceFile
-        # Start at line 2 (first line inside function) instead of line 1 (function declaration)
-        server.debugger.lastLine = 2
+        server.debugger.lastLine = startLine
     else:
       server.debugger.lastFile = server.sourceFile
-      server.debugger.lastLine = 2
+      server.debugger.lastLine = startLine
 
-    # Push main function frame to the debugger's stack
+    # Push initial function frame to the debugger's stack
     let debugger = cast[RegEtchDebugger](server.debugger)
-    debugger.pushStackFrame("main", server.sourceFile, startLine, false)
+    debugger.currentPC = server.vm.program.entryPoint  # Initialize to entry point
+    debugger.pushStackFrame(startFunctionName, server.sourceFile, startLine, false)
 
     # Get variable names from the program's variable map
-    # Start with main function's variables
-    server.currentFunctionName = "main"
-    if server.vm.program.variableMap.hasKey("main"):
-      server.localVars = server.vm.program.variableMap["main"]
+    server.currentFunctionName = startFunctionName
+    if server.vm.program.variableMap.hasKey(startFunctionName):
+      server.localVars = server.vm.program.variableMap[startFunctionName]
     else:
       # Initialize empty if no variable map available
       server.localVars = initTable[string, uint8]()
 
-    # Load lifetime data for main function if available
-    if server.vm.program.lifetimeData.hasKey("main"):
-      let rawPointer = server.vm.program.lifetimeData["main"]
+    # Load lifetime data for the starting function if available
+    if server.vm.program.lifetimeData.hasKey(startFunctionName):
+      let rawPointer = server.vm.program.lifetimeData[startFunctionName]
       if rawPointer != nil:
         server.lifetimeData = cast[ptr FunctionLifetimeData](rawPointer)
       else:
@@ -224,6 +319,7 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
 
     if not stillRunning:
       # Program terminated
+      server.running = false
       let terminatedEvent = %*{
         "type": "event",
         "event": "terminated",
@@ -268,6 +364,7 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
 
     if not stillRunning:
       # Program terminated
+      server.running = false
       let terminatedEvent = %*{
         "type": "event",
         "event": "terminated",
@@ -300,6 +397,7 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
 
     if not stillRunning:
       # Program terminated
+      server.running = false
       let terminatedEvent = %*{
         "type": "event",
         "event": "terminated",
@@ -332,6 +430,7 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
 
     if not stillRunning:
       # Program terminated
+      server.running = false
       let terminatedEvent = %*{
         "type": "event",
         "event": "terminated",
