@@ -11,9 +11,12 @@ requires "nim >= 2.2.4"
 
 # Tasks
 task test, "Run all tests":
+  echo "===== Building etch binary ====="
+  exec "nim c -d:release -o:etch src/etch.nim"
   echo "===== Running core tests ====="
   exec "nim c -r tests/test_debug_basic.nim"
   exec "nim c -r tests/test_debugger_crash.nim"
-  exec "nim c -r tests/test_for_loop_debug.nim"
+  exec "nim c -r tests/test_debugger_for.nim"
+  exec "nim c -r tests/test_debugger_while.nim"
   # echo "\n===== Running example tests ====="
   # exec "nim r src/etch.nim --test examples/"

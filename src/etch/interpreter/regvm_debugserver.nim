@@ -373,8 +373,15 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
     var currentLine = 1
     var currentFile = server.sourceFile
 
-    if server.vm.currentFrame != nil and server.vm.currentFrame.pc < server.vm.program.instructions.len:
-      let instr = server.vm.program.instructions[server.vm.currentFrame.pc]
+    # Use debugger.currentPC if available (for accurate stack traces during stepping)
+    # Otherwise fall back to vm.currentFrame.pc
+    let pcToUse = if server.debugger.currentPC >= 0:
+                    server.debugger.currentPC
+                  else:
+                    server.vm.currentFrame.pc
+
+    if server.vm.currentFrame != nil and pcToUse < server.vm.program.instructions.len:
+      let instr = server.vm.program.instructions[pcToUse]
       if instr.debug.line > 0:
         currentLine = instr.debug.line
         currentFile = if instr.debug.sourceFile.len > 0:

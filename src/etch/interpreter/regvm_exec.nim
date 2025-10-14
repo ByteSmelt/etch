@@ -650,6 +650,40 @@ proc executeInstruction*(vm: RegisterVM, verbose: bool = false): bool =
   of ropPow:
     setReg(vm, instr.a, doPow(getReg(vm, instr.b), getReg(vm, instr.c)))
 
+  of ropLen:
+    let val = getReg(vm, instr.b)
+    let length = if getTag(val) == TAG_ARRAY: val.aval.len
+                 elif getTag(val) == TAG_STRING: val.sval.len
+                 else: 0
+    setReg(vm, instr.a, makeInt(int64(length)))
+
+  of ropLt:
+    if doLt(getReg(vm, instr.b), getReg(vm, instr.c)) != (instr.a != 0):
+      inc pc
+
+  of ropGetIndex:
+    let arr = getReg(vm, instr.b)
+    let idx = getReg(vm, instr.c)
+    if getTag(arr) == TAG_ARRAY and isInt(idx):
+      let i = int(getInt(idx))
+      if i >= 0 and i < arr.aval.len:
+        setReg(vm, instr.a, arr.aval[i])
+      else:
+        setReg(vm, instr.a, makeNil())
+    elif getTag(arr) == TAG_STRING and isInt(idx):
+      let i = int(getInt(idx))
+      if i >= 0 and i < arr.sval.len:
+        setReg(vm, instr.a, makeInt(int64(arr.sval[i].ord)))
+      else:
+        setReg(vm, instr.a, makeNil())
+    else:
+      setReg(vm, instr.a, makeNil())
+
+  of ropAddI:
+    let val = getReg(vm, instr.a)
+    if isInt(val):
+      setReg(vm, instr.a, makeInt(getInt(val) + int64(instr.bx)))
+
   of ropUnm:
     setReg(vm, instr.a, doNeg(getReg(vm, instr.b)))
 
