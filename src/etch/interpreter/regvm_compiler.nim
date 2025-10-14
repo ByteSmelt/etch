@@ -1340,9 +1340,6 @@ proc compileFunDecl*(c: var RegCompiler, name: string, params: seq[Param], retTy
   c.prog.lifetimeData[name] = cast[pointer](heapData)
   GC_ref(heapData)  # Keep a GC reference to prevent collection
 
-  # Save variable mappings for this function
-  c.prog.variableMap[name] = c.allocator.regMap
-
   # Debug: dump lifetime info if verbose
   if c.verbose:
     c.lifetimeTracker.dumpLifetimes()
@@ -1363,7 +1360,6 @@ proc compileProgram*(p: ast.Program, optimizeLevel: int = 2, verbose: bool = fal
     prog: RegBytecodeProgram(
       functions: initTable[string, regvm.FunctionInfo](),
       cffiInfo: initTable[string, regvm.CFFIInfo](),
-      variableMap: initTable[string, Table[string, uint8]](),
       lifetimeData: initTable[string, pointer]()
     ),
     allocator: RegAllocator(
@@ -1452,9 +1448,6 @@ proc compileProgram*(p: ast.Program, optimizeLevel: int = 2, verbose: bool = fal
       heapData[] = lifetimeData
       compiler.prog.lifetimeData[fname] = cast[pointer](heapData)
       GC_ref(heapData)  # Keep a GC reference to prevent collection
-
-      # Save variable mappings for this function
-      compiler.prog.variableMap[fname] = compiler.allocator.regMap
 
       # Debug: dump lifetime info if verbose
       if verbose:

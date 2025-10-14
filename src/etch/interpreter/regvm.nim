@@ -152,7 +152,6 @@ type
     entryPoint*: int
     functions*: Table[string, FunctionInfo]  # Function table
     cffiInfo*: Table[string, CFFIInfo]  # C FFI function metadata
-    variableMap*: Table[string, Table[string, uint8]]  # Function -> Variable name -> Register mapping
     lifetimeData*: Table[string, pointer]  # Function -> Lifetime data (FunctionLifetimeData) for debugging/destructors
 
   # Reuse V type from main VM but with optimizations

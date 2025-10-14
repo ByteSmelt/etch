@@ -34,7 +34,7 @@ const
 # Bytecode serialization constants
 const
   BYTECODE_MAGIC* = "ETCH"
-  BYTECODE_VERSION* = 19  # Added debug info serialization for instructions
+  BYTECODE_VERSION* = 22  # Removed deprecated variableMap, lifetime data only
 
 # AST version for union type support
 const

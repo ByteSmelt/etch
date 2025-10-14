@@ -3,7 +3,6 @@
 
 import std/[json, sequtils, tables, os, hashes, algorithm, strutils]
 import regvm, regvm_exec, regvm_debugger, regvm_lifetime
-import ../common/values
 
 # Helper function to format a register value for display in debugger
 proc formatRegisterValue(val: V): string =
@@ -96,8 +95,7 @@ type
     # Store variable references for expandable variables
     variableRefs*: Table[int, string]  # variablesReference -> variable name
     nextVarRef*: int
-    # Variable tracking - simplified for now
-    localVars*: Table[string, uint8]  # Variable name -> register mapping
+    # Variable tracking
     currentFunctionName*: string  # Current function for lifetime data lookup
     lifetimeData*: ptr FunctionLifetimeData  # Current function's lifetime data
 
@@ -112,8 +110,7 @@ proc newRegDebugServer*(program: RegBytecodeProgram, sourceFile: string): RegDeb
     running: false,
     sourceFile: sourceFile,
     variableRefs: initTable[int, string](),
-    nextVarRef: 2,  # Start at 2, since 1 is reserved for local scope
-    localVars: initTable[string, uint8]()
+    nextVarRef: 2  # Start at 2, since 1 is reserved for local scope
   )
 
   # Set up debug event handler to communicate with VSCode
@@ -235,13 +232,8 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
     debugger.currentPC = server.vm.program.entryPoint  # Initialize to entry point
     debugger.pushStackFrame(startFunctionName, server.sourceFile, startLine, false)
 
-    # Get variable names from the program's variable map
+    # Load function metadata
     server.currentFunctionName = startFunctionName
-    if server.vm.program.variableMap.hasKey(startFunctionName):
-      server.localVars = server.vm.program.variableMap[startFunctionName]
-    else:
-      # Initialize empty if no variable map available
-      server.localVars = initTable[string, uint8]()
 
     # Load lifetime data for the starting function if available
     if server.vm.program.lifetimeData.hasKey(startFunctionName):
@@ -542,12 +534,6 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
       if topFrame.functionName != server.currentFunctionName:
         server.currentFunctionName = topFrame.functionName
 
-        # Update local variables for the new function
-        if server.vm.program.variableMap.hasKey(server.currentFunctionName):
-          server.localVars = server.vm.program.variableMap[server.currentFunctionName]
-        else:
-          server.localVars = initTable[string, uint8]()
-
         # Update lifetime data for the new function
         if server.vm.program.lifetimeData.hasKey(server.currentFunctionName):
           let rawPointer = server.vm.program.lifetimeData[server.currentFunctionName]
@@ -592,12 +578,6 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
       if topFrame.functionName != server.currentFunctionName:
         server.currentFunctionName = topFrame.functionName
 
-        # Update local variables for the new function
-        if server.vm.program.variableMap.hasKey(server.currentFunctionName):
-          server.localVars = server.vm.program.variableMap[server.currentFunctionName]
-        else:
-          server.localVars = initTable[string, uint8]()
-
         # Update lifetime data for the new function
         if server.vm.program.lifetimeData.hasKey(server.currentFunctionName):
           let rawPointer = server.vm.program.lifetimeData[server.currentFunctionName]
@@ -613,34 +593,18 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
       if server.vm.currentFrame != nil:
         let currentPC = server.vm.currentFrame.pc
 
-        # Build a list of variables to show
+        # Build a list of variables to show using lifetime data
         var varsToShow: seq[tuple[name: string, reg: uint8]] = @[]
 
-        # If we have lifetime data, use it to filter variables
+        # Use lifetime data to filter variables by scope
         if server.lifetimeData != nil and cast[int](server.lifetimeData) != 0:
-          try:
-            # Safely access the lifetime data
-            let lifetimeDataPtr = server.lifetimeData
-            if lifetimeDataPtr == nil:
-              raise newException(NilAccessDefect, "Lifetime data pointer is nil")
-
-            let lifetimeData = lifetimeDataPtr[]  # Dereference the pointer
-
-            for lifetime in lifetimeData.ranges:
-              # Check if variable is in scope and defined at this PC
-              if lifetime.startPC <= currentPC and
-                 (lifetime.endPC == -1 or lifetime.endPC >= currentPC) and
-                 lifetime.defPC != -1 and lifetime.defPC <= currentPC:
-                varsToShow.add((lifetime.varName, lifetime.register))
-          except Exception as e:
-            # If dereferencing fails, fall back to showing all variables
-            stderr.writeLine("Failed to access lifetime data: " & e.msg)
-            for varName, regIndex in server.localVars:
-              varsToShow.add((varName, regIndex))
-        else:
-          # Fallback to showing all variables if no lifetime data
-          for varName, regIndex in server.localVars:
-            varsToShow.add((varName, regIndex))
+          let lifetimeData = server.lifetimeData[]
+          for lifetime in lifetimeData.ranges:
+            # Check if variable is in scope and defined at this PC
+            if lifetime.startPC <= currentPC and
+               (lifetime.endPC == -1 or lifetime.endPC >= currentPC) and
+               lifetime.defPC != -1 and lifetime.defPC <= currentPC:
+              varsToShow.add((lifetime.varName, lifetime.register))
 
         # Sort variables alphabetically
         varsToShow.sort(proc(a, b: tuple[name: string, reg: uint8]): int = cmp(a.name, b.name))
@@ -692,15 +656,20 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
     elif reference == 3:
       # Registers (Debug) - show raw registers for VM debugging
       if server.vm.currentFrame != nil:
+        let currentPC = server.vm.currentFrame.pc
         for i in 0'u8..15'u8:  # Show first 16 registers
           let reg = server.vm.currentFrame.regs[i]
           if not reg.isNil():
             # Show which variable is using this register
             var varInfo = ""
-            for varName, regIdx in server.localVars:
-              if regIdx == i:
-                varInfo = " (" & varName & ")"
-                break
+            if server.lifetimeData != nil and cast[int](server.lifetimeData) != 0:
+              let lifetimeData = server.lifetimeData[]
+              for lifetime in lifetimeData.ranges:
+                if lifetime.register == i and
+                   lifetime.startPC <= currentPC and
+                   (lifetime.endPC == -1 or lifetime.endPC >= currentPC):
+                  varInfo = " (" & lifetime.varName & ")"
+                  break
             variables.add(%*{
               "name": "R" & $i & varInfo,
               "value": formatRegisterValue(reg),

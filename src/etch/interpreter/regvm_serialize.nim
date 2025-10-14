@@ -4,7 +4,7 @@
 
 import std/[tables, streams, strutils]
 import ../common/constants
-import regvm
+import regvm, regvm_lifetime
 
 type
   RegCompilerFlags* = object
@@ -312,6 +312,57 @@ proc serializeToBinary*(prog: RegBytecodeProgram, sourceHash: string = "",
     stream.write(retLen)
     stream.write(cffi.returnType)
 
+  # Lifetime data (for debugger) - contains full scope/lifetime information
+  var lifetimeCount = uint32(prog.lifetimeData.len)
+  stream.write(lifetimeCount)
+  for funcName, rawData in prog.lifetimeData:
+    let lifetimeData = cast[ptr FunctionLifetimeData](rawData)
+
+    # Write function name
+    var funcNameLen = uint32(funcName.len)
+    stream.write(funcNameLen)
+    stream.write(funcName)
+
+    # Write lifetime ranges
+    var rangeCount = uint32(lifetimeData.ranges.len)
+    stream.write(rangeCount)
+    for r in lifetimeData.ranges:
+      # Variable name
+      var varNameLen = uint32(r.varName.len)
+      stream.write(varNameLen)
+      stream.write(r.varName)
+      # Register and PCs
+      stream.write(r.register)
+      stream.write(int32(r.startPC))
+      stream.write(int32(r.endPC))
+      stream.write(int32(r.defPC))
+      stream.write(int32(r.lastUsePC))
+      stream.write(int32(r.scopeLevel))
+
+    # Write pcToVariables map
+    var pcMapCount = uint32(lifetimeData.pcToVariables.len)
+    stream.write(pcMapCount)
+    for pc, vars in lifetimeData.pcToVariables:
+      stream.write(int32(pc))
+      var varListCount = uint32(vars.len)
+      stream.write(varListCount)
+      for varName in vars:
+        var varNameLen = uint32(varName.len)
+        stream.write(varNameLen)
+        stream.write(varName)
+
+    # Write destructorPoints map
+    var destructorCount = uint32(lifetimeData.destructorPoints.len)
+    stream.write(destructorCount)
+    for pc, vars in lifetimeData.destructorPoints:
+      stream.write(int32(pc))
+      var varListCount = uint32(vars.len)
+      stream.write(varListCount)
+      for varName in vars:
+        var varNameLen = uint32(varName.len)
+        stream.write(varNameLen)
+        stream.write(varName)
+
   stream.setPosition(0)
   result = stream.readAll()
   stream.close()
@@ -412,6 +463,76 @@ proc deserializeFromBinary*(data: string): RegBytecodeProgram =
     cffi.returnType = stream.readStr(int(retLen))
 
     result.cffiInfo[name] = cffi
+
+  # Read lifetime data (for debugger)
+  let lifetimeCount = stream.readUint32()
+  result.lifetimeData = initTable[string, pointer]()
+  for _ in 0..<lifetimeCount:
+    # Read function name
+    let funcNameLen = stream.readUint32()
+    let funcName = stream.readStr(int(funcNameLen))
+
+    # Read lifetime ranges
+    let rangeCount = stream.readUint32()
+    var ranges: seq[LifetimeRange] = @[]
+    for _ in 0..<rangeCount:
+      # Variable name
+      let varNameLen = stream.readUint32()
+      let varName = stream.readStr(int(varNameLen))
+      # Register and PCs
+      let register = stream.readUint8()
+      let startPC = int(stream.readInt32())
+      let endPC = int(stream.readInt32())
+      let defPC = int(stream.readInt32())
+      let lastUsePC = int(stream.readInt32())
+      let scopeLevel = int(stream.readInt32())
+
+      ranges.add(LifetimeRange(
+        varName: varName,
+        register: register,
+        startPC: startPC,
+        endPC: endPC,
+        defPC: defPC,
+        lastUsePC: lastUsePC,
+        scopeLevel: scopeLevel
+      ))
+
+    # Read pcToVariables map
+    let pcMapCount = stream.readUint32()
+    var pcToVariables = initTable[int, seq[string]]()
+    for _ in 0..<pcMapCount:
+      let pc = int(stream.readInt32())
+      let varListCount = stream.readUint32()
+      var vars: seq[string] = @[]
+      for _ in 0..<varListCount:
+        let varNameLen = stream.readUint32()
+        let varName = stream.readStr(int(varNameLen))
+        vars.add(varName)
+      pcToVariables[pc] = vars
+
+    # Read destructorPoints map
+    let destructorCount = stream.readUint32()
+    var destructorPoints = initTable[int, seq[string]]()
+    for _ in 0..<destructorCount:
+      let pc = int(stream.readInt32())
+      let varListCount = stream.readUint32()
+      var vars: seq[string] = @[]
+      for _ in 0..<varListCount:
+        let varNameLen = stream.readUint32()
+        let varName = stream.readStr(int(varNameLen))
+        vars.add(varName)
+      destructorPoints[pc] = vars
+
+    # Create FunctionLifetimeData and store on heap
+    var heapData = new(FunctionLifetimeData)
+    heapData[] = FunctionLifetimeData(
+      functionName: funcName,
+      ranges: ranges,
+      pcToVariables: pcToVariables,
+      destructorPoints: destructorPoints
+    )
+    result.lifetimeData[funcName] = cast[pointer](heapData)
+    GC_ref(heapData)
 
   stream.close()
 

@@ -78,6 +78,16 @@ proc exitScope*(tracker: var LifetimeTracker, pc: int) =
         var lifetime = addr tracker.variableMap[varName][i]
         if lifetime.endPC == -1:  # Still open
           lifetime.endPC = pc
+
+          # Also update the corresponding entry in tracker.ranges
+          for j in countdown(tracker.ranges.high, 0):
+            if tracker.ranges[j].varName == varName and
+               tracker.ranges[j].register == lifetime.register and
+               tracker.ranges[j].startPC == lifetime.startPC and
+               tracker.ranges[j].endPC == -1:
+              tracker.ranges[j].endPC = pc
+              break
+
           # Add destructor point for this variable
           if not tracker.destructorPoints.hasKey(pc):
             tracker.destructorPoints[pc] = @[]
@@ -117,6 +127,15 @@ proc defineVariable*(tracker: var LifetimeTracker, name: string, pc: int) =
       var lifetime = addr tracker.variableMap[name][i]
       if lifetime.defPC == -1 and lifetime.startPC <= pc:
         lifetime.defPC = pc
+
+        # Also update the corresponding entry in tracker.ranges
+        for j in countdown(tracker.ranges.high, 0):
+          if tracker.ranges[j].varName == name and
+             tracker.ranges[j].register == lifetime.register and
+             tracker.ranges[j].startPC == lifetime.startPC and
+             tracker.ranges[j].defPC == -1:
+            tracker.ranges[j].defPC = pc
+            break
         break
 
 proc useVariable*(tracker: var LifetimeTracker, name: string, pc: int) =
@@ -126,6 +145,14 @@ proc useVariable*(tracker: var LifetimeTracker, name: string, pc: int) =
       var lifetime = addr tracker.variableMap[name][i]
       if lifetime.startPC <= pc and (lifetime.endPC == -1 or lifetime.endPC >= pc):
         lifetime.lastUsePC = pc
+
+        # Also update the corresponding entry in tracker.ranges
+        for j in countdown(tracker.ranges.high, 0):
+          if tracker.ranges[j].varName == name and
+             tracker.ranges[j].register == lifetime.register and
+             tracker.ranges[j].startPC == lifetime.startPC:
+            tracker.ranges[j].lastUsePC = pc
+            break
         break
 
 proc buildPCMap*(tracker: var LifetimeTracker) =
