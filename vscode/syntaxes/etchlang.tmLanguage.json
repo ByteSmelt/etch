@@ -30,7 +30,7 @@
     "functions": {
       "patterns": [
         {
-          "match": "\\b(print|inject|some|isSome|none|isNone|ok|isOk|error|isError|parseBool|parseInt|parseFloat|toString|seed|rand|readFile)\\b",
+          "match": "\\b(print|inject|some|isSome|none|isNone|ok|isOk|error|isError|arrayNew|parseBool|parseInt|parseFloat|toString|seed|rand|readFile)\\b",
           "name": "storage.type.etchlang"
         }
       ]
