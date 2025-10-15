@@ -14,8 +14,8 @@ type
     filename*: string
 
   TypeKind* = enum
-    tkInt, tkFloat, tkString, tkChar, tkBool, tkVoid, tkRef, tkGeneric, tkArray, tkOption, tkResult,
-    tkUserDefined, tkDistinct, tkObject, tkInferred, tkUnion
+    tkVoid, tkBool, tkChar, tkInt, tkFloat, tkString, tkArray, tkObject, tkUnion,
+    tkRef, tkGeneric, tkOption, tkResult, tkUserDefined, tkDistinct, tkInferred
 
   GlobalValue* = object
     kind*: TypeKind

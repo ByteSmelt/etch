@@ -236,14 +236,6 @@ proc simpleInferTypeFromUnary(expr: Expr; sc: Scope): EtchType =
 proc simpleInferTypeFromCall(expr: Expr; sc: Scope): EtchType =
   ## Function calls: handle builtin functions and imported functions
 
-  # Debug: check if we have scope and program (commented out - enable when debugging)
-  # if sc == nil:
-  #   echo "[DEBUG] simpleInferTypeFromCall: sc is nil for ", expr.fname
-  # elif sc.prog == nil:
-  #   echo "[DEBUG] simpleInferTypeFromCall: sc.prog is nil for ", expr.fname
-  # else:
-  #   echo "[DEBUG] simpleInferTypeFromCall: checking ", expr.fname, " with prog"
-
   # First check if it's a builtin with special inference rules
   if isBuiltin(expr.fname):
     let (_, returnType) = getBuiltinSignature(expr.fname)

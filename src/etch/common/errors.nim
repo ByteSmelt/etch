@@ -1,5 +1,9 @@
+# errors.nim
+# Centralized error handling and formatting for the Etch language implementation
+
 import strformat, strutils
 import types
+
 
 # Etch-specific exception types
 type
@@ -11,10 +15,13 @@ type
   ProverError* = object of EtchError
   RuntimeError* = object of EtchError
 
+
 # Global state for error formatting
 var currentFilename* = "<unknown>"
 var sourceLines*: seq[string] = @[]
 
+
+# Load source lines from a file for error context
 proc loadSourceLines*(filename: string) =
   currentFilename = filename
   try:
@@ -22,6 +29,8 @@ proc loadSourceLines*(filename: string) =
   except:
     sourceLines = @[]
 
+
+# Format an error message with position and context
 proc formatError*(pos: Pos, msg: string): string =
   let filename = if pos.filename.len > 0: pos.filename else: currentFilename
   result = &"{filename}:{pos.line}:{pos.col}: error: {msg}\n"
@@ -39,7 +48,7 @@ proc formatError*(pos: Pos, msg: string): string =
 
     # Show the caret pointing to the error column
     let prefixLen = 2 + len($pos.line) + 3 # "  " + line number + " | "
-    let caretPos = max(0, pos.col - 1)  # convert to 0-based for spacing calculation
+    let caretPos = max(0, pos.col - 1)     # convert to 0-based for spacing calculation
     let totalSpaces = prefixLen + caretPos
     let caret = " ".repeat(totalSpaces) & "^"
     result.add &"{caret}\n"
@@ -47,6 +56,7 @@ proc formatError*(pos: Pos, msg: string): string =
     # Show context: line after (if exists)
     if lineIdx + 1 < sourceLines.len:
       result.add &"  {pos.line + 1} | {sourceLines[lineIdx + 1]}\n"
+
 
 # Helper procs for creating formatted exceptions
 proc newParseError*(pos: Pos, msg: string): ref ParseError =
@@ -64,6 +74,7 @@ proc newProverError*(pos: Pos, msg: string): ref ProverError =
 proc newRuntimeError*(pos: Pos, msg: string): ref RuntimeError =
   result = newException(RuntimeError, formatError(pos, msg))
   result.pos = pos
+
 
 # For errors without position information
 proc newEtchError*(msg: string): ref EtchError =

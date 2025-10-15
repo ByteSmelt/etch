@@ -10,7 +10,6 @@ type
     bfPrint = 0, bfNew, bfDeref, bfRand, bfSeed, bfReadFile,
     bfParseInt, bfParseFloat, bfParseBool, bfToString,
     bfIsSome, bfIsNone, bfIsOk, bfIsErr
-    # Note: inject is excluded as it's a compiler directive, not a runtime function
 
 # Builtin function name to ID mapping for fast lookup
 const BUILTIN_NAMES*: array[BuiltinFuncId, string] = [
@@ -32,7 +31,6 @@ const BUILTIN_NAMES*: array[BuiltinFuncId, string] = [
 
 # Get builtin ID from function name (for bytecode generation)
 proc getBuiltinId*(funcName: string): BuiltinFuncId =
-  ## Get the builtin function ID for a function name, raises if not found
   for id, name in BUILTIN_NAMES:
     if name == funcName:
       return id
@@ -50,9 +48,8 @@ proc isBuiltin*(name: string): bool =
       return true
   return false
 
+## Get the parameter types and return type for a builtin function
 proc getBuiltinSignature*(fname: string): (seq[EtchType], EtchType) =
-  ## Get the parameter types and return type for a builtin function
-  ## Returns empty seq and tVoid if not found or if it has variable signatures
   case fname
   of "print":
     return (@[tInferred()], tVoid())
@@ -82,13 +79,12 @@ proc getBuiltinSignature*(fname: string): (seq[EtchType], EtchType) =
     return (@[], tVoid())
 
 # Perform basic type checking for builtin functions
-# This is simplified to avoid circular dependencies
 proc performBuiltinTypeCheck*(funcName: string, argTypes: seq[EtchType], pos: Pos): EtchType =
   case funcName
   of "print":
     if argTypes.len != 1:
       raise newTypecheckError(pos, "print expects 1 argument")
-    if argTypes[0].kind notin {tkBool, tkInt, tkFloat, tkString, tkChar}:
+    if argTypes[0].kind notin {tkBool, tkChar, tkInt, tkFloat, tkString, tkArray}:
       raise newTypecheckError(pos, "print supports bool/int/float/string/char")
     return tVoid()
 

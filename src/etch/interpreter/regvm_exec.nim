@@ -2,8 +2,8 @@
 # Execution engine for register-based VM with aggressive optimizations
 
 import std/[tables, math, strutils]
+import ../common/[constants, cffi, values, types, logging]
 import regvm, regvm_debugger
-import ../common/[cffi, values, types, logging]
 
 # C rand for consistency
 proc c_rand(): cint {.importc: "rand", header: "<stdlib.h>".}
@@ -1000,7 +1000,7 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
           let targetFile = if funcFirstInstr.debug.sourceFile.len > 0:
             funcFirstInstr.debug.sourceFile
           else:
-            "main"
+            MAIN_FUNCTION_NAME
           let targetLine = if funcFirstInstr.debug.line > 0:
             funcFirstInstr.debug.line
           else:
@@ -1008,8 +1008,8 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
 
           # Special case: calling main from <global> is a transition, not a nested call
           # Pop <global> and push main at the same depth
-          if funcName == "main" and debugger.stackFrames.len > 0 and
-             debugger.stackFrames[^1].functionName == "<global>":
+          if funcName == MAIN_FUNCTION_NAME and debugger.stackFrames.len > 0 and
+             debugger.stackFrames[^1].functionName == GLOBAL_INIT_FUNCTION_NAME:
             debugger.popStackFrame()  # Remove <global>
 
           debugger.pushStackFrame(funcName, targetFile, targetLine, false)
@@ -1041,7 +1041,7 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
       # Debugger hook - track builtin function call
       if vm.debugger != nil:
         let debugger = cast[RegEtchDebugger](vm.debugger)
-        let currentFile = if instr.debug.sourceFile.len > 0: instr.debug.sourceFile else: "main"
+        let currentFile = if instr.debug.sourceFile.len > 0: instr.debug.sourceFile else: MAIN_FUNCTION_NAME
         debugger.pushStackFrame(funcName, currentFile, instr.debug.line, true)  # isBuiltIn = true
 
       case funcName:

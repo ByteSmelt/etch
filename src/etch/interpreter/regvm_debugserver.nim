@@ -2,6 +2,7 @@
 # Debug server for register VM communicating with VSCode Debug Adapter Protocol
 
 import std/[json, sequtils, tables, os, hashes, algorithm, strutils]
+import ../common/[constants]
 import regvm, regvm_exec, regvm_debugger, regvm_lifetime
 
 # Helper function to format a register value for display in debugger
@@ -194,15 +195,15 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
     server.vm.currentFrame.pc = server.vm.program.entryPoint
 
     # Determine which function we're starting in (global init or main)
-    var startFunctionName = "main"
+    var startFunctionName = MAIN_FUNCTION_NAME
     var startLine = 2  # Default to line 2 for main function body
 
     # Check if entry point is in <global> function (global initialization)
-    if server.vm.program.functions.hasKey("<global>"):
-      let globalInfo = server.vm.program.functions["<global>"]
+    if server.vm.program.functions.hasKey(GLOBAL_INIT_FUNCTION_NAME):
+      let globalInfo = server.vm.program.functions[GLOBAL_INIT_FUNCTION_NAME]
       if server.vm.program.entryPoint >= globalInfo.startPos and
          server.vm.program.entryPoint <= globalInfo.endPos:
-        startFunctionName = "<global>"
+        startFunctionName = GLOBAL_INIT_FUNCTION_NAME
         # Use debug info from first instruction in global init
         if server.vm.program.instructions.len > server.vm.program.entryPoint:
           let firstInstr = server.vm.program.instructions[server.vm.program.entryPoint]
@@ -277,7 +278,7 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
       "success": true,
       "body": {
         "threads": [
-          %*{"id": 1, "name": "main"}
+          %*{"id": 1, "name": MAIN_FUNCTION_NAME}
         ]
       }
     }
@@ -510,7 +511,7 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
       # If we're paused but have no stack frames, we're at entry or main
       stackFrames.add(%*{
         "id": 0,
-        "name": "main",
+        "name": MAIN_FUNCTION_NAME,
         "source": {
           "path": currentFile,
           "name": currentFile.splitFile().name & currentFile.splitFile().ext

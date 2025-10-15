@@ -1,10 +1,10 @@
 # regvm_serialize.nim
 # Register VM bytecode serialization and deserialization
-# Implements best practices from serialize.nim
 
 import std/[tables, streams, strutils]
 import ../common/constants
 import regvm, regvm_lifetime
+
 
 type
   RegCompilerFlags* = object
@@ -41,14 +41,16 @@ type
     # CFFI metadata
     cffiInfo*: Table[string, CFFIInfo]
 
+
 # Forward declarations for internal helpers
 proc serializeV(stream: Stream, val: V)
 proc deserializeV(stream: Stream): V
 proc serializeRegInstruction(stream: Stream, instr: RegInstruction)
 proc deserializeRegInstruction(stream: Stream): RegInstruction
 
+
+# Serialize a V value with full type preservation
 proc serializeV(stream: Stream, val: V) =
-  ## Serialize a V value with full type preservation
   stream.write(val.data)
   let tag = getTag(val)
 
@@ -97,8 +99,9 @@ proc serializeV(stream: Stream, val: V) =
   else:
     discard  # Other types are stored entirely in data field
 
+
+# Deserialize a V value with full type restoration
 proc deserializeV(stream: Stream): V =
-  ## Deserialize a V value with full type restoration
   result.data = stream.readUint64()
   let tag = getTag(result)
 
@@ -150,8 +153,9 @@ proc deserializeV(stream: Stream): V =
   else:
     discard  # Other types are stored entirely in data field
 
+
+# Serialize a register VM instruction
 proc serializeRegInstruction(stream: Stream, instr: RegInstruction) =
-  ## Serialize a register VM instruction
   stream.write(uint8(instr.op))
   stream.write(instr.a)
   stream.write(instr.opType)
@@ -175,8 +179,9 @@ proc serializeRegInstruction(stream: Stream, instr: RegInstruction) =
   if sourceFileLen > 0:
     stream.write(instr.debug.sourceFile)
 
+
+# Deserialize a register VM instruction
 proc deserializeRegInstruction(stream: Stream): RegInstruction =
-  ## Deserialize a register VM instruction
   let op = RegOpCode(stream.readUint8())
   let a = stream.readUint8()
   let opType = stream.readUint8()
@@ -207,10 +212,11 @@ proc deserializeRegInstruction(stream: Stream): RegInstruction =
   result.debug.line = int(line)
   result.debug.sourceFile = sourceFile
 
+
+# Serialize register VM bytecode to binary format
 proc serializeToBinary*(prog: RegBytecodeProgram, sourceHash: string = "",
-                       compilerVersion: string = "", sourceFile: string = "",
-                       flags: RegCompilerFlags = RegCompilerFlags()): string =
-  ## Serialize register VM bytecode to binary format
+                        compilerVersion: string = "", sourceFile: string = "",
+                        flags: RegCompilerFlags = RegCompilerFlags()): string =
   var stream = newStringStream()
 
   # Magic header: "ETCH" + VM type byte + version
@@ -367,8 +373,9 @@ proc serializeToBinary*(prog: RegBytecodeProgram, sourceHash: string = "",
   result = stream.readAll()
   stream.close()
 
+
+# Deserialize register VM bytecode from binary format
 proc deserializeFromBinary*(data: string): RegBytecodeProgram =
-  ## Deserialize register VM bytecode from binary format
   var stream = newStringStream(data)
 
   # Check magic header
@@ -379,10 +386,7 @@ proc deserializeFromBinary*(data: string): RegBytecodeProgram =
   # Check VM type
   let vmTypeValue = stream.readUint8()
   if vmTypeValue != uint8(vmRegister):
-    if vmTypeValue == uint8(vmStack):
-      raise newException(ValueError, "Cannot load stack VM bytecode in register VM - this file was compiled for the stack-based VM")
-    else:
-      raise newException(ValueError, "Unknown VM type: " & $vmTypeValue & " (expected " & $uint8(vmRegister) & " for register VM)")
+    raise newException(ValueError, "Unknown VM type: " & $vmTypeValue & " (expected " & $uint8(vmRegister) & " for register VM)")
 
   let version = stream.readUint32()
   if version != uint32(BYTECODE_VERSION):
@@ -536,17 +540,20 @@ proc deserializeFromBinary*(data: string): RegBytecodeProgram =
 
   stream.close()
 
+
+# Save register VM bytecode to file
 proc saveRegBytecode*(prog: RegBytecodeProgram, filename: string,
                      sourceHash: string = "", compilerVersion: string = "",
                      sourceFile: string = "", flags: RegCompilerFlags = RegCompilerFlags()) =
-  ## Save register VM bytecode to file
   let binaryData = prog.serializeToBinary(sourceHash, compilerVersion, sourceFile, flags)
   writeFile(filename, binaryData)
 
+
+# Load register VM bytecode from file
 proc loadRegBytecode*(filename: string): RegBytecodeProgram =
-  ## Load register VM bytecode from file
   let binaryData = readFile(filename)
   deserializeFromBinary(binaryData)
+
 
 # Debug string representation for opcodes
 proc `$`*(op: RegOpCode): string =

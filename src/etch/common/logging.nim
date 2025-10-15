@@ -4,34 +4,19 @@
 import types
 import constants
 
-proc verboseLog*(flags: CompilerFlags, module: string, msg: string) =
-  if flags.verbose:
+
+# Verbose logging function
+proc verboseLog*(verbose: bool, module: string, msg: string) =
+  if verbose:
     echo "[", module, "] ", msg
+
 
 # Convenience templates for each module
 template logCompiler*(flags: CompilerFlags, msg: string) =
-  verboseLog(flags, MODULE_COMPILER, msg)
-
-template logBytecode*(flags: CompilerFlags, msg: string) =
-  verboseLog(flags, MODULE_BYTECODE, msg)
+  verboseLog(flags.verbose, MODULE_COMPILER, msg)
 
 template logProver*(flags: CompilerFlags, msg: string) =
-  verboseLog(flags, MODULE_PROVER, msg)
+  verboseLog(flags.verbose, MODULE_PROVER, msg)
 
 template logVM*(flags: CompilerFlags, msg: string) =
-  verboseLog(flags, MODULE_VM, msg)
-
-template logTypechecker*(flags: CompilerFlags, msg: string) =
-  verboseLog(flags, MODULE_TYPECHECKER, msg)
-
-template logParser*(flags: CompilerFlags, msg: string) =
-  verboseLog(flags, MODULE_PARSER, msg)
-
-template logLexer*(flags: CompilerFlags, msg: string) =
-  verboseLog(flags, MODULE_LEXER, msg)
-
-template logAST*(flags: CompilerFlags, msg: string) =
-  verboseLog(flags, MODULE_AST, msg)
-
-template logDebug*(flags: CompilerFlags, msg: string) =
-  verboseLog(flags, MODULE_DEBUG, msg)
+  verboseLog(flags.verbose, MODULE_VM, msg)

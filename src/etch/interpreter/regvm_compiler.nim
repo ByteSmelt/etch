@@ -2,8 +2,8 @@
 # Register-based bytecode compiler with aggressive optimizations
 
 import std/[tables, options, strutils]
+import ../common/[constants, types]
 import ../frontend/ast
-import ../common/types
 import regvm
 import regvm_lifetime
 
@@ -25,6 +25,7 @@ type
     continueLabel*: int
     breakJumps*: seq[int]     # Positions of break jumps to patch
     loopVar*: uint8           # Register holding loop variable
+
 
 # Helper to add constants
 proc addConst*(c: var RegCompiler, val: regvm.V): uint16 =
@@ -1487,7 +1488,7 @@ proc compileProgram*(p: ast.Program, optimizeLevel: int = 2, verbose: bool = fal
     let isCFFI = compiler.prog.cffiInfo.hasKey(fname)
     if verbose:
       echo "[REGCOMPILER] Processing function: ", fname, " isBuiltin=", isBuiltin, " isCFFI=", isCFFI, " body.len=", funcDecl.body.len
-    if fname != "main" and not isBuiltin and not isCFFI:  # Skip builtin and C FFI functions
+    if fname != MAIN_FUNCTION_NAME and not isBuiltin and not isCFFI:  # Skip builtin and C FFI functions
       let startPos = compiler.prog.instructions.len
 
       if verbose:
@@ -1584,7 +1585,7 @@ proc compileProgram*(p: ast.Program, optimizeLevel: int = 2, verbose: bool = fal
 
     # After global initialization, call main
     let mainNameReg = compiler.allocator.allocReg()
-    let mainNameIdx = compiler.addStringConst("main")
+    let mainNameIdx = compiler.addStringConst(MAIN_FUNCTION_NAME)
     compiler.prog.emitABx(ropLoadK, mainNameReg, mainNameIdx)
     compiler.prog.emitABC(ropCall, mainNameReg, 0, 0)  # No args, no results expected from main
     compiler.prog.emitABC(ropReturn, 0, 0, 0)  # Return after main completes
@@ -1592,12 +1593,12 @@ proc compileProgram*(p: ast.Program, optimizeLevel: int = 2, verbose: bool = fal
     # Set entry point to global initialization
     compiler.prog.entryPoint = globalInitStart
     if verbose:
-      echo "[REGCOMPILER] Entry point set to PC ", globalInitStart, " (<global> function)"
+      echo "[REGCOMPILER] Entry point set to PC ", globalInitStart, " (", GLOBAL_INIT_FUNCTION_NAME, " function)"
 
     # Register the global initialization code as a special function for debugging
     let globalInitEnd = compiler.prog.instructions.len - 1
-    compiler.prog.functions["<global>"] = regvm.FunctionInfo(
-      name: "<global>",
+    compiler.prog.functions[GLOBAL_INIT_FUNCTION_NAME] = regvm.FunctionInfo(
+      name: GLOBAL_INIT_FUNCTION_NAME,
       startPos: globalInitStart,
       endPos: globalInitEnd,
       numParams: 0,
@@ -1605,14 +1606,14 @@ proc compileProgram*(p: ast.Program, optimizeLevel: int = 2, verbose: bool = fal
     )
 
     if verbose:
-      echo "[REGCOMPILER] Registered <global> initialization function at PC ", globalInitStart, "..", globalInitEnd
+      echo "[REGCOMPILER] Registered ", GLOBAL_INIT_FUNCTION_NAME, " initialization function at PC ", globalInitStart, "..", globalInitEnd
   else:
     # Set entry point to main (will be compiled next)
     compiler.prog.entryPoint = compiler.prog.instructions.len
 
   # Find and compile main function last
-  if p.funInstances.hasKey("main"):
-    let mainFunc = p.funInstances["main"]
+  if p.funInstances.hasKey(MAIN_FUNCTION_NAME):
+    let mainFunc = p.funInstances[MAIN_FUNCTION_NAME]
 
     # Reset allocator for main
     compiler.allocator = RegAllocator(
@@ -1622,13 +1623,12 @@ proc compileProgram*(p: ast.Program, optimizeLevel: int = 2, verbose: bool = fal
     )
 
     let mainStartPos = compiler.prog.instructions.len
-    compiler.compileFunDecl("main", mainFunc.params,
-                            mainFunc.ret, mainFunc.body)
+    compiler.compileFunDecl(MAIN_FUNCTION_NAME, mainFunc.params, mainFunc.ret, mainFunc.body)
     let mainEndPos = compiler.prog.instructions.len
 
     # Store main function info
-    compiler.prog.functions["main"] = regvm.FunctionInfo(
-      name: "main",
+    compiler.prog.functions[MAIN_FUNCTION_NAME] = regvm.FunctionInfo(
+      name: MAIN_FUNCTION_NAME,
       startPos: mainStartPos,
       endPos: mainEndPos,
       numParams: mainFunc.params.len,
