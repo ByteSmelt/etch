@@ -140,6 +140,7 @@ proc analyzeBinaryExpr*(e: Expr, env: Env, ctx: ProverContext): Info =
   of boMod: return analyzeBinaryModulo(e, a, b, ctx)
   of boEq,boNe,boLt,boLe,boGt,boGe: return analyzeBinaryComparison(e, a, b)
   of boAnd,boOr: return analyzeBinaryLogical(e, a, b)
+  of boIn,boNotIn: return analyzeBinaryComparison(e, a, b)  # Membership operators return bool like comparisons
 
 
 proc analyzePrintCall*(e: Expr, env: Env, ctx: ProverContext): Info =

@@ -587,6 +587,8 @@ proc `$`*(op: RegOpCode): string =
   of ropNot: "NOT"
   of ropAnd: "AND"
   of ropOr: "OR"
+  of ropIn: "IN"
+  of ropNotIn: "NOTIN"
   of ropCast: "CAST"
   of ropWrapSome: "WRAPSOME"
   of ropLoadNone: "LOADNONE"

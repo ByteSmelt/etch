@@ -783,6 +783,8 @@ proc compileBinOp(c: var RegCompiler, op: BinOp, dest, left, right: uint8, debug
   of boGe: c.prog.emitABC(ropLeStore, dest, right, left, debug)  # Swap operands
   of boAnd: c.prog.emitABC(ropAnd, dest, left, right, debug)
   of boOr: c.prog.emitABC(ropOr, dest, left, right, debug)
+  of boIn: c.prog.emitABC(ropIn, dest, left, right, debug)
+  of boNotIn: c.prog.emitABC(ropNotIn, dest, left, right, debug)
 
 proc compileCall(c: var RegCompiler, e: Expr): uint8 =
   ## Compile function call

@@ -330,6 +330,19 @@ proc simpleInferTypeFromBinary(expr: Expr; sc: Scope): EtchType =
       return tBool()
     else:
       return nil
+  of boIn, boNotIn:
+    # Membership operations: element in array/string = bool
+    if rightType.kind == tkArray:
+      # Check if left type matches array element type
+      if typeEq(leftType, rightType.inner):
+        return tBool()
+      else:
+        return nil
+    elif rightType.kind == tkString and leftType.kind == tkString:
+      # String in string (substring check)
+      return tBool()
+    else:
+      return nil
 
 proc simpleInferTypeFromNew(expr: Expr; sc: Scope): EtchType =
   ## new[Type] or new(value) returns ref[Type]

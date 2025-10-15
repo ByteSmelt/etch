@@ -5,8 +5,8 @@ fn main() {
     let neg_float = -3.14;     // float
 
     // Logical not
-    let not_true = !true;      // bool
-    let not_false = !false;    // bool
+    let not_true = not true;      // bool
+    let not_false = not false;    // bool
 
     print(neg_int);
     print(neg_float);

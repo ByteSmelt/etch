@@ -605,6 +605,51 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
       else:
         setReg(vm, instr.a, c)
 
+    # --- Membership operators ---
+    of ropIn:
+      let needle = getReg(vm, instr.b)
+      let haystack = getReg(vm, instr.c)
+      var found = false
+
+      if isArray(haystack):
+        # Check if needle is in array
+        for i in 0..<haystack.aval.len:
+          if doEq(needle, haystack.aval[i]):
+            found = true
+            break
+      elif isString(haystack):
+        # Check if needle (substring) is in string
+        if isString(needle):
+          found = needle.sval in haystack.sval
+        else:
+          found = false
+      else:
+        found = false
+
+      setReg(vm, instr.a, makeBool(found))
+
+    of ropNotIn:
+      let needle = getReg(vm, instr.b)
+      let haystack = getReg(vm, instr.c)
+      var found = false
+
+      if isArray(haystack):
+        # Check if needle is in array
+        for i in 0..<haystack.aval.len:
+          if doEq(needle, haystack.aval[i]):
+            found = true
+            break
+      elif isString(haystack):
+        # Check if needle (substring) is in string
+        if isString(needle):
+          found = needle.sval in haystack.sval
+        else:
+          found = false
+      else:
+        found = false
+
+      setReg(vm, instr.a, makeBool(not found))
+
     # --- Type conversions ---
     of ropCast:
       let val = getReg(vm, instr.b)

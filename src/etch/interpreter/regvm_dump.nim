@@ -61,6 +61,10 @@ proc formatInstruction*(instr: RegInstruction): string =
       result = &"R[{instr.a}] = R[{instr.b}] and R[{instr.c}]"
     of ropOr:
       result = &"R[{instr.a}] = R[{instr.b}] or R[{instr.c}]"
+    of ropIn:
+      result = &"R[{instr.a}] = R[{instr.b}] in R[{instr.c}]"
+    of ropNotIn:
+      result = &"R[{instr.a}] = R[{instr.b}] not in R[{instr.c}]"
     of ropGetIndex:
       result = &"R[{instr.a}] = R[{instr.b}][R[{instr.c}]]"
     of ropSetIndex:
@@ -376,7 +380,7 @@ proc dumpRegisterUsage*(prog: RegBytecodeProgram) =
         maxRegister = max(maxRegister, srcB)
 
         if instr.op in {ropAdd, ropSub, ropMul, ropDiv, ropMod, ropPow,
-                        ropEq, ropLt, ropLe, ropAnd, ropOr,
+                        ropEq, ropLt, ropLe, ropAnd, ropOr, ropIn, ropNotIn,
                         ropGetIndex, ropSetIndex}:
           if not registerReads.hasKey(srcC):
             registerReads[srcC] = 0

@@ -29,7 +29,7 @@ type
   BinOp* = enum
     boAdd, boSub, boMul, boDiv, boMod,
     boEq, boNe, boLt, boLe, boGt, boGe,
-    boAnd, boOr
+    boAnd, boOr, boIn, boNotIn
 
   UnOp* = enum uoNot, uoNeg
 
@@ -259,32 +259,6 @@ proc `$`*(t: EtchType): string =
       types.add($ut)
     types.join(" | ")
 
-proc isCompatibleWith*(actual: EtchType, expected: EtchType): bool =
-  if expected.kind == tkGeneric and expected.name == "Any":
-    return true
-
-  if expected.kind == tkUnion:
-    for ut in expected.unionTypes:
-      if actual.isCompatibleWith(ut):
-        return true
-    return false
-
-  if actual.kind == tkUnion:
-    for ut in actual.unionTypes:
-      if not ut.isCompatibleWith(expected):
-        return false
-    return true
-
-  if actual.kind == expected.kind:
-    case actual.kind
-    of tkRef, tkArray, tkOption:
-      return actual.inner.isCompatibleWith(expected.inner)
-    of tkResult:
-      return actual.inner.isCompatibleWith(expected.inner)
-    else:
-      return true
-  return false
-
 
 proc `$`*(t: ExprKind): string =
   case t
@@ -331,6 +305,8 @@ proc `$`*(bop: BinOp): string =
   of boGe: ">="
   of boAnd: "and"
   of boOr: "or"
+  of boIn: "in"
+  of boNotIn: "not in"
 
 
 proc copyType*(t: EtchType): EtchType =
@@ -355,6 +331,33 @@ proc copyType*(t: EtchType): EtchType =
     for ut in t.unionTypes:
       copiedTypes.add(copyType(ut))
     tUnion(copiedTypes)
+
+
+proc isCompatibleWith*(actual: EtchType, expected: EtchType): bool =
+  if expected.kind == tkGeneric and expected.name == "Any":
+    return true
+
+  if expected.kind == tkUnion:
+    for ut in expected.unionTypes:
+      if actual.isCompatibleWith(ut):
+        return true
+    return false
+
+  if actual.kind == tkUnion:
+    for ut in actual.unionTypes:
+      if not ut.isCompatibleWith(expected):
+        return false
+    return true
+
+  if actual.kind == expected.kind:
+    case actual.kind
+    of tkRef, tkArray, tkOption:
+      return actual.inner.isCompatibleWith(expected.inner)
+    of tkResult:
+      return actual.inner.isCompatibleWith(expected.inner)
+    else:
+      return true
+  return false
 
 
 proc addFunction*(prog: Program, funDecl: FunDecl) =
@@ -512,7 +515,7 @@ proc demangleFunctionSignature*(mangledName: string): string =
     types
 
   let params = decodeAllTypes(paramTypes)
-  let retTypeStr = if returnType == "v": "void" else: decodeAllTypes(returnType)[0]
+  let retTypeStr = decodeAllTypes(returnType)[0]
 
   if params.len == 0:
     return funcName & "() -> " & retTypeStr

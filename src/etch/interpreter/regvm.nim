@@ -44,6 +44,10 @@ type
     ropAnd,           # R[A] = R[B] and R[C]
     ropOr,            # R[A] = R[B] or R[C]
 
+    # Membership
+    ropIn,            # R[A] = R[B] in R[C] (check if element is in array/string)
+    ropNotIn,         # R[A] = R[B] not in R[C]
+
     # Type conversions
     ropCast,          # R[A] = cast(R[B], type=C)
 

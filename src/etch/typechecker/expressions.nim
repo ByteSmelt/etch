@@ -535,9 +535,9 @@ proc inferBinOp(prog: Program; fd: FunDecl; sc: Scope; e: Expr; subst: var TySub
   let lt = inferExprTypes(prog, fd, sc, e.lhs, subst)
   let rt = inferExprTypes(prog, fd, sc, e.rhs, subst)
 
-  # Try user-defined operator overload first (except for logical operators)
+  # Try user-defined operator overload first (except for logical operators and in/not in)
   # Skip operator overloading if we're currently inside an operator function to avoid infinite recursion
-  if e.bop notin {boAnd, boOr} and (fd == nil or not isOperatorFunction(fd.name)):
+  if e.bop notin {boAnd, boOr, boIn, boNotIn} and (fd == nil or not isOperatorFunction(fd.name)):
     let opName = $e.bop
     # Check if a user-defined operator exists for these argument types
     for fname, fdecls in prog.funs:
@@ -615,6 +615,22 @@ proc inferBinOp(prog: Program; fd: FunDecl; sc: Scope; e: Expr; subst: var TySub
   of boAnd, boOr:
     if lt.kind != tkBool or rt.kind != tkBool: raise newTypecheckError(e.pos, "and/or expects bool")
     e.typ = tBool(); return e.typ
+  of boIn, boNotIn:
+    # Check if left type can be contained in right type
+    # For arrays: check if element type matches array element type
+    # For strings: check if left is a string (substring check)
+    if rt.kind == tkArray:
+      # Check if left type matches array element type
+      if not typeEq(lt, rt.inner):
+        raise newTypecheckError(e.pos, &"'in' operator: cannot check if '{lt}' is in array[{rt.inner}] - types must match")
+      e.typ = tBool(); return e.typ
+    elif rt.kind == tkString:
+      # For strings, allow string in string (substring check)
+      if lt.kind != tkString:
+        raise newTypecheckError(e.pos, &"'in' operator: cannot check if '{lt}' is in string - left operand must be string")
+      e.typ = tBool(); return e.typ
+    else:
+      raise newTypecheckError(e.pos, &"'in' operator requires array or string on right side, got {rt}")
 
 
 proc inferExprTypes*(prog: Program; fd: FunDecl; sc: Scope; e: Expr; subst: var TySubst; expectedTy: EtchType = nil): EtchType =

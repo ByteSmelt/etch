@@ -15,7 +15,7 @@ type
 const keywords = [
   "fn","let","var","return","if","elif","else","while","for","break","in",
   "true","false","int","float","string","char","bool","void","ref",
-  "comptime","new","and","or","array","nil","option","match",
+  "comptime","new","and","or","not","array","nil","option","match",
   "some","none","ok","error","type","distinct","object","import","export","discard"
 ].toSeq
 
@@ -80,7 +80,7 @@ proc lex*(src: string): seq[Token] =
       continue
 
     # single symbol
-    if src[i] in "+-*/%(){}<>=;:,[]@!#.":
+    if src[i] in "+-*/%(){}<>=;:,[]@#.":
       result.add Token(kind: tkSymbol, lex: $src[i], line: line, col: col)
       inc i; inc col
       continue
@@ -106,6 +106,7 @@ proc lex*(src: string): seq[Token] =
 
     # string literal
     if src[i] == '"':
+      let tokenCol = col  # Save column before advancing
       inc i; inc col # skip opening quote
       m = i
       var content = ""
@@ -125,15 +126,16 @@ proc lex*(src: string): seq[Token] =
           content.add src[m]
           inc m
       if m >= src.len:
-        let pos = Pos(line: line, col: col, filename: "")
+        let pos = Pos(line: line, col: tokenCol, filename: "")
         raise newParseError(pos, "Unterminated string literal")
       inc m # skip closing quote
-      result.add Token(kind: tkString, lex: content, line: line, col: col)
-      col += m-i+1; i = m
+      result.add Token(kind: tkString, lex: content, line: line, col: tokenCol)
+      col += m-i; i = m
       continue
 
     # character literal
     if src[i] == '\'':
+      let tokenCol = col  # Save column before advancing
       inc i; inc col # skip opening quote
       m = i
       var content = ""
@@ -153,17 +155,17 @@ proc lex*(src: string): seq[Token] =
           content.add src[m]
           inc m
       if m >= src.len:
-        let pos = Pos(line: line, col: col, filename: "")
+        let pos = Pos(line: line, col: tokenCol, filename: "")
         raise newParseError(pos, "Unterminated character literal")
       if src[m] != '\'':
-        let pos = Pos(line: line, col: col, filename: "")
+        let pos = Pos(line: line, col: tokenCol, filename: "")
         raise newParseError(pos, "Expected closing quote for character literal")
       if content.len != 1:
-        let pos = Pos(line: line, col: col, filename: "")
+        let pos = Pos(line: line, col: tokenCol, filename: "")
         raise newParseError(pos, "Character literal must contain exactly one character")
       inc m # skip closing quote
-      result.add Token(kind: tkChar, lex: content, line: line, col: col)
-      col += m-i+1; i = m
+      result.add Token(kind: tkChar, lex: content, line: line, col: tokenCol)
+      col += m-i; i = m
       continue
 
     # identifier / keyword
