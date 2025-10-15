@@ -41,6 +41,7 @@ proc expect(p: Parser, kind: TokKind, lex: string = ""): Token =
 proc parseExpr*(p: Parser; rbp=0): Expr
 proc parseStmt*(p: Parser): Stmt
 proc parseMatchExpr(p: Parser; t: Token): Expr
+proc parseIfExpr(p: Parser; t: Token): Expr
 proc parsePattern(p: Parser): Pattern
 proc parseBlock(p: Parser): seq[Stmt]
 
@@ -199,6 +200,8 @@ proc parseBuiltinKeywordExpr(p: Parser; t: Token): Expr =
     return Expr(kind: ekResultErr, errExpr: e, pos: p.posOf(t))
   of "match":
     return p.parseMatchExpr(t)
+  of "if":
+    return p.parseIfExpr(t)
   else:
     # Allow keyword names as identifiers for simplicity except reserved control words
     return Expr(kind: ekVar, vname: t.lex, pos: p.posOf(t))
@@ -232,6 +235,67 @@ proc parseMatchExpr(p: Parser; t: Token): Expr =
 
   discard p.expect(tkSymbol, "}")
   return Expr(kind: ekMatch, matchExpr: matchExpr, cases: cases, pos: p.posOf(t))
+
+proc parseIfExpr(p: Parser; t: Token): Expr =
+  ## Parses if expressions: if cond { body } else { body }
+  ## Supports both single expression and statement blocks
+  let cond = p.parseExpr()
+
+  # Parse then branch: either { block } or single expression (for match-like syntax)
+  discard p.expect(tkSymbol, "{")
+  var thenBody: seq[Stmt] = @[]
+  # Check if this is a single expression without semicolon
+  let isSimpleExpr = not (p.peek(1).kind == tkSymbol and p.peek(1).lex == ";")
+  if isSimpleExpr:
+    # Single expression - wrap in statement
+    let expr = p.parseExpr()
+    thenBody.add(Stmt(kind: skExpr, sexpr: expr, pos: expr.pos))
+  else:
+    # Statement block
+    while not (p.cur.kind == tkSymbol and p.cur.lex == "}"):
+      thenBody.add(p.parseStmt())
+  discard p.expect(tkSymbol, "}")
+
+  # Parse elif/else-if chain
+  var elifChain: seq[tuple[cond: Expr, body: seq[Stmt]]] = @[]
+  while p.cur.kind == tkKeyword and (p.cur.lex == "elif" or (p.cur.lex == "else" and p.peek(1).kind == tkKeyword and p.peek(1).lex == "if")):
+    # Handle both "elif" and "else if"
+    if p.cur.lex == "elif":
+      discard p.eat()  # consume "elif"
+    else:
+      discard p.eat()  # consume "else"
+      discard p.eat()  # consume "if"
+
+    let elifCond = p.parseExpr()
+    discard p.expect(tkSymbol, "{")
+    var elifBody: seq[Stmt] = @[]
+    let isSimpleElifExpr = not (p.peek(1).kind == tkSymbol and p.peek(1).lex == ";")
+    if isSimpleElifExpr:
+      let expr = p.parseExpr()
+      elifBody.add(Stmt(kind: skExpr, sexpr: expr, pos: expr.pos))
+    else:
+      while not (p.cur.kind == tkSymbol and p.cur.lex == "}"):
+        elifBody.add(p.parseStmt())
+    discard p.expect(tkSymbol, "}")
+    elifChain.add((cond: elifCond, body: elifBody))
+
+  # Parse else (required for if-expressions)
+  if not (p.cur.kind == tkKeyword and p.cur.lex == "else"):
+    raise newParseError(p.posOf(t), "if expression requires an 'else' branch")
+
+  discard p.eat()  # consume "else"
+  discard p.expect(tkSymbol, "{")
+  var elseBody: seq[Stmt] = @[]
+  let isSimpleElseExpr = not (p.peek(1).kind == tkSymbol and p.peek(1).lex == ";")
+  if isSimpleElseExpr:
+    let expr = p.parseExpr()
+    elseBody.add(Stmt(kind: skExpr, sexpr: expr, pos: expr.pos))
+  else:
+    while not (p.cur.kind == tkSymbol and p.cur.lex == "}"):
+      elseBody.add(p.parseStmt())
+  discard p.expect(tkSymbol, "}")
+
+  return Expr(kind: ekIf, ifCond: cond, ifThen: thenBody, ifElifChain: elifChain, ifElse: elseBody, pos: p.posOf(t))
 
 proc parsePattern(p: Parser): Pattern =
   ## Parses match patterns: some(x), none, ok(x), error(x), _, or type patterns for unions

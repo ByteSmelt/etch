@@ -691,6 +691,82 @@ proc compileExpr*(c: var RegCompiler, e: Expr): uint8 =
     if c.verbose:
       echo "[REGCOMPILER] Get field '", e.fieldName, "' (const[", fieldConstIdx, "]) from reg ", objReg, " to reg ", result
 
+  of ekIf:
+    # Handle if-expressions
+    if c.verbose:
+      echo "[REGCOMPILER] Compiling ekIf expression"
+
+    result = c.allocator.allocReg()
+    var jumpToEndPositions: seq[int] = @[]
+
+    # Compile condition
+    let condReg = c.compileExpr(e.ifCond)
+
+    # Test condition and jump if false
+    c.prog.emitABC(ropTest, condReg, 0, 0, c.makeDebugInfo(e.pos))
+    c.allocator.freeReg(condReg)
+
+    let skipThenJmp = c.prog.instructions.len
+    c.prog.emitAsBx(ropJmp, 0, 0, c.makeDebugInfo(e.pos))
+
+    # Compile then branch - result goes to result register
+    for i, stmt in e.ifThen:
+      if i == e.ifThen.len - 1 and stmt.kind == skExpr:
+        # Last statement is an expression - compile it to result register
+        let thenReg = c.compileExpr(stmt.sexpr)
+        if thenReg != result:
+          c.prog.emitABC(ropMove, result, thenReg, 0)
+          c.allocator.freeReg(thenReg)
+      else:
+        c.compileStmt(stmt)
+
+    # Jump to end after then
+    jumpToEndPositions.add(c.prog.instructions.len)
+    c.prog.emitAsBx(ropJmp, 0, 0)
+
+    # Patch skip-then jump
+    let afterThen = c.prog.instructions.len
+    c.prog.instructions[skipThenJmp].sbx = int16(afterThen - skipThenJmp - 1)
+
+    # Compile elif chain
+    for elifCase in e.ifElifChain:
+      let elifCondReg = c.compileExpr(elifCase.cond)
+      c.prog.emitABC(ropTest, elifCondReg, 0, 0)
+      c.allocator.freeReg(elifCondReg)
+
+      let skipElifJmp = c.prog.instructions.len
+      c.prog.emitAsBx(ropJmp, 0, 0)
+
+      for i, stmt in elifCase.body:
+        if i == elifCase.body.len - 1 and stmt.kind == skExpr:
+          let elifReg = c.compileExpr(stmt.sexpr)
+          if elifReg != result:
+            c.prog.emitABC(ropMove, result, elifReg, 0)
+            c.allocator.freeReg(elifReg)
+        else:
+          c.compileStmt(stmt)
+
+      jumpToEndPositions.add(c.prog.instructions.len)
+      c.prog.emitAsBx(ropJmp, 0, 0)
+
+      let afterElif = c.prog.instructions.len
+      c.prog.instructions[skipElifJmp].sbx = int16(afterElif - skipElifJmp - 1)
+
+    # Compile else branch
+    for i, stmt in e.ifElse:
+      if i == e.ifElse.len - 1 and stmt.kind == skExpr:
+        let elseReg = c.compileExpr(stmt.sexpr)
+        if elseReg != result:
+          c.prog.emitABC(ropMove, result, elseReg, 0)
+          c.allocator.freeReg(elseReg)
+      else:
+        c.compileStmt(stmt)
+
+    # Patch all jumps to end
+    let endPos = c.prog.instructions.len
+    for jmpPos in jumpToEndPositions:
+      c.prog.instructions[jmpPos].sbx = int16(endPos - jmpPos - 1)
+
 proc compileBinOp(c: var RegCompiler, op: BinOp, dest, left, right: uint8, debug: RegDebugInfo = RegDebugInfo()) =
   case op:
   of boAdd: c.prog.emitABC(ropAdd, dest, left, right, debug)

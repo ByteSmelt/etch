@@ -101,7 +101,7 @@ proc hasBreakpoint*(debugger: RegEtchDebugger, file: string, line: int): bool =
 proc pushStackFrame*(debugger: RegEtchDebugger, functionName: string, fileName: string,
                      line: int, isBuiltIn: bool = false) =
   # Demangle the function name for display
-  let displayName = demangleFunctionSignature(functionName)
+  let displayName = functionNameFromSignature(functionName)
 
   var frame = RegDebugStackFrame(
     functionName: displayName,

@@ -16,10 +16,10 @@
 ## Testing and validation of correctness
 
 For bugfixing and validation, you have to:
-- Test compiling and running examples with `just tests` (alias for `nim r src/etch.nim --test examples/`)
+- **Primary testing workflow**: test compiling and running examples + debugger tests with `just tests`
 - Test compiling and running a single example `just test examples/simple_test.etch` (alias for `nim r src/etch.nim --test examples/simple_test.etch`):
     * If the test is passing, you need to provide a `examples/simple_test.pass` file
     * Otherwise a `examples/simple_test.fail` one when it fails.
-- Test the debugger integration with `nimble test`.
-- Compile and run a single etch file in verbose mode with `just go examples/simple_test.etch` (alias for `nim r src/etch.nim --run examples/simple_test.etch`)
+- To test **only** the debugger integration, use `nimble test`.
+- Compile and run a single etch file in verbose mode with `just go examples/simple_test.etch`.
 - Compile and reinstall the VSCode extension with `just vscode`

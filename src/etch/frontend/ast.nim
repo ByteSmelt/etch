@@ -54,7 +54,7 @@ type
     ekBool, ekChar, ekInt, ekFloat, ekString, ekVar, ekBin, ekUn,
     ekCall, ekNewRef, ekDeref, ekArray, ekIndex, ekSlice, ekArrayLen, ekCast, ekNil,
     ekOptionSome, ekOptionNone, ekResultOk, ekResultErr, ekMatch,
-    ekObjectLiteral, ekFieldAccess, ekNew
+    ekObjectLiteral, ekFieldAccess, ekNew, ekIf
 
   Expr* = ref object
     pos*: Pos
@@ -123,6 +123,11 @@ type
     of ekNew:
       newType*: EtchType      # type to create on heap (for ref[X])
       initExpr*: Option[Expr] # optional initialization expression
+    of ekIf:
+      ifCond*: Expr                                   # condition
+      ifThen*: seq[Stmt]                              # then body
+      ifElifChain*: seq[tuple[cond: Expr, body: seq[Stmt]]]  # elif chain
+      ifElse*: seq[Stmt]                              # else body
 
   StmtKind* = enum
     skVar, skAssign, skFieldAssign, skIf, skWhile, skFor, skBreak, skExpr, skReturn, skComptime, skTypeDecl, skImport, skDiscard
@@ -308,6 +313,7 @@ proc `$`*(t: ExprKind): string =
   of ekMatch: "match expression"
   of ekObjectLiteral: "object literal"
   of ekNew: "new expression"
+  of ekIf: "if expression"
 
 
 proc `$`*(bop: BinOp): string =

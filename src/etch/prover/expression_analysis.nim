@@ -794,6 +794,27 @@ proc analyzeExpr*(e: Expr; env: Env, ctx: ProverContext): Info =
     # new always returns an initialized, non-nil reference
     Info(known: false, nonNil: true, initialized: true)
 
+  of ekIf:
+    # Analyze if-expression: all branches should be analyzed
+    discard analyzeExpr(e.ifCond, env, ctx)
+
+    # Analyze then branch
+    for stmt in e.ifThen:
+      proveStmt(stmt, env, ctx)
+
+    # Analyze elif branches
+    for elifCase in e.ifElifChain:
+      discard analyzeExpr(elifCase.cond, env, ctx)
+      for stmt in elifCase.body:
+        proveStmt(stmt, env, ctx)
+
+    # Analyze else branch
+    for stmt in e.ifElse:
+      proveStmt(stmt, env, ctx)
+
+    # Conservative - we'd need flow analysis to be more precise
+    return Info(known: false, initialized: true)
+
 
 proc analyzeFunctionBody*(statements: seq[Stmt], env: Env, ctx: ProverContext) =
   ## Analyze a sequence of statements in a function body with full control flow analysis

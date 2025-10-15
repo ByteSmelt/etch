@@ -81,6 +81,9 @@ proc isPureFunction(fn: FunDecl): bool =
   return true
 
 
+proc foldExpr(prog: Program, e: var Expr)
+proc foldStmt(prog: Program, s: var Stmt)
+
 proc foldExpr(prog: Program, e: var Expr) =
   case e.kind
   of ekBin:
@@ -131,6 +134,13 @@ proc foldExpr(prog: Program, e: var Expr) =
     foldExpr(prog, e.sliceExpr)
     if e.startExpr.isSome: foldExpr(prog, e.startExpr.get)
     if e.endExpr.isSome: foldExpr(prog, e.endExpr.get)
+  of ekIf:
+    foldExpr(prog, e.ifCond)
+    for i in 0..<e.ifThen.len: foldStmt(prog, e.ifThen[i])
+    for i in 0..<e.ifElifChain.len:
+      foldExpr(prog, e.ifElifChain[i].cond)
+      for j in 0..<e.ifElifChain[i].body.len: foldStmt(prog, e.ifElifChain[i].body[j])
+    for i in 0..<e.ifElse.len: foldStmt(prog, e.ifElse[i])
   else: discard
 
 

@@ -9,6 +9,7 @@ import types, expressions
 
 proc typecheckStmt*(prog: Program; fd: FunDecl; sc: Scope; s: Stmt; subst: var TySubst; isBlockResult: bool = false)
 proc inferMatchExpr*(prog: Program; fd: FunDecl; sc: Scope; e: Expr; subst: var TySubst): EtchType
+proc inferIfExpr*(prog: Program; fd: FunDecl; sc: Scope; e: Expr; subst: var TySubst): EtchType
 
 
 proc typecheckVar(prog: Program; fd: FunDecl; sc: Scope; s: Stmt; subst: var TySubst) =
@@ -20,11 +21,16 @@ proc typecheckVar(prog: Program; fd: FunDecl; sc: Scope; s: Stmt; subst: var TyS
     if s.vinit.isNone():
       raise newTypecheckError(s.pos, &"variable '{s.vname}' with inferred type must have an initializer")
 
-    # Special handling for match expressions during deferred type inference
+    # Special handling for match and if expressions during deferred type inference
     if s.vinit.get().kind == ekMatch:
       # Infer match expression type directly using type checker
       var tempSubst = subst
       let inferredType = inferMatchExpr(prog, fd, sc, s.vinit.get(), tempSubst)
+      s.vtype = inferredType
+    elif s.vinit.get().kind == ekIf:
+      # Infer if expression type directly using type checker
+      var tempSubst = subst
+      let inferredType = inferIfExpr(prog, fd, sc, s.vinit.get(), tempSubst)
       s.vtype = inferredType
     else:
       # Try regular type inference for other expressions
@@ -52,6 +58,9 @@ proc typecheckVar(prog: Program; fd: FunDecl; sc: Scope; s: Stmt; subst: var TyS
         # Handle match expressions directly to avoid circular import issues
         # TODO: Pass expected type to inferMatchExpr when it supports it
         inferMatchExpr(prog, fd, tempScope, s.vinit.get(), tempSubst)
+      elif s.vinit.get().kind == ekIf:
+        # Handle if expressions directly to avoid circular import issues
+        inferIfExpr(prog, fd, tempScope, s.vinit.get(), tempSubst)
       else:
         inferExprTypes(prog, fd, tempScope, s.vinit.get(), tempSubst, resolvedVtype)
     except EtchError as e:
@@ -146,10 +155,12 @@ proc typecheckReturn(prog: Program; fd: FunDecl; sc: Scope; s: Stmt; subst: var 
     if s.re.isSome(): raise newTypecheckError(s.pos, "void function cannot return a value")
   else:
     if not s.re.isSome(): raise newTypecheckError(s.pos, "non-void function must return a value")
-    # Special handling for match expressions in return statements
+    # Special handling for match and if expressions in return statements
     var rt: EtchType
     if s.re.get().kind == ekMatch:
       rt = inferMatchExpr(prog, fd, sc, s.re.get(), subst)
+    elif s.re.get().kind == ekIf:
+      rt = inferIfExpr(prog, fd, sc, s.re.get(), subst)
     else:
       rt = inferExprTypes(prog, fd, sc, s.re.get(), subst, fd.ret)
 
@@ -320,6 +331,35 @@ proc inferMatchExpr*(prog: Program; fd: FunDecl; sc: Scope; e: Expr; subst: var 
   return resultType
 
 
+proc inferIfExpr*(prog: Program; fd: FunDecl; sc: Scope; e: Expr; subst: var TySubst): EtchType =
+  # Type check the condition
+  let condType = inferExprTypes(prog, fd, sc, e.ifCond, subst)
+  if condType.kind != tkBool:
+    raise newTypecheckError(e.pos, &"if condition must be bool, got {condType}")
+
+  # Type check then body
+  let thenType = typecheckStmtList(prog, fd, sc, e.ifThen, subst, blockResultUsed = true)
+
+  # Type check elif chain and verify types match
+  var resultType = thenType
+  for elifCase in e.ifElifChain:
+    let elifCondType = inferExprTypes(prog, fd, sc, elifCase.cond, subst)
+    if elifCondType.kind != tkBool:
+      raise newTypecheckError(e.pos, &"elif condition must be bool, got {elifCondType}")
+
+    let elifType = typecheckStmtList(prog, fd, sc, elifCase.body, subst, blockResultUsed = true)
+    if not typeEq(resultType, elifType):
+      raise newTypecheckError(e.pos, &"if expression branches must return the same type: then returns {resultType}, elif returns {elifType}")
+
+  # Type check else body and verify type matches
+  let elseType = typecheckStmtList(prog, fd, sc, e.ifElse, subst, blockResultUsed = true)
+  if not typeEq(resultType, elseType):
+    raise newTypecheckError(e.pos, &"if expression branches must return the same type: then returns {resultType}, else returns {elseType}")
+
+  e.typ = resultType
+  return resultType
+
+
 proc typecheckStmt*(prog: Program; fd: FunDecl; sc: Scope; s: Stmt; subst: var TySubst; isBlockResult: bool = false) =
   case s.kind
   of skVar: typecheckVar(prog, fd, sc, s, subst)
@@ -335,6 +375,11 @@ proc typecheckStmt*(prog: Program; fd: FunDecl; sc: Scope; s: Stmt; subst: var T
       # Check if match expression result is non-void and not used
       if s.sexpr.typ.kind != tkVoid and not isBlockResult:
         raise newTypecheckError(s.pos, &"match expression returns '{s.sexpr.typ}' but result is not used; use 'discard' to explicitly ignore the return value")
+    elif s.sexpr.kind == ekIf:
+      s.sexpr.typ = inferIfExpr(prog, fd, sc, s.sexpr, subst)
+      # Check if if expression result is non-void and not used
+      if s.sexpr.typ.kind != tkVoid and not isBlockResult:
+        raise newTypecheckError(s.pos, &"if expression returns '{s.sexpr.typ}' but result is not used; use 'discard' to explicitly ignore the return value")
     else:
       let exprType = inferExprTypes(prog, fd, sc, s.sexpr, subst)
       # Check if this is a function call with non-void return type
