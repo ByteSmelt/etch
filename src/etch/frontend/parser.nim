@@ -56,72 +56,71 @@ proc parseBlock(p: Parser): seq[Stmt]
 proc parseSingleType(p: Parser): EtchType =
   let t = p.cur
 
-  if t.kind in {tkKeyword, tkIdent}:
-    case t.lex:
-    of "void":
-      discard p.eat
-      return tVoid()
-
-    of "bool":
-      discard p.eat
-      return tBool()
-
-    of "char":
-      discard p.eat
-      return tChar()
-
-    of "int":
-      discard p.eat
-      return tInt()
-
-    of "float":
-      discard p.eat
-      return tFloat()
-
-    of "string":
-      discard p.eat
-      return tString()
-
-    of "ref":
-      discard p.expect(tkKeyword, "ref")
-      discard p.expect(tkSymbol, "[")
-      let inner = p.parseType()
-      discard p.expect(tkSymbol, "]")
-      return tRef(inner)
-
-    of "array":
-      discard p.expect(tkKeyword, "array")
-      discard p.expect(tkSymbol, "[")
-      let inner = p.parseType()
-      discard p.expect(tkSymbol, "]")
-      return tArray(inner)
-
-    of "option":
-      discard p.expect(tkKeyword, "option")
-      discard p.expect(tkSymbol, "[")
-      let inner = p.parseType()
-      discard p.expect(tkSymbol, "]")
-      return tOption(inner)
-
-    of "result":
-      discard p.expect(tkIdent, "result")
-      discard p.expect(tkSymbol, "[")
-      let inner = p.parseType()
-      discard p.expect(tkSymbol, "]")
-      return tResult(inner)
-
-    else:
-      if t.lex in p.genericParams:
-        discard p.eat
-        return tGeneric(t.lex)
-
-    # user-defined type name (could be alias, distinct, or object)
-    discard p.eat
-    return tUserDefined(t.lex)
-
-  else:
+  if t.kind notin {tkKeyword, tkIdent}:
     let actualName = friendlyTokenName(t.kind, t.lex)
     raise newParseError(p.posOf(t), &"expected type, got {actualName}")
+
+  case t.lex:
+  of "void":
+    discard p.eat
+    return tVoid()
+
+  of "bool":
+    discard p.eat
+    return tBool()
+
+  of "char":
+    discard p.eat
+    return tChar()
+
+  of "int":
+    discard p.eat
+    return tInt()
+
+  of "float":
+    discard p.eat
+    return tFloat()
+
+  of "string":
+    discard p.eat
+    return tString()
+
+  of "ref":
+    discard p.expect(tkKeyword, "ref")
+    discard p.expect(tkSymbol, "[")
+    let inner = p.parseType()
+    discard p.expect(tkSymbol, "]")
+    return tRef(inner)
+
+  of "array":
+    discard p.expect(tkKeyword, "array")
+    discard p.expect(tkSymbol, "[")
+    let inner = p.parseType()
+    discard p.expect(tkSymbol, "]")
+    return tArray(inner)
+
+  of "option":
+    discard p.expect(tkKeyword, "option")
+    discard p.expect(tkSymbol, "[")
+    let inner = p.parseType()
+    discard p.expect(tkSymbol, "]")
+    return tOption(inner)
+
+  of "result":
+    discard p.expect(tkIdent, "result")
+    discard p.expect(tkSymbol, "[")
+    let inner = p.parseType()
+    discard p.expect(tkSymbol, "]")
+    return tResult(inner)
+
+  else:
+    if t.lex in p.genericParams:
+      discard p.eat
+      return tGeneric(t.lex)
+
+  # user-defined type name (could be alias, distinct, or object)
+  discard p.eat
+  return tUserDefined(t.lex)
 
 
 # Parse a type, potentially a union of multiple types
