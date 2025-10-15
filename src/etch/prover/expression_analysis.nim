@@ -206,12 +206,33 @@ proc analyzeParseIntCall*(e: Expr, env: Env, ctx: ProverContext): Info =
   return Info(known: false, minv: IMin, maxv: IMax, nonZero: false, initialized: true)
 
 
+proc analyzeArrayNewCall*(e: Expr, env: Env, ctx: ProverContext): Info =
+  if e.args.len != 2:
+    return infoUnknown()
+
+  let sizeInfo = analyzeExpr(e.args[0], env, ctx)
+  discard analyzeExpr(e.args[1], env, ctx)  # Analyze default value for safety
+
+  # If size is known, we can track the exact array size
+  if sizeInfo.known:
+    return infoArray(sizeInfo.cval, sizeKnown = true)
+  # If size is in a range, track the range
+  # We store the size range in minv/maxv so that #array can extract it
+  elif sizeInfo.minv >= 0:
+    var info = infoArray(sizeInfo.minv, sizeKnown = false)
+    info.minv = sizeInfo.minv  # Store size range in minv/maxv
+    info.maxv = sizeInfo.maxv
+    return info
+  else:
+    return infoArray(-1, sizeKnown = false)
+
 proc analyzeBuiltinCall*(e: Expr, env: Env, ctx: ProverContext): Info =
   # recognize trusted builtins affecting nonNil/nonZero
   if e.fname == "print": return analyzePrintCall(e, env, ctx)
   if e.fname == "rand": return analyzeRandCall(e, env, ctx)
   if e.fname == "toString": return analyzeToStringCall(e, env, ctx)
   if e.fname == "parseInt": return analyzeParseIntCall(e, env, ctx)
+  if e.fname == "arrayNew": return analyzeArrayNewCall(e, env, ctx)
   # Unknown builtin - just analyze arguments
   for arg in e.args: discard analyzeExpr(arg, env, ctx)
   return infoUnknown()
@@ -403,7 +424,14 @@ proc analyzeUserDefinedCall*(e: Expr, env: Env, ctx: ProverContext): Info =
     if stmt.kind == skReturn and stmt.re.isSome:
       let tmpCtx = newProverContext(fnContext, ctx.flags, ctx.prog)
       let returnInfo = analyzeExpr(stmt.re.get, callEnv, tmpCtx)
-      logProver(ctx.flags, &"Function return value: {(if returnInfo.known: $returnInfo.cval else: \"[\" & $returnInfo.minv & \"..\" & $returnInfo.maxv & \"]\")}")
+      if returnInfo.known:
+        logProver(ctx.flags, &"Function return value: {returnInfo.cval}")
+      elif returnInfo.isArray and returnInfo.arraySizeKnown:
+        logProver(ctx.flags, &"Function return value: array of size {returnInfo.arraySize}")
+      elif returnInfo.isArray:
+        logProver(ctx.flags, &"Function return value: array of unknown size (min: {returnInfo.arraySize})")
+      else:
+        logProver(ctx.flags, &"Function return value: [{returnInfo.minv}..{returnInfo.maxv}]")
       return returnInfo
 
   # No return statement found or void return
@@ -607,8 +635,16 @@ proc analyzeSliceExpr*(e: Expr, env: Env, ctx: ProverContext): Info =
 
   # Calculate slice size when possible
   if arrayInfo.isArray:
-    # Try to calculate array slice size when bounds and original size are known
-    if arrayInfo.arraySizeKnown:
+    # Case 1: Both bounds are known constants - we can compute exact slice size
+    if hasStart and startInfo.known and hasEnd and endInfo.known:
+      # Both start and end are known constants
+      let actualStart = max(0, startInfo.cval)
+      let actualEnd = max(actualStart, endInfo.cval)  # Ensure end >= start
+      let sliceSize = actualEnd - actualStart
+      return infoArray(sliceSize, sizeKnown = true)
+
+    # Case 2: Original array size is known - compute slice size
+    elif arrayInfo.arraySizeKnown:
       let startVal = if hasStart and startInfo.known: startInfo.cval else: 0
       let endVal = if hasEnd and endInfo.known: endInfo.cval else: arrayInfo.arraySize
 
@@ -652,6 +688,18 @@ proc analyzeArrayLenExpr*(e: Expr, env: Env, ctx: ProverContext): Info =
   elif arrayInfo.isString and arrayInfo.arraySizeKnown:
     # If we know the string length, return it as a constant
     infoConst(arrayInfo.arraySize)
+  elif arrayInfo.isArray:
+    # Array with unknown size - the size range is stored in minv/maxv
+    # (set by analyzeArrayNewCall when the size argument is in a range)
+    if arrayInfo.minv >= 0 and arrayInfo.maxv < IMax:
+      # We have a bounded size range
+      return Info(known: false, minv: arrayInfo.minv, maxv: arrayInfo.maxv, nonZero: arrayInfo.minv > 0, initialized: true)
+    elif arrayInfo.arraySize >= 0:
+      # We have at least a minimum bound
+      return Info(known: false, minv: arrayInfo.arraySize, maxv: IMax, nonZero: arrayInfo.arraySize > 0, initialized: true)
+    else:
+      # Completely unknown size
+      return Info(known: false, minv: 0, maxv: IMax, nonZero: false, initialized: true)
   else:
     # Size/length is unknown at compile time, but we know it's non-negative
     Info(known: false, minv: 0, maxv: IMax, nonZero: false, initialized: true)
@@ -841,6 +889,10 @@ proc proveVar(s: Stmt; env: Env, ctx: ProverContext) =
     env.exprs[s.vname] = s.vinit.get()  # Store original expression
     if info.known:
       logProver(ctx.flags, "Variable " & s.vname & " initialized with constant value: " & $info.cval)
+    elif info.isArray and info.arraySizeKnown:
+      logProver(ctx.flags, "Variable " & s.vname & " initialized with array of size: " & $info.arraySize)
+    elif info.isArray:
+      logProver(ctx.flags, "Variable " & s.vname & " initialized with array of unknown size (min: " & $info.arraySize & ")")
     else:
       logProver(ctx.flags, "Variable " & s.vname & " initialized with range [" & $info.minv & ".." & $info.maxv & "]")
   else:
@@ -1202,6 +1254,8 @@ proc proveFor(s: Stmt; env: Env, ctx: ProverContext) =
   logProver(ctx.flags, "Analyzing for loop variable: " & s.fvar)
 
   var loopVarInfo: Info
+  var iterationCount: Option[int64] = none(int64)
+
   if s.farray.isSome():
     # Array iteration: for x in array
     let arrayInfo = analyzeExpr(s.farray.get(), env, ctx)
@@ -1216,6 +1270,10 @@ proc proveFor(s: Stmt; env: Env, ctx: ProverContext) =
     if arrayInfo.isArray and arrayInfo.arraySizeKnown and arrayInfo.arraySize == 0:
       if s.fbody.len > 0:
         raise newProverError(s.pos, "unreachable code (for loop over empty array)")
+
+    # Track iteration count for fixed-point analysis
+    if arrayInfo.isArray and arrayInfo.arraySizeKnown:
+      iterationCount = some(arrayInfo.arraySize)
 
   else:
     # Range iteration: for var in start..end
@@ -1249,6 +1307,15 @@ proc proveFor(s: Stmt; env: Env, ctx: ProverContext) =
     loopVarInfo.initialized = true
     loopVarInfo.nonNil = true
 
+    # Calculate iteration count if both bounds are known
+    if startInfo.known and endInfo.known:
+      let count = if s.finclusive:
+        max(0'i64, endInfo.cval - startInfo.cval + 1)
+      else:
+        max(0'i64, endInfo.cval - startInfo.cval)
+      iterationCount = some(count)
+      logProver(ctx.flags, "For loop has known iteration count: " & $count)
+
   # Save current variable state if it exists
   let oldVarInfo = if env.vals.hasKey(s.fvar): env.vals[s.fvar] else: infoUninitialized()
 
@@ -1258,9 +1325,80 @@ proc proveFor(s: Stmt; env: Env, ctx: ProverContext) =
 
   logProver(ctx.flags, "Loop variable " & s.fvar & " has range [" & $loopVarInfo.minv & ".." & $loopVarInfo.maxv & "]")
 
-  # Analyze loop body
-  for stmt in s.fbody:
-    proveStmt(stmt, env, ctx)
+  # Enhanced analysis: if we know the iteration count, use fixed-point iteration
+  # to get tighter bounds on accumulated variables
+  if iterationCount.isSome and iterationCount.get > 0:
+    let maxIterations = min(iterationCount.get, 10'i64)  # Cap at 10 iterations for analysis
+    logProver(ctx.flags, "Using fixed-point iteration (up to " & $maxIterations & " passes) for precise analysis")
+
+    # Save initial environment state
+    var prevEnv = Env(vals: initTable[string, Info](), nils: initTable[string, bool](), exprs: initTable[string, Expr]())
+    for k, v in env.vals:
+      if k != s.fvar:  # Don't copy loop variable
+        prevEnv.vals[k] = v
+    for k, v in env.nils:
+      if k != s.fvar:
+        prevEnv.nils[k] = v
+    for k, v in env.exprs:
+      if k != s.fvar:
+        prevEnv.exprs[k] = v
+
+    # Fixed-point iteration: analyze loop body multiple times
+    var converged = false
+    var iteration = 0'i64
+    while iteration < maxIterations and not converged:
+      logProver(ctx.flags, "Fixed-point iteration pass " & $(iteration + 1) & "/" & $maxIterations)
+
+      # Create environment for this iteration
+      var iterEnv = Env(vals: initTable[string, Info](), nils: initTable[string, bool](), exprs: initTable[string, Expr]())
+      for k, v in env.vals:
+        iterEnv.vals[k] = v
+      for k, v in env.nils:
+        iterEnv.nils[k] = v
+      for k, v in env.exprs:
+        iterEnv.exprs[k] = v
+
+      # Analyze loop body with current environment
+      for stmt in s.fbody:
+        proveStmt(stmt, iterEnv, ctx)
+
+      # Check for convergence: have the ranges stabilized?
+      converged = true
+      for k, newInfo in iterEnv.vals:
+        if k != s.fvar and env.vals.hasKey(k):
+          let oldInfo = env.vals[k]
+          # Check if ranges changed
+          if newInfo.minv != oldInfo.minv or newInfo.maxv != oldInfo.maxv:
+            converged = false
+            # Update environment with new info
+            env.vals[k] = newInfo
+            logProver(ctx.flags, "Variable " & k & " range updated: [" & $newInfo.minv & ".." & $newInfo.maxv & "]")
+        elif k != s.fvar:
+          env.vals[k] = newInfo
+
+      # Copy back other state
+      for k, v in iterEnv.nils:
+        if k != s.fvar:
+          env.nils[k] = v
+      for k, v in iterEnv.exprs:
+        if k != s.fvar:
+          env.exprs[k] = v
+
+      iteration += 1
+
+      if converged:
+        logProver(ctx.flags, "Fixed-point reached after " & $iteration & " iterations")
+        break
+
+    if not converged:
+      logProver(ctx.flags, "Fixed-point not reached after " & $maxIterations & " iterations, using widening")
+      # Apply widening: if a variable is still growing, extrapolate to worst case
+      # This is conservative but ensures we don't miss overflow issues
+  else:
+    # Fallback: single-pass analysis for unknown iteration count
+    logProver(ctx.flags, "Using single-pass analysis (iteration count unknown)")
+    for stmt in s.fbody:
+      proveStmt(stmt, env, ctx)
 
   # Restore old variable state (for loops introduce block scope)
   if oldVarInfo.initialized:

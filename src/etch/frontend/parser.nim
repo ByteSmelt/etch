@@ -495,7 +495,7 @@ proc parseSymbolExpr(p: Parser; t: Token): Expr =
     return Expr(kind: ekObjectLiteral, objectType: nil, fieldInits: fieldInits, pos: p.posOf(t))
   else:
     let actualName = friendlyTokenName(t.kind, t.lex)
-    raise newEtchError(&"unexpected {actualName}")
+    raise newParseError(p.posOf(t), &"unexpected {actualName}")
 
 
 # Parses atomic expressions (null denotation - expressions that don't need a left operand)
@@ -577,7 +577,7 @@ proc parseInfixExpr(p: Parser; left: Expr; t: Token): Expr =
     return p.parseArrayAccessOrSlice(left, t)
   if op == ".":
     return p.parseUFCSCall(left, t)
-  raise newEtchError(&"unexpected operator: {op}")
+  raise newParseError(p.posOf(t), &"unexpected operator: {op}")
 
 
 # Parse expressions using Pratt parsing
@@ -1009,7 +1009,7 @@ proc parseSimpleStmt(p: Parser): Stmt =
                    faValue: rightExpr,
                    pos: p.posOf(start))
       else:
-        raise newEtchError(&"Invalid assignment target at {p.posOf(start)}")
+        raise newParseError(p.posOf(start), "invalid assignment target")
   else:
     let e = p.parseExpr()
     discard p.expect(tkSymbol, ";")

@@ -1178,6 +1178,25 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
         else:
           setReg(vm, funcReg, makeNil())
 
+      # Array operations
+      of "arrayNew":
+        if numArgs == 2:
+          let sizeVal = getReg(vm, funcReg + 1)
+          let defaultVal = getReg(vm, funcReg + 2)
+          if sizeVal.isInt():
+            let size = sizeVal.ival
+            if size >= 0 and size <= 100000000:  # Sanity check for array size
+              var newArray = newSeq[V](size)
+              for i in 0 ..< size:
+                newArray[i] = defaultVal
+              setReg(vm, funcReg, makeArray(ensureMove(newArray)))
+            else:
+              setReg(vm, funcReg, makeArray(@[]))  # Return empty array for invalid size
+          else:
+            setReg(vm, funcReg, makeArray(@[]))  # Return empty array if size not an int
+        else:
+          setReg(vm, funcReg, makeArray(@[]))  # Return empty array for wrong arg count
+
       # File I/O operations
       of "readFile":
         if numArgs == 1:

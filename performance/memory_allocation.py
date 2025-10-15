@@ -1,9 +1,9 @@
 import random
 
 def create_array(size):
-    arr = []
+    arr = [0] * size
     for i in range(size):
-        arr.append(i)
+        arr[i] = i
     return arr
 
 def main():
@@ -15,12 +15,16 @@ def main():
         size = random.randint(10, 50)
         arr = create_array(size)
 
-        total_length = total_length + len(arr)
+        bounded_len = total_length
+        bounded_arr_len = len(arr)
+        total_length = (bounded_len + bounded_arr_len)
 
         # Create some temporary arrays
         temp1 = [1, 2, 3, 4, 5]
         temp2 = temp1 + arr[0:5]
-        total_length = total_length + len(temp2)
+        bounded_len2 = total_length
+        bounded_temp_len = len(temp2)
+        total_length = (bounded_len2 + bounded_temp_len)
 
     print(total_length)
 

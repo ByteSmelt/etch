@@ -1353,40 +1353,61 @@ proc compileStmt*(c: var RegCompiler, s: Stmt) =
       c.allocator.freeReg(reg)
 
   of skFieldAssign:
-    # Field assignment for objects
+    # Field or array index assignment
     if c.verbose:
-      echo "[REGCOMPILER] Field assignment"
+      echo "[REGCOMPILER] Field/index assignment"
 
-    # The faTarget should be a field access expression
-    if s.faTarget.kind != ekFieldAccess:
-      echo "Error: Field assignment target is not a field access"
+    case s.faTarget.kind:
+    of ekFieldAccess:
+      # Field assignment for objects
+      # The object should be a simple variable for now
+      if s.faTarget.objectExpr.kind != ekVar:
+        echo "Error: Field assignment object is not a variable"
+        return
+
+      # Get the object register
+      let objName = s.faTarget.objectExpr.vname
+      if not c.allocator.regMap.hasKey(objName):
+        echo "Error: Variable not found in register map: ", objName
+        return
+      let objReg = c.allocator.regMap[objName]
+
+      # Compile the value to assign
+      let valReg = c.compileExpr(s.faValue)
+
+      # Get or add the field name to const pool
+      let fieldConst = c.addStringConst(s.faTarget.fieldName)
+
+      # Emit ropSetField to set object field: R[objReg][K[fieldConst]] = R[valReg]
+      c.prog.emitABC(ropSetField, valReg, objReg, uint8(fieldConst), c.makeDebugInfo(s.pos))
+
+      if c.verbose:
+        echo "[REGCOMPILER] Set field '", s.faTarget.fieldName, "' (const[", fieldConst, "]) in object at reg ", objReg, " to value at reg ", valReg
+
+      c.allocator.freeReg(valReg)
+
+    of ekIndex:
+      # Array index assignment: arr[idx] = value
+      # Compile the array expression
+      let arrayReg = c.compileExpr(s.faTarget.arrayExpr)
+
+      # Compile the index expression
+      let indexReg = c.compileExpr(s.faTarget.indexExpr)
+
+      # Compile the value to assign
+      let valueReg = c.compileExpr(s.faValue)
+
+      # Emit SETINDEX instruction: R[arrayReg][R[indexReg]] = R[valueReg]
+      c.prog.emitABC(ropSetIndex, arrayReg, indexReg, valueReg, c.makeDebugInfo(s.pos))
+
+      # Free temporary registers
+      c.allocator.freeReg(valueReg)
+      c.allocator.freeReg(indexReg)
+      c.allocator.freeReg(arrayReg)
+
+    else:
+      echo "Error: Field assignment target must be field access or array index"
       return
-
-    # The object should be a simple variable for now
-    if s.faTarget.objectExpr.kind != ekVar:
-      echo "Error: Field assignment object is not a variable"
-      return
-
-    # Get the object register
-    let objName = s.faTarget.objectExpr.vname
-    if not c.allocator.regMap.hasKey(objName):
-      echo "Error: Variable not found in register map: ", objName
-      return
-    let objReg = c.allocator.regMap[objName]
-
-    # Compile the value to assign
-    let valReg = c.compileExpr(s.faValue)
-
-    # Get or add the field name to const pool
-    let fieldConst = c.addStringConst(s.faTarget.fieldName)
-
-    # Emit ropSetField to set object field: R[objReg][K[fieldConst]] = R[valReg]
-    c.prog.emitABC(ropSetField, valReg, objReg, uint8(fieldConst), c.makeDebugInfo(s.pos))
-
-    if c.verbose:
-      echo "[REGCOMPILER] Set field '", s.faTarget.fieldName, "' (const[", fieldConst, "]) in object at reg ", objReg, " to value at reg ", valReg
-
-    c.allocator.freeReg(valReg)
 
 proc compileFunDecl*(c: var RegCompiler, name: string, params: seq[Param], retType: EtchType, body: seq[Stmt]) =
   # Reset allocator for new function - preserve max register count

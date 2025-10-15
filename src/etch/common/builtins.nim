@@ -9,7 +9,7 @@ type
   BuiltinFuncId* = enum
     bfPrint = 0, bfNew, bfDeref, bfRand, bfSeed, bfReadFile,
     bfParseInt, bfParseFloat, bfParseBool, bfToString,
-    bfIsSome, bfIsNone, bfIsOk, bfIsErr
+    bfIsSome, bfIsNone, bfIsOk, bfIsErr, bfArrayNew
 
 # Builtin function name to ID mapping for fast lookup
 const BUILTIN_NAMES*: array[BuiltinFuncId, string] = [
@@ -26,7 +26,8 @@ const BUILTIN_NAMES*: array[BuiltinFuncId, string] = [
   bfIsSome: "isSome",
   bfIsNone: "isNone",
   bfIsOk: "isOk",
-  bfIsErr: "isErr"
+  bfIsErr: "isErr",
+  bfArrayNew: "arrayNew"
 ]
 
 # Get builtin ID from function name (for bytecode generation)
@@ -75,6 +76,8 @@ proc getBuiltinSignature*(fname: string): (seq[EtchType], EtchType) =
     return (@[tOption(tInferred())], tBool())
   of "isOk", "isErr":
     return (@[tResult(tInferred())], tBool())
+  of "arrayNew":
+    return (@[tInt(), tInferred()], tArray(tInferred()))
   else:
     return (@[], tVoid())
 
@@ -188,6 +191,13 @@ proc performBuiltinTypeCheck*(funcName: string, argTypes: seq[EtchType], pos: Po
     if argTypes[0].kind != tkResult:
       raise newTypecheckError(pos, "isErr expects result[T] argument")
     return tBool()
+
+  of "arrayNew":
+    if argTypes.len != 2:
+      raise newTypecheckError(pos, "arrayNew expects 2 arguments: size and default value")
+    if argTypes[0].kind != tkInt:
+      raise newTypecheckError(pos, "arrayNew size argument must be int")
+    return tArray(argTypes[1])
 
   else:
     raise newTypecheckError(pos, "unknown builtin function: " & funcName)

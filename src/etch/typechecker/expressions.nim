@@ -463,8 +463,6 @@ proc inferIndexExpr(prog: Program; fd: FunDecl; sc: Scope; e: Expr; subst: var T
 
 proc inferArrayExpr(prog: Program; fd: FunDecl; sc: Scope; e: Expr; subst: var TySubst; expectedTy: EtchType = nil): EtchType =
   # Array literal: [elem1, elem2, ...] - infer element type from first element
-  if e.elements.len == 0:
-    raise newTypecheckError(e.pos, "empty arrays not supported - cannot infer element type")
 
   # Try to get expected element type from expected array type
   var expectedElemType: EtchType = nil
@@ -475,6 +473,15 @@ proc inferArrayExpr(prog: Program; fd: FunDecl; sc: Scope; e: Expr; subst: var T
       expectedElemType = resolveUserType(sc, expectedElemType.name)
       if expectedElemType == nil:
         raise newTypecheckError(e.pos, &"unknown type in array")
+
+  # Handle empty arrays
+  if e.elements.len == 0:
+    # Empty arrays are allowed if we have an explicit type annotation
+    if expectedElemType != nil:
+      e.typ = tArray(expectedElemType)
+      return e.typ
+    else:
+      raise newTypecheckError(e.pos, "empty arrays not supported - cannot infer element type")
 
   # Infer type of first element with expected type if available
   let elemType = inferExprTypes(prog, fd, sc, e.elements[0], subst, expectedElemType)

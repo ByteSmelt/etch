@@ -315,6 +315,15 @@ proc simpleInferTypeFromBinary(expr: Expr; sc: Scope): EtchType =
       return tInt()
     elif leftType.kind == tkFloat and rightType.kind == tkFloat:
       return tFloat()
+    # String concatenation: string + string = string
+    elif expr.bop == boAdd and leftType.kind == tkString and rightType.kind == tkString:
+      return tString()
+    # Array concatenation: array[T] + array[T] = array[T]
+    elif expr.bop == boAdd and leftType.kind == tkArray and rightType.kind == tkArray:
+      if typeEq(leftType.inner, rightType.inner):
+        return leftType  # Return array[T] type
+      else:
+        return nil  # Element types don't match
     # Mixed operations (int + float) would require promotion, but for simplicity return nil
     else:
       return nil

@@ -1,0 +1,6 @@
+fn main() -> void {
+  let c: string = "abcdefg";
+  let d: array[char] = arrayNew(7, 'a');
+  print(d);
+  print(c == d);
+}
