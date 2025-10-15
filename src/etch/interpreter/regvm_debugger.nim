@@ -182,12 +182,9 @@ proc shouldBreak*(debugger: RegEtchDebugger, pc: int, file: string, line: int): 
     discard
 
   of smStepInto:
-    # Skip the call site line when returning from a function
-    if line > 0 and line == debugger.callSiteLine and debugger.userCallDepth <= debugger.stepCallDepth:
-      stderr.writeLine("[STEP_INTO] pc=", pc, " line=", line, " callSiteLine=", debugger.callSiteLine, " -> skip call site")
-      stderr.flushFile()
     # Break on new line OR when PC jumps backward (loop iteration)
-    elif line > 0 and (file != debugger.lastFile or line != debugger.lastLine or (pc < debugger.lastPC and debugger.lastPC >= 0)):
+    # NOTE: Do NOT skip call site line - we want to stop there when returning from a function
+    if line > 0 and (file != debugger.lastFile or line != debugger.lastLine or (pc < debugger.lastPC and debugger.lastPC >= 0)):
       stderr.writeLine("[STEP_INTO] pc=", pc, " line=", line, " lastLine=", debugger.lastLine, " depth=", debugger.userCallDepth, " -> BREAK")
       stderr.flushFile()
       shouldBreakNow = true
@@ -199,12 +196,9 @@ proc shouldBreak*(debugger: RegEtchDebugger, pc: int, file: string, line: int): 
     if debugger.userCallDepth <= debugger.stepCallDepth:
       stderr.writeLine("[STEP_OVER] pc=", pc, " line=", line, " lastLine=", debugger.lastLine, " depth=", debugger.userCallDepth, " stepDepth=", debugger.stepCallDepth)
       stderr.flushFile()
-      # Skip the call site line when returning from a function
-      if line > 0 and line == debugger.callSiteLine:
-        stderr.writeLine("[STEP_OVER] -> skip call site line ", debugger.callSiteLine)
-        stderr.flushFile()
       # Break on new line OR when PC jumps backward (loop iteration)
-      elif line > 0 and (file != debugger.lastFile or line != debugger.lastLine or (pc < debugger.lastPC and debugger.lastPC >= 0)):
+      # NOTE: Do NOT skip call site line - we want to stop there when returning from a function
+      if line > 0 and (file != debugger.lastFile or line != debugger.lastLine or (pc < debugger.lastPC and debugger.lastPC >= 0)):
         stderr.writeLine("[STEP_OVER] -> BREAK")
         stderr.flushFile()
         shouldBreakNow = true
@@ -218,15 +212,12 @@ proc shouldBreak*(debugger: RegEtchDebugger, pc: int, file: string, line: int): 
   of smStepOut:
     stderr.writeLine("[STEP_OUT] pc=", pc, " line=", line, " depth=", debugger.userCallDepth, " stepDepth=", debugger.stepCallDepth, " callSiteLine=", debugger.callSiteLine)
     stderr.flushFile()
+    # Break when we return to caller (depth < stepDepth) at any line
+    # NOTE: Do NOT skip call site line - we want to stop there when returning
     if debugger.userCallDepth < debugger.stepCallDepth and line > 0:
-      # Skip the call site line when returning
-      if line == debugger.callSiteLine:
-        stderr.writeLine("[STEP_OUT] -> skip call site line ", debugger.callSiteLine)
-        stderr.flushFile()
-      else:
-        stderr.writeLine("[STEP_OUT] -> BREAK")
-        stderr.flushFile()
-        shouldBreakNow = true
+      stderr.writeLine("[STEP_OUT] -> BREAK")
+      stderr.flushFile()
+      shouldBreakNow = true
 
   # Update lastPC after checking for breaks (for next iteration detection)
   if line > 0:

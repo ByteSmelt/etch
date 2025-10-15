@@ -41,10 +41,10 @@ stackResp = server.handleDebugRequest(%*{"seq": 8, "type": "request", "command":
 frames = stackResp["body"]["stackFrames"].getElems()
 echo "   Stack: ", frames[0]["name"].getStr(), " line ", frames[0]["line"].getInt()
 
-if frames[0]["name"].getStr() == "main" and frames[0]["line"].getInt() == 2:
-  echo "\n✓ SUCCESS: Returned to main line 2"
+if frames[0]["name"].getStr() == "test" and frames[0]["line"].getInt() == 8:
+  echo "\n✓ SUCCESS: Correctly at test line 8 (return statement)"
 else:
-  echo "\n✗ FAILED: Expected main line 2, got ", frames[0]["name"].getStr(), " line ", frames[0]["line"].getInt()
+  echo "\n✗ FAILED: Expected test line 8, got ", frames[0]["name"].getStr(), " line ", frames[0]["line"].getInt()
 
 # Now try step into when ALREADY inside test
 echo "\n3. Test step into when already inside test() at line 6"
@@ -63,7 +63,7 @@ stackResp = server.handleDebugRequest(%*{"seq": 18, "type": "request", "command"
 frames = stackResp["body"]["stackFrames"].getElems()
 echo "   Stack: ", frames[0]["name"].getStr(), " line ", frames[0]["line"].getInt()
 
-if frames[0]["name"].getStr() == "main" and frames[0]["line"].getInt() == 2:
-  echo "\n✓ SUCCESS: Returned to main line 2 after step into from test"
+if frames[0]["name"].getStr() == "main" and frames[0]["line"].getInt() == 3:
+  echo "\n✓ SUCCESS: Correctly at main line 3 after print(test()) completes"
 else:
-  echo "\n✗ FAILED: Expected main line 2, got ", frames[0]["name"].getStr(), " line ", frames[0]["line"].getInt()
+  echo "\n✗ FAILED: Expected main line 3, got ", frames[0]["name"].getStr(), " line ", frames[0]["line"].getInt()
