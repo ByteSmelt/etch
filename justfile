@@ -37,13 +37,15 @@ clean:
 
 # Handle performance
 perf:
-    #hyperfine --warmup 3 './etch --run --release performance/for_loop_print.etch' 'python3 performance/for_loop_print.py'
-    #hyperfine --warmup 3 './etch --run --release performance/arithmetic_operations.etch' 'python3 performance/arithmetic_operations.py'
-    #hyperfine --warmup 3 './etch --run --release performance/array_operations.etch' 'python3 performance/array_operations.py'
-    #hyperfine --warmup 3 './etch --run --release performance/string_operations.etch' 'python3 performance/string_operations.py'
-    #hyperfine --warmup 3 './etch --run --release performance/nested_loops.etch' 'python3 performance/nested_loops.py'
-    hyperfine --warmup 3 './etch --run --release performance/function_calls.etch' 'python3 performance/function_calls.py'
     @just build
+    #hyperfine --warmup 10 './etch --run --release performance/arithmetic_operations.etch' 'python3 performance/arithmetic_operations.py'
+    #hyperfine --warmup 10 './etch --run --release performance/array_operations.etch' 'python3 performance/array_operations.py'
+    #hyperfine --warmup 10 './etch --run --release performance/for_loop_print.etch' 'python3 performance/for_loop_print.py'
+    #hyperfine --warmup 10 './etch --run --release performance/function_calls.etch' 'python3 performance/function_calls.py'
+    #hyperfine --warmup 10 './etch --run --release performance/math_intensive.etch' 'python3 performance/math_intensive.py'
+    hyperfine --warmup 10 './etch --run --release performance/memory_allocation.etch' 'python3 performance/memory_allocation.py'
+    #hyperfine --warmup 10 './etch --run --release performance/nested_loops.etch' 'python3 performance/nested_loops.py'
+    #hyperfine --warmup 10 './etch --run --release performance/string_operations.etch' 'python3 performance/string_operations.py'
 
 # Deal with VSCode extension packaging and installation
 [working-directory: 'vscode']

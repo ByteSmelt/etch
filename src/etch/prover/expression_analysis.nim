@@ -7,6 +7,7 @@ import ../frontend/ast, ../common/errors, ../common/types
 import ../common/[constants, logging]
 import types, binary_operations, function_evaluation, symbolic_execution
 
+
 proc proveStmt*(s: Stmt; env: Env, ctx: ProverContext)
 proc analyzeExpr*(e: Expr; env: Env, ctx: ProverContext): Info
 proc analyzeBinaryExpr*(e: Expr, env: Env, ctx: ProverContext): Info
@@ -270,8 +271,12 @@ proc analyzeUserDefinedCall*(e: Expr, env: Env, ctx: ProverContext): Info =
       return infoConst(evalResult.get)
 
   # Add function to call stack before comprehensive analysis
-  var newCtx = ctx
-  newCtx.callStack = ctx.callStack & @[e.fname]
+  var newCtx = ProverContext(
+    fnContext: ctx.fnContext,
+    flags: ctx.flags,
+    prog: ctx.prog,
+    callStack: ctx.callStack & @[e.fname]
+  )
 
   # Create function call environment with parameter mappings
   # Start with global environment but override with parameter mappings
@@ -301,11 +306,11 @@ proc analyzeUserDefinedCall*(e: Expr, env: Env, ctx: ProverContext): Info =
     # Store the original argument expression if it's simple enough
     if i < e.args.len:
       callEnv.exprs[paramName] = e.args[i]
-    logProver(ctx.flags, &"Parameter '{paramName}' mapped to: {(if argInfos[i].known: $argInfos[i].cval else: \"[\" & $argInfos[i].minv & \"..\" & $argInfos[i].maxv & \"]\")}")
+    logProver(newCtx.flags, &"Parameter '{paramName}' mapped to: {(if argInfos[i].known: $argInfos[i].cval else: \"[\" & $argInfos[i].minv & \"..\" & $argInfos[i].maxv & \"]\")}")
 
   # Perform comprehensive safety analysis on function body
   let fnContext = &"function {functionNameFromSignature(e.fname)}"
-  logProver(ctx.flags, &"Starting comprehensive analysis of function body with {fn.body.len} statements")
+  logProver(newCtx.flags, &"Starting comprehensive analysis of function body with {fn.body.len} statements")
 
   # Recursive helper to analyze expressions for all safety violations
   proc checkExpressionSafety(expr: Expr) =
@@ -318,7 +323,7 @@ proc analyzeUserDefinedCall*(e: Expr, env: Env, ctx: ProverContext): Info =
       # Then check the binary operation itself
       case expr.bop
       of boDiv, boMod:
-        let divisorInfo = analyzeExpr(expr.rhs, callEnv, ctx)
+        let divisorInfo = analyzeExpr(expr.rhs, callEnv, newCtx)
         if divisorInfo.known and divisorInfo.cval == 0:
           raise newProverError(expr.pos, &"division by zero in {fnContext}")
         elif not divisorInfo.nonZero:
@@ -326,8 +331,8 @@ proc analyzeUserDefinedCall*(e: Expr, env: Env, ctx: ProverContext): Info =
       of boAdd, boSub, boMul:
         # Check for potential overflow/underflow
         # The binary operations module already does overflow checks
-        # Create a temporary context with the function context
-        let tmpCtx = newProverContext(fnContext, ctx.flags, ctx.prog)
+        # Use newCtx to preserve call stack
+        var tmpCtx = ProverContext(fnContext: fnContext, flags: newCtx.flags, prog: newCtx.prog, callStack: newCtx.callStack)
         discard analyzeBinaryExpr(expr, callEnv, tmpCtx)
       else:
         discard
@@ -335,7 +340,7 @@ proc analyzeUserDefinedCall*(e: Expr, env: Env, ctx: ProverContext): Info =
       # Array bounds checking
       checkExpressionSafety(expr.arrayExpr)
       checkExpressionSafety(expr.indexExpr)
-      let tmpCtx = newProverContext(fnContext, ctx.flags, ctx.prog)
+      var tmpCtx = ProverContext(fnContext: fnContext, flags: newCtx.flags, prog: newCtx.prog, callStack: newCtx.callStack)
       let indexInfo = analyzeExpr(expr.indexExpr, callEnv, tmpCtx)
       if indexInfo.known and indexInfo.cval < 0:
         raise newProverError(expr.pos, &"negative array index in {fnContext}")
@@ -348,11 +353,11 @@ proc analyzeUserDefinedCall*(e: Expr, env: Env, ctx: ProverContext): Info =
       if expr.endExpr.isSome:
         checkExpressionSafety(expr.endExpr.get)
       checkExpressionSafety(expr.sliceExpr)
-      let tmpCtx = newProverContext(fnContext, ctx.flags, ctx.prog)
+      var tmpCtx = ProverContext(fnContext: fnContext, flags: newCtx.flags, prog: newCtx.prog, callStack: newCtx.callStack)
       discard analyzeExpr(expr, callEnv, tmpCtx)
     of ekDeref:
       # Nil dereference checking
-      let tmpCtx = newProverContext(fnContext, ctx.flags, ctx.prog)
+      var tmpCtx = ProverContext(fnContext: fnContext, flags: newCtx.flags, prog: newCtx.prog, callStack: newCtx.callStack)
       let refInfo = analyzeExpr(expr.refExpr, callEnv, tmpCtx)
       if not refInfo.nonNil:
         raise newProverError(expr.pos, &"cannot prove reference is non-nil before dereference in {fnContext}")
@@ -368,19 +373,19 @@ proc analyzeUserDefinedCall*(e: Expr, env: Env, ctx: ProverContext): Info =
       # Recursive function calls
       for arg in expr.args:
         checkExpressionSafety(arg)
-      # Check the function call itself
-      let tmpCtx = newProverContext(fnContext, ctx.flags, ctx.prog)
+      # Check the function call itself - preserve call stack
+      var tmpCtx = ProverContext(fnContext: fnContext, flags: newCtx.flags, prog: newCtx.prog, callStack: newCtx.callStack)
       discard analyzeExpr(expr, callEnv, tmpCtx)
     else:
       # For other expression types, just analyze normally
-      let tmpCtx = newProverContext(fnContext, ctx.flags, ctx.prog)
+      var tmpCtx = ProverContext(fnContext: fnContext, flags: newCtx.flags, prog: newCtx.prog, callStack: newCtx.callStack)
       discard analyzeExpr(expr, callEnv, tmpCtx)
 
   # Check all statements in the function body using full statement analysis
-  # Create a new context for the function body with the function context
-  var fnCtx = newProverContext(fnContext, ctx.flags, ctx.prog)
+  # Use newCtx to preserve the call stack
+  var fnCtx = ProverContext(fnContext: fnContext, flags: newCtx.flags, prog: newCtx.prog, callStack: newCtx.callStack)
   for i, stmt in fn.body:
-    logProver(ctx.flags, &"Analyzing statement {i + 1}/{fn.body.len}: {stmt.kind}")
+    logProver(newCtx.flags, &"Analyzing statement {i + 1}/{fn.body.len}: {stmt.kind}")
     proveStmt(stmt, callEnv, fnCtx)
 
   logProver(ctx.flags, &"Function {fnContext} analysis completed successfully")
