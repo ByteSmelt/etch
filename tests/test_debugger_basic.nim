@@ -1,31 +1,35 @@
 # test_debug_basic.nim
 # Basic sanity tests for the register VM debugger
 
-import std/[unittest, json, osproc, os, strutils]
+import std/[unittest, osproc, os, strutils]
+import test_utils
 
 suite "Register VM Debugger - Basic Sanity":
+  # Ensure etch binary is built before running tests
+  discard ensureEtchBinary()
+  let etchExe = findEtchExecutable()
   test "Debug server responds to initialize":
-    let testProg = getTempDir() / "test.etch"
+    let testProg = getTestTempDir() / "test.etch"
     writeFile(testProg, "fn main() -> void { var x: int = 1; print(x); }")
     defer: removeFile(testProg)
 
-    let cmd = "echo '{\"seq\":1,\"type\":\"request\",\"command\":\"initialize\",\"arguments\":{}}' | timeout 1 ./etch --debug-server " & testProg & " 2>&1"
+    let cmd = "echo '{\"seq\":1,\"type\":\"request\",\"command\":\"initialize\",\"arguments\":{}}' | timeout 1 " & etchExe & " --debug-server " & testProg & " 2>&1"
     let (output, _) = execCmdEx(cmd)
 
     check output.contains("\"success\":true")
     check output.contains("supportsStepInRequest")
 
   test "Debug server can launch program":
-    let testProg = getTempDir() / "test.etch"
+    let testProg = getTestTempDir() / "test.etch"
     writeFile(testProg, "fn main() -> void { var x: int = 1; print(x); }")
     defer: removeFile(testProg)
 
-    let cmds = getTempDir() / "cmds.txt"
+    let cmds = getTestTempDir() / "cmds.txt"
     writeFile(cmds, """{"seq":1,"type":"request","command":"initialize","arguments":{}}
 {"seq":2,"type":"request","command":"launch","arguments":{"program":"$1","stopOnEntry":true}}""".format(testProg))
     defer: removeFile(cmds)
 
-    let cmd = "timeout 1 ./etch --debug-server " & testProg & " < " & cmds & " 2>/dev/null"
+    let cmd = "timeout 1 " & etchExe & " --debug-server " & testProg & " < " & cmds & " 2>/dev/null"
     let (output, _) = execCmdEx(cmd)
 
     # Should see both responses
@@ -34,7 +38,7 @@ suite "Register VM Debugger - Basic Sanity":
     check output.contains("\"event\":\"stopped\"")
 
   test "Debug server provides variable information":
-    let testProg = getTempDir() / "test.etch"
+    let testProg = getTestTempDir() / "test.etch"
     writeFile(testProg, """
 fn main() -> void {
     var a: int = 10;
@@ -44,7 +48,7 @@ fn main() -> void {
 """)
     defer: removeFile(testProg)
 
-    let cmds = getTempDir() / "cmds.txt"
+    let cmds = getTestTempDir() / "cmds.txt"
     writeFile(cmds, """{"seq":1,"type":"request","command":"initialize","arguments":{}}
 {"seq":2,"type":"request","command":"launch","arguments":{"program":"$1","stopOnEntry":true}}
 {"seq":3,"type":"request","command":"next","arguments":{"threadId":1}}
@@ -54,7 +58,7 @@ fn main() -> void {
 {"seq":7,"type":"request","command":"disconnect","arguments":{}}""".format(testProg))
     defer: removeFile(cmds)
 
-    let cmd = "timeout 1 ./etch --debug-server " & testProg & " < " & cmds & " 2>/dev/null"
+    let cmd = "timeout 1 " & etchExe & " --debug-server " & testProg & " < " & cmds & " 2>/dev/null"
     let (output, _) = execCmdEx(cmd)
 
     # Should see scopes with Local Variables
@@ -72,7 +76,7 @@ fn main() -> void {
     check hasValidResponse
 
   test "Debug server supports stepping":
-    let testProg = getTempDir() / "test.etch"
+    let testProg = getTestTempDir() / "test.etch"
     writeFile(testProg, """
 fn main() -> void {
     var x: int = 1;
@@ -82,14 +86,14 @@ fn main() -> void {
 """)
     defer: removeFile(testProg)
 
-    let cmds = getTempDir() / "cmds.txt"
+    let cmds = getTestTempDir() / "cmds.txt"
     writeFile(cmds, """{"seq":1,"type":"request","command":"initialize","arguments":{}}
 {"seq":2,"type":"request","command":"launch","arguments":{"program":"$1","stopOnEntry":true}}
 {"seq":3,"type":"request","command":"next","arguments":{"threadId":1}}
 {"seq":4,"type":"request","command":"disconnect","arguments":{}}""".format(testProg))
     defer: removeFile(cmds)
 
-    let cmd = "timeout 1 ./etch --debug-server " & testProg & " < " & cmds & " 2>/dev/null"
+    let cmd = "timeout 1 " & etchExe & " --debug-server " & testProg & " < " & cmds & " 2>/dev/null"
     let (output, _) = execCmdEx(cmd)
 
     # Should see step response
