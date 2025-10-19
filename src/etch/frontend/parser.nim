@@ -729,6 +729,12 @@ proc parseComptime(p: Parser): Stmt =
   Stmt(kind: skComptime, cbody: body, pos: p.posOf(k))
 
 
+proc parseDefer(p: Parser): Stmt =
+  let k = p.expect(tkKeyword, "defer")
+  let body = p.parseBlock()
+  Stmt(kind: skDefer, deferBody: body, pos: p.posOf(k))
+
+
 proc parseImport(p: Parser): Stmt =
   let k = p.expect(tkKeyword, "import")
   let pos = p.posOf(k)
@@ -1168,6 +1174,7 @@ proc parseStmt*(p: Parser): Stmt =
     of "return": return p.parseReturn()
     of "discard": return p.parseDiscard()
     of "comptime": return p.parseComptime()
+    of "defer": return p.parseDefer()
     of "type": return p.parseTypeDecl()
     of "import": return p.parseImport()
     else: discard # fallthrough to simple

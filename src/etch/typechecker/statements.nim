@@ -228,6 +228,13 @@ proc typecheckBreak(prog: Program; fd: FunDecl; sc: Scope; s: Stmt; subst: var T
   discard
 
 
+proc typecheckDefer(prog: Program; fd: FunDecl; sc: Scope; s: Stmt; subst: var TySubst) =
+  # Type check the deferred statements
+  # Deferred statements execute at the end of the enclosing scope
+  for stmt in s.deferBody:
+    typecheckStmt(prog, fd, sc, stmt, subst)
+
+
 proc typecheckStmtList*(prog: Program; fd: FunDecl; sc: Scope; stmts: seq[Stmt]; subst: var TySubst; blockResultUsed: bool = false): EtchType =
   ## Type check a list of statements and return the type of the last expression (or void)
   var resultType = tVoid()
@@ -398,6 +405,7 @@ proc typecheckStmt*(prog: Program; fd: FunDecl; sc: Scope; s: Stmt; subst: var T
         raise newTypecheckError(s.pos, &"cannot discard void function '{unmangledName}'; void results are automatically discarded")
   of skReturn: typecheckReturn(prog, fd, sc, s, subst)
   of skComptime: typecheckComptime(prog, fd, sc, s, subst)
+  of skDefer: typecheckDefer(prog, fd, sc, s, subst)
   of skTypeDecl:
     # Type declarations are processed during program initialization
     # No runtime type checking needed here

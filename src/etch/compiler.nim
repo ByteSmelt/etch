@@ -23,10 +23,10 @@ type
     release*: bool
 
 proc getBytecodeFileName*(sourceFile: string): string =
-  ## Get the .etcx filename for a source file in __etch__ subfolder
+  ## Get the bytecode filename for a source file in bytecode subfolder
   let (dir, name, _) = splitFile(sourceFile)
-  let etchDir = joinPath(dir, "__etch__")
-  joinPath(etchDir, name & ".etcx")
+  let etchDir = joinPath(dir, BYTECODE_CACHE_DIR)
+  joinPath(etchDir, name & BYTECODE_FILE_EXTENSION)
 
 proc hashSourceAndFlags*(source: string, flags: CompilerFlags): string =
   ## Generate a hash of the source code + compiler flags for cache validation
@@ -263,18 +263,20 @@ proc runCachedBytecode*(bytecodeFile: string): CompilerResult =
       var paramSpecs: seq[cffi.ParamSpec] = @[]
       for i, paramType in cffiInfo.paramTypes:
         let typ = case paramType
-          of "tkFloat": tFloat()
-          of "tkInt": tInt()
           of "tkBool": tBool()
+          of "tkChar": tChar()
+          of "tkInt": tInt()
+          of "tkFloat": tFloat()
           of "tkString": tString()
           of "tkVoid": tVoid()
           else: tVoid()
         paramSpecs.add(cffi.ParamSpec(name: "arg" & $i, typ: typ))
 
       let retType = case cffiInfo.returnType
-        of "tkFloat": tFloat()
-        of "tkInt": tInt()
         of "tkBool": tBool()
+        of "tkChar": tChar()
+        of "tkInt": tInt()
+        of "tkFloat": tFloat()
         of "tkString": tString()
         of "tkVoid": tVoid()
         else: tVoid()
@@ -293,7 +295,6 @@ proc runCachedBytecode*(bytecodeFile: string): CompilerResult =
 
 proc saveBytecodeToCache*(regProg: RegBytecodeProgram, bytecodeFile: string) =
   try:
-    # Ensure __etch__ directory exists
     let bytecodeDir = bytecodeFile.splitFile.dir
     if not dirExists(bytecodeDir):
       createDir(bytecodeDir)

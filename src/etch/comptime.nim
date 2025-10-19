@@ -248,6 +248,10 @@ proc foldStmt(prog: Program, s: var Stmt) =
             injectedVars.add(varDecl)
 
     s.cbody = injectedVars
+  of skDefer:
+    # Fold statements in defer body
+    for i in 0..<s.deferBody.len:
+      foldStmt(prog, s.deferBody[i])
   of skTypeDecl:
     discard
   of skImport:

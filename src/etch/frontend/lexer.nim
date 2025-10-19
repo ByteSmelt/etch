@@ -15,7 +15,7 @@ type
 const keywords = [
   "fn","let","var","return","if","elif","else","while","for","break","in",
   "true","false","int","float","string","char","bool","void","ref",
-  "comptime","new","and","or","not","array","nil","option","match",
+  "comptime","defer","new","and","or","not","array","nil","option","match",
   "some","none","ok","error","type","distinct","object","import","export","discard"
 ].toSeq
 

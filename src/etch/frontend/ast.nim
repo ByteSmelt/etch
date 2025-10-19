@@ -130,7 +130,7 @@ type
       ifElse*: seq[Stmt]                              # else body
 
   StmtKind* = enum
-    skVar, skAssign, skFieldAssign, skIf, skWhile, skFor, skBreak, skExpr, skReturn, skComptime, skTypeDecl, skImport, skDiscard
+    skVar, skAssign, skFieldAssign, skIf, skWhile, skFor, skBreak, skExpr, skReturn, skComptime, skTypeDecl, skImport, skDiscard, skDefer
 
   VarFlag* = enum
     vfLet, vfVar
@@ -184,6 +184,8 @@ type
       dexprs*: seq[Expr]      # expressions to discard
     of skBreak:
       discard
+    of skDefer:
+      deferBody*: seq[Stmt]   # statements to execute at scope exit
 
   ImportItem* = object
     itemKind*: string       # "function", "const", "type"

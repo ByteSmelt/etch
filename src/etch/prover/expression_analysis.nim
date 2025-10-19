@@ -1567,6 +1567,7 @@ proc proveStmt*(s: Stmt; env: Env, ctx: ProverContext) =
     of skTypeDecl: "type declaration"
     of skImport: "import statement"
     of skDiscard: "discard statement"
+    of skDefer: "defer block"
 
   logProver(ctx.flags, "Analyzing " & stmtKindStr & (if ctx.fnContext != "": " in " & ctx.fnContext else: ""))
 
@@ -1581,6 +1582,10 @@ proc proveStmt*(s: Stmt; env: Env, ctx: ProverContext) =
   of skExpr: proveExpr(s, env, ctx)
   of skReturn: proveReturn(s, env, ctx)
   of skComptime: proveComptime(s, env, ctx)
+  of skDefer:
+    # Defer blocks - analyze the deferred statements
+    for stmt in s.deferBody:
+      proveStmt(stmt, env, ctx)
   of skTypeDecl:
     # Type declarations don't need proving
     discard

@@ -82,6 +82,11 @@ type
     ropTailCall,      # tail call optimization
     ropReturn,        # return R[A..A+B-2]
 
+    # Defer support
+    ropPushDefer,     # Push defer body PC (at pc + sBx) to defer stack
+    ropExecDefers,    # Execute all defers in reverse order
+    ropDeferEnd,      # Mark end of defer body (returns from defer execution)
+
     # Loops (optimized for common patterns)
     ropForLoop,       # for loop increment and test
     ropForPrep,       # for loop preparation
@@ -129,6 +134,8 @@ type
     base*: int                       # Base register for current function
     returnAddr*: int                 # Return address for function calls
     baseReg*: uint8                  # Result register in calling frame
+    deferStack*: seq[int]            # Stack of defer body PC locations to execute on scope exit
+    deferReturnPC*: int              # PC to return to after executing a defer body
 
   RegisterVM* = ref object
     frames*: seq[RegisterFrame]     # Call stack of register frames

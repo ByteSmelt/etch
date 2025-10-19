@@ -1343,6 +1343,38 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
         # No more frames, exit
         return 0
 
+    of ropPushDefer:
+      # Register a defer block by pushing its PC location to the defer stack
+      let deferBodyOffset = instr.sbx
+      let deferBodyPC = pc + deferBodyOffset
+      vm.currentFrame.deferStack.add(deferBodyPC)
+      log(verbose, "ropPushDefer: registered defer at PC " & $deferBodyPC)
+
+    of ropExecDefers:
+      # Execute all registered defers in reverse order (LIFO)
+      log(verbose, "ropExecDefers: executing " & $vm.currentFrame.deferStack.len & " defers")
+      if vm.currentFrame.deferStack.len > 0:
+        # Pop the first defer and jump to it
+        let deferPC = vm.currentFrame.deferStack.pop()
+        log(verbose, "  Executing defer at PC " & $deferPC)
+
+        # Save current PC to return after defer execution
+        vm.currentFrame.deferReturnPC = pc
+        # Jump to defer body (subtract 1 because pc will be incremented)
+        pc = deferPC - 1
+
+    of ropDeferEnd:
+      # End of defer body - check if there are more defers to execute
+      if vm.currentFrame.deferStack.len > 0:
+        # More defers to execute - pop and jump to next one
+        let deferPC = vm.currentFrame.deferStack.pop()
+        log(verbose, "ropDeferEnd: executing next defer at PC " & $deferPC)
+        pc = deferPC - 1
+      else:
+        # No more defers - return to saved PC
+        log(verbose, "ropDeferEnd: all defers executed, returning to PC " & $vm.currentFrame.deferReturnPC)
+        pc = vm.currentFrame.deferReturnPC
+
     # --- Fused Instructions (Aggressive Optimization) ---
     of ropAddAdd:
       # R[A] = R[B] + R[C] + R[D]
