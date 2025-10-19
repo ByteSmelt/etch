@@ -53,10 +53,18 @@ jobs:
     - name: Build release binary
       run: just build
 
-    - name: Upload build artifacts
+    - name: Upload build artifacts (Linux)
       if: matrix.os == 'ubuntu-latest'
       uses: actions/upload-artifact@v4
       with:
-        name: etch-binary
+        name: etch-linux-binary
+        path: etch
+        retention-days: 7
+
+    - name: Upload build artifacts (macOS)
+      if: matrix.os == 'macOS'
+      uses: actions/upload-artifact@v4
+      with:
+        name: etch-macos-binary
         path: etch
         retention-days: 7
