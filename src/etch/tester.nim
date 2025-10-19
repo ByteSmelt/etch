@@ -22,6 +22,7 @@ proc normalizeOutput(output: string): string =
     .strip()
     .replace("\r\n", "\n")
     .replace("\r", "\n")
+    .replace("\\", "/")  # Normalize path separators for cross-platform compatibility
     .splitLines()
     .mapIt(it.strip(trailing = true, leading = false))  # Only strip trailing whitespace, preserve leading
     .filterIt(it.len > 0)
