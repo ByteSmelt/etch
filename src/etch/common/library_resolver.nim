@@ -95,7 +95,17 @@ proc findLibraryInSearchPaths*(actualPath: string, searchPaths: seq[string] = @[
   ## Try to find a library in standard search paths
   ## Returns the full path if found, empty string otherwise
 
-  let defaultSearchPaths = @[".", "lib", "/usr/local/lib", "/usr/lib", "/lib/x86_64-linux-gnu"]
+  # Platform-specific default search paths
+  let defaultSearchPaths = when defined(windows):
+    # Windows: current directory, examples directory, lib directory
+    @[".", "lib", "examples", "examples/clib"]
+  elif defined(macosx):
+    # macOS: standard Unix paths plus Homebrew paths
+    @[".", "lib", "examples/clib", "/usr/local/lib", "/usr/lib", "/opt/homebrew/lib"]
+  else:
+    # Linux: standard Unix library paths
+    @[".", "lib", "examples/clib", "/usr/local/lib", "/usr/lib", "/lib/x86_64-linux-gnu", "/lib"]
+
   let allPaths = if searchPaths.len > 0: searchPaths else: defaultSearchPaths
 
   for searchPath in allPaths:

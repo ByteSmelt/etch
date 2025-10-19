@@ -6,14 +6,18 @@ LDFLAGS =
 # Platform-specific settings
 # Detect Windows via OS environment variable (set on Windows)
 ifeq ($(OS),Windows_NT)
-    # Windows - no -fPIC needed for DLLs
+    # Windows - no -fPIC needed for DLLs, no lib prefix
     CFLAGS = -shared -O2
     XFLAGS =
     LIBEXT = .dll
+    LIBPREFIX =
+    LIBNAME = mathlib
 else
-    # Unix-like systems (macOS, Linux)
+    # Unix-like systems (macOS, Linux) - use lib prefix
     UNAME_S := $(shell uname -s)
     CFLAGS = -shared -fPIC -O2
+    LIBPREFIX = lib
+    LIBNAME = mathlib
 
     ifeq ($(UNAME_S),Darwin)
         XFLAGS = -isysroot $(shell xcrun --show-sdk-path)
@@ -28,16 +32,18 @@ else
     endif
 endif
 
-all: libmathlib$(LIBEXT)
+LIBFULLNAME = $(LIBPREFIX)$(LIBNAME)$(LIBEXT)
 
-libmathlib$(LIBEXT): mathlib.c
+all: $(LIBFULLNAME)
+
+$(LIBFULLNAME): mathlib.c
 	$(CC) $(CFLAGS) $(XFLAGS) -o $@ $< $(LDFLAGS)
 
 clean:
 ifeq ($(OS),Windows_NT)
-	del /Q libmathlib$(LIBEXT) 2>nul || exit 0
+	del /Q $(LIBFULLNAME) 2>nul || exit 0
 else
-	rm -f libmathlib$(LIBEXT)
+	rm -f $(LIBFULLNAME)
 endif
 
 .PHONY: all clean
