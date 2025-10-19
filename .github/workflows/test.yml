@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
 
     steps:
     - name: Checkout code
@@ -25,33 +25,28 @@ jobs:
         nim-version: '2.2.4'
         repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Install just (Linux)
-      if: runner.os == 'Linux'
-      run: |
-        curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin
-
-    - name: Install just (macOS)
+    - name: Install dependencies (macOS)
       if: runner.os == 'macOS'
       run: |
-        brew install just
+        brew install coreutils
 
     - name: Verify installations
       run: |
         nim --version
         nimble --version
-        just --version
 
     - name: Build C libraries
-      run: just libs
+      working-directory: "examples/clib"
+      run: make
+
+    - name: Build release binary
+      run: nim c -d:danger -o:etch src/etch.nim
 
     - name: Run example tests
       run: nim r src/etch.nim --test examples/
 
     - name: Run debugger tests
       run: nimble test
-
-    - name: Build release binary
-      run: just build
 
     - name: Upload build artifacts (Linux)
       if: matrix.os == 'ubuntu-latest'
@@ -62,9 +57,17 @@ jobs:
         retention-days: 7
 
     - name: Upload build artifacts (macOS)
-      if: matrix.os == 'macOS'
+      if: matrix.os == 'macos-latest'
       uses: actions/upload-artifact@v4
       with:
         name: etch-macos-binary
         path: etch
+        retention-days: 7
+
+    - name: Upload build artifacts (Windows)
+      if: matrix.os == 'windows-latest'
+      uses: actions/upload-artifact@v4
+      with:
+        name: etch-windows-binary.exe
+        path: etch.exe
         retention-days: 7

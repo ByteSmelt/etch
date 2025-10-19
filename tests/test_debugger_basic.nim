@@ -13,7 +13,9 @@ suite "Register VM Debugger - Basic Sanity":
     writeFile(testProg, "fn main() -> void { var x: int = 1; print(x); }")
     defer: removeFile(testProg)
 
-    let cmd = "echo '{\"seq\":1,\"type\":\"request\",\"command\":\"initialize\",\"arguments\":{}}' | timeout 1 " & etchExe & " --debug-server " & testProg & " 2>&1"
+    let baseCmd = etchExe & " --debug-server " & testProg & " 2>&1"
+    let timedCmd = wrapWithTimeout(baseCmd, 1)
+    let cmd = "echo '{\"seq\":1,\"type\":\"request\",\"command\":\"initialize\",\"arguments\":{}}' | " & timedCmd
     let (output, _) = execCmdEx(cmd)
 
     check output.contains("\"success\":true")
@@ -25,11 +27,12 @@ suite "Register VM Debugger - Basic Sanity":
     defer: removeFile(testProg)
 
     let cmds = getTestTempDir() / "cmds.txt"
-    writeFile(cmds, """{"seq":1,"type":"request","command":"initialize","arguments":{}}
-{"seq":2,"type":"request","command":"launch","arguments":{"program":"$1","stopOnEntry":true}}""".format(testProg))
+    writeFile(cmds, "{\"seq\":1,\"type\":\"request\",\"command\":\"initialize\",\"arguments\":{}}\n" &
+                    "{\"seq\":2,\"type\":\"request\",\"command\":\"launch\",\"arguments\":{\"program\":\"" & testProg & "\",\"stopOnEntry\":true}}")
     defer: removeFile(cmds)
 
-    let cmd = "timeout 1 " & etchExe & " --debug-server " & testProg & " < " & cmds & " 2>/dev/null"
+    let baseCmd = etchExe & " --debug-server " & testProg & " < " & cmds & " 2>/dev/null"
+    let cmd = wrapWithTimeout(baseCmd, 1)
     let (output, _) = execCmdEx(cmd)
 
     # Should see both responses
@@ -49,16 +52,17 @@ fn main() -> void {
     defer: removeFile(testProg)
 
     let cmds = getTestTempDir() / "cmds.txt"
-    writeFile(cmds, """{"seq":1,"type":"request","command":"initialize","arguments":{}}
-{"seq":2,"type":"request","command":"launch","arguments":{"program":"$1","stopOnEntry":true}}
-{"seq":3,"type":"request","command":"next","arguments":{"threadId":1}}
-{"seq":4,"type":"request","command":"next","arguments":{"threadId":1}}
-{"seq":5,"type":"request","command":"scopes","arguments":{"frameId":0}}
-{"seq":6,"type":"request","command":"variables","arguments":{"variablesReference":1}}
-{"seq":7,"type":"request","command":"disconnect","arguments":{}}""".format(testProg))
+    writeFile(cmds, "{\"seq\":1,\"type\":\"request\",\"command\":\"initialize\",\"arguments\":{}}\n" &
+                    "{\"seq\":2,\"type\":\"request\",\"command\":\"launch\",\"arguments\":{\"program\":\"" & testProg & "\",\"stopOnEntry\":true}}\n" &
+                    "{\"seq\":3,\"type\":\"request\",\"command\":\"next\",\"arguments\":{\"threadId\":1}}\n" &
+                    "{\"seq\":4,\"type\":\"request\",\"command\":\"next\",\"arguments\":{\"threadId\":1}}\n" &
+                    "{\"seq\":5,\"type\":\"request\",\"command\":\"scopes\",\"arguments\":{\"frameId\":0}}\n" &
+                    "{\"seq\":6,\"type\":\"request\",\"command\":\"variables\",\"arguments\":{\"variablesReference\":1}}\n" &
+                    "{\"seq\":7,\"type\":\"request\",\"command\":\"disconnect\",\"arguments\":{}}")
     defer: removeFile(cmds)
 
-    let cmd = "timeout 1 " & etchExe & " --debug-server " & testProg & " < " & cmds & " 2>/dev/null"
+    let baseCmd = etchExe & " --debug-server " & testProg & " < " & cmds & " 2>/dev/null"
+    let cmd = wrapWithTimeout(baseCmd, 1)
     let (output, _) = execCmdEx(cmd)
 
     # Should see scopes with Local Variables
@@ -87,13 +91,14 @@ fn main() -> void {
     defer: removeFile(testProg)
 
     let cmds = getTestTempDir() / "cmds.txt"
-    writeFile(cmds, """{"seq":1,"type":"request","command":"initialize","arguments":{}}
-{"seq":2,"type":"request","command":"launch","arguments":{"program":"$1","stopOnEntry":true}}
-{"seq":3,"type":"request","command":"next","arguments":{"threadId":1}}
-{"seq":4,"type":"request","command":"disconnect","arguments":{}}""".format(testProg))
+    writeFile(cmds, "{\"seq\":1,\"type\":\"request\",\"command\":\"initialize\",\"arguments\":{}}\n" &
+                    "{\"seq\":2,\"type\":\"request\",\"command\":\"launch\",\"arguments\":{\"program\":\"" & testProg & "\",\"stopOnEntry\":true}}\n" &
+                    "{\"seq\":3,\"type\":\"request\",\"command\":\"next\",\"arguments\":{\"threadId\":1}}\n" &
+                    "{\"seq\":4,\"type\":\"request\",\"command\":\"disconnect\",\"arguments\":{}}")
     defer: removeFile(cmds)
 
-    let cmd = "timeout 1 " & etchExe & " --debug-server " & testProg & " < " & cmds & " 2>/dev/null"
+    let baseCmd = etchExe & " --debug-server " & testProg & " < " & cmds & " 2>/dev/null"
+    let cmd = wrapWithTimeout(baseCmd, 1)
     let (output, _) = execCmdEx(cmd)
 
     # Should see step response

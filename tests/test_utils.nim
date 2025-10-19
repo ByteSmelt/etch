@@ -1,19 +1,57 @@
 # test_utils.nim
 # Common utilities for Etch tests
 
-import std/[os, osproc]
+import std/[os, osproc, strutils]
+
+proc getTimeoutCommand*(): string =
+  ## Get the appropriate timeout command for the current platform
+  ## Returns the command to use for timing out processes
+  when defined(windows):
+    # Windows doesn't have a built-in timeout command for shell
+    # We'll need to handle this differently or skip timeout
+    return ""
+  elif defined(macosx):
+    # On macOS, check if gtimeout is available (from GNU coreutils)
+    let (output, exitCode) = execCmdEx("which gtimeout")
+    if exitCode == 0 and output.strip().len > 0:
+      return "gtimeout"
+    # Fall back to checking for timeout
+    let (output2, exitCode2) = execCmdEx("which timeout")
+    if exitCode2 == 0 and output2.strip().len > 0:
+      return "timeout"
+    # No timeout available - return empty
+    return ""
+  else:
+    # Linux and others typically have timeout by default
+    return "timeout"
+
+proc wrapWithTimeout*(cmd: string, seconds: int): string =
+  ## Wrap a command with timeout if available
+  let timeoutCmd = getTimeoutCommand()
+  if timeoutCmd.len > 0:
+    return timeoutCmd & " " & $seconds & " " & cmd
+  else:
+    # No timeout available, just return the command as-is
+    return cmd
 
 proc findEtchExecutable*(): string =
   ## Find the etch executable, trying multiple locations
   ## This works whether tests are run from project root or tests directory
 
-  # Try current directory first (when run from project root)
-  if fileExists("./etch"):
-    return "./etch"
-
-  # Try parent directory (when run from tests directory)
-  if fileExists("../etch"):
-    return "../etch"
+  when defined(windows):
+    # Windows uses .exe extension
+    if fileExists("./etch.exe"):
+      return "./etch.exe"
+    if fileExists("../etch.exe"):
+      return "../etch.exe"
+    if fileExists("etch.exe"):
+      return "etch.exe"
+  else:
+    # Unix-like systems
+    if fileExists("./etch"):
+      return "./etch"
+    if fileExists("../etch"):
+      return "../etch"
 
   # Try using nim to run directly (fallback)
   if fileExists("src/etch.nim"):
@@ -22,7 +60,10 @@ proc findEtchExecutable*(): string =
     return "nim r ../src/etch.nim"
 
   # Last resort: assume it's in PATH or current dir
-  return "./etch"
+  when defined(windows):
+    return "etch.exe"
+  else:
+    return "./etch"
 
 proc getTestTempDir*(): string =
   ## Get a temporary directory for test files
