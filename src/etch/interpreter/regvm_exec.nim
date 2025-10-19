@@ -5,9 +5,24 @@ import std/[tables, math, strutils]
 import ../common/[constants, cffi, values, types, logging]
 import regvm, regvm_debugger
 
-# C rand for consistency
-proc c_rand(): cint {.importc: "rand", header: "<stdlib.h>".}
-proc c_srand(seed: cuint) {.importc: "srand", header: "<stdlib.h>".}
+# Cross-platform deterministic PRNG using Xorshift64*
+# This ensures consistent random number generation across Linux, macOS, and Windows
+# Algorithm: https://en.wikipedia.org/wiki/Xorshift
+# Period: 2^64 - 1, excellent statistical properties
+
+proc etch_srand(vm: RegisterVM, seed: uint64) {.inline.} =
+  # Initialize RNG state with seed
+  # Avoid zero state (would produce all zeros)
+  vm.rngState = if seed == 0: 1'u64 else: seed
+
+proc etch_rand(vm: RegisterVM): uint64 {.inline.} =
+  # Xorshift64* algorithm
+  var x = vm.rngState
+  x = x xor (x shr 12)
+  x = x xor (x shl 25)
+  x = x xor (x shr 27)
+  vm.rngState = x
+  result = x * 0x2545F4914F6CDD1D'u64  # Multiplication constant for better distribution
 
 # Logging helper for VM execution
 template log(verbose: bool, msg: string) =
@@ -24,7 +39,8 @@ proc newRegisterVM*(prog: RegBytecodeProgram): RegisterVM =
     globals: initTable[string, V](),
     debugger: nil,  # No debugger by default - zero cost
     isDebugging: false,  # Not in debug mode
-    cffiRegistry: cast[pointer](globalCFFIRegistry)  # Use global C FFI registry
+    cffiRegistry: cast[pointer](globalCFFIRegistry),  # Use global C FFI registry
+    rngState: 1'u64  # Initialize RNG with default seed
   )
   result.currentFrame = addr result.frames[0]
 
@@ -36,7 +52,8 @@ proc newRegisterVMWithDebugger*(prog: RegBytecodeProgram, debugger: RegEtchDebug
     globals: initTable[string, V](),
     debugger: cast[pointer](debugger),
     isDebugging: true,  # Set debug mode flag
-    cffiRegistry: cast[pointer](globalCFFIRegistry)  # Use global C FFI registry
+    cffiRegistry: cast[pointer](globalCFFIRegistry),  # Use global C FFI registry
+    rngState: 1'u64  # Initialize RNG with default seed
   )
   result.currentFrame = addr result.frames[0]
   # Attach the debugger to this VM
@@ -1120,7 +1137,7 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
         if numArgs == 1:
           let seedVal = getReg(vm, resultReg + 1)
           if isInt(seedVal):
-            c_srand(cuint(getInt(seedVal)))
+            etch_srand(vm, uint64(getInt(seedVal)))
           setReg(vm, resultReg, makeNil())
 
       of "rand":
@@ -1129,8 +1146,8 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
           if isInt(maxVal):
             let maxInt = getInt(maxVal)
             if maxInt > 0:
-              let randVal = c_rand() mod cint(maxInt)
-              setReg(vm, resultReg, makeInt(int64(randVal)))
+              let randVal = int64(etch_rand(vm) mod uint64(maxInt))
+              setReg(vm, resultReg, makeInt(randVal))
             else:
               setReg(vm, resultReg, makeInt(0))
         elif numArgs == 2:
@@ -1141,8 +1158,8 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
             let maxInt = getInt(maxVal)
             let range = maxInt - minInt
             if range > 0:
-              let randVal = (c_rand() mod cint(range)) + cint(minInt)
-              setReg(vm, resultReg, makeInt(int64(randVal)))
+              let randVal = int64(etch_rand(vm) mod uint64(range)) + minInt
+              setReg(vm, resultReg, makeInt(randVal))
             else:
               setReg(vm, resultReg, makeInt(minInt))
 
