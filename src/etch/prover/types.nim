@@ -60,7 +60,13 @@ proc infoArray*(size: int64, sizeKnown: bool = true): Info =
   Info(known: false, minv: IMin, maxv: IMax, initialized: true, isArray: true, arraySize: size, arraySizeKnown: sizeKnown, used: false)
 
 proc infoString*(length: int64, sizeKnown: bool = true): Info =
-  Info(known: false, minv: IMin, maxv: IMax, initialized: true, isString: true, arraySize: length, arraySizeKnown: sizeKnown, used: false)
+  # For strings, minv and maxv represent the range of possible lengths
+  # This helps with overflow checking when accumulating string lengths
+  if sizeKnown:
+    Info(known: false, minv: length, maxv: length, initialized: true, isString: true, arraySize: length, arraySizeKnown: true, used: false)
+  else:
+    # Unknown length - default to non-negative range
+    Info(known: false, minv: 0, maxv: IMax, initialized: true, isString: true, arraySize: length, arraySizeKnown: false, used: false)
 
 proc infoRange*(minv, maxv: int64): Info =
   Info(known: false, minv: minv, maxv: maxv, initialized: true, nonZero: minv > 0 or maxv < 0, used: false)

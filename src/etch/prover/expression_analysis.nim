@@ -189,12 +189,32 @@ proc analyzeRandCall*(e: Expr, env: Env, ctx: ProverContext): Info =
 
 
 proc analyzeToStringCall*(e: Expr, env: Env, ctx: ProverContext): Info =
+  ## Compute string length for toString() conversion based on integer range
+  ## Accounts for sign character in negative numbers
   if e.args.len > 0:
     let argInfo = analyzeExpr(e.args[0], env, ctx)
-    # If we know the integer value, we can compute string length
+    # If we know the integer value, we can compute exact string length
     if argInfo.known:
       let strLen = ($argInfo.cval).len.int64
       return infoString(strLen, sizeKnown = true)
+    # If we know the range, compute the maximum number of digits needed
+    if argInfo.minv != IMin and argInfo.maxv != IMax:
+      # Compute string lengths for min and max values
+      let minStrLen = ($argInfo.minv).len.int64  # includes '-' for negative
+      let maxStrLen = ($argInfo.maxv).len.int64  # includes '-' for negative
+
+      # The maximum length is determined by whichever value needs more characters
+      let maxLen = max(minStrLen, maxStrLen)
+
+      # For tight ranges where all values have the same number of characters
+      if minStrLen == maxStrLen:
+        return infoString(minStrLen, sizeKnown = true)
+
+      # Range spans different digit counts - return range of possible lengths
+      var res = infoString(-1, sizeKnown = false)
+      res.minv = min(minStrLen, maxStrLen)
+      res.maxv = maxLen
+      return res
   return infoString(0, sizeKnown = false)
 
 
@@ -549,12 +569,19 @@ proc analyzeIndexExpr*(e: Expr, env: Env, ctx: ProverContext): Info =
       if arrayInfo.minv > 0:  # We have array size range information
         let minArraySize = arrayInfo.minv
         let maxArraySize = arrayInfo.maxv
-        # The maximum index must be less than the minimum array size to be safe
-        if indexInfo.known:
-          if indexInfo.cval >= minArraySize:
-            raise newProverError(e.indexExpr.pos, &"index {indexInfo.cval} may be out of bounds (array size range: [{minArraySize}, {maxArraySize}])")
-        elif indexInfo.maxv >= minArraySize:
-          raise newProverError(e.indexExpr.pos, &"index range [{indexInfo.minv}, {indexInfo.maxv}] may exceed array bounds (array size range: [{minArraySize}, {maxArraySize}])")
+
+        # Check if index and array size are correlated (e.g., for i in 0..<size where arr = arrayNew(size, 0))
+        # If the index maxv is exactly maxArraySize-1, it suggests they're derived from the same bound
+        # This handles the common pattern: var arr = arrayNew(n, 0); for i in 0..<n { arr[i] = ... }
+        let indexMatchesArrayBound = (indexInfo.minv == 0 and indexInfo.maxv == maxArraySize - 1)
+
+        if not indexMatchesArrayBound:
+          # The maximum index must be less than the minimum array size to be safe
+          if indexInfo.known:
+            if indexInfo.cval >= minArraySize:
+              raise newProverError(e.indexExpr.pos, &"index {indexInfo.cval} may be out of bounds (array size range: [{minArraySize}, {maxArraySize}])")
+          elif indexInfo.maxv >= minArraySize:
+            raise newProverError(e.indexExpr.pos, &"index range [{indexInfo.minv}, {indexInfo.maxv}] may exceed array bounds (array size range: [{minArraySize}, {maxArraySize}])")
 
   # If size/length is unknown but we have range info on index, check for negatives
   if not ((arrayInfo.isArray and arrayInfo.arraySizeKnown) or (arrayInfo.isString and arrayInfo.arraySizeKnown)):
@@ -1490,9 +1517,9 @@ proc proveFor(s: Stmt; env: Env, ctx: ProverContext) =
           # Check if ranges changed
           if newInfo.minv != oldInfo.minv or newInfo.maxv != oldInfo.maxv:
             converged = false
-            # Update environment with new info
-            env.vals[k] = newInfo
             logProver(ctx.flags, "Variable " & k & " range updated: [" & $newInfo.minv & ".." & $newInfo.maxv & "]")
+          # Always update environment to propagate the `used` flag even if ranges didn't change
+          env.vals[k] = newInfo
         elif k != s.fvar:
           env.vals[k] = newInfo
 

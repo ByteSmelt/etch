@@ -26,3 +26,9 @@ task test, "Run all tests":
   exec "nim c -r tests/test_stepout_issue.nim"
   exec "nim c -r tests/test_stepover_from_test.nim"
   exec "nim c -r tests/test_variables_display.nim"
+
+task perf, "Run performance benchmarks":
+  echo "===== Building etch binary in release mode ====="
+  exec "nim c -d:danger -o:etch src/etch.nim"
+  echo "===== Running performance benchmarks ====="
+  exec "./etch --perf"

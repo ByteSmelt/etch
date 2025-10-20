@@ -14,6 +14,7 @@ proc usage() =
   echo "  etch [--run [BACKEND]] [--verbose] [--release] [--gen BACKEND] file.etch"
   echo "  etch --test [directory]"
   echo "  etch --test-c [directory]"
+  echo "  etch --perf [directory]"
   echo "Options:"
   echo "  --run [BACKEND]  Execute the program (default: bytecode VM, optional: c)"
   echo "  --verbose        Enable verbose debug output"
@@ -24,6 +25,7 @@ proc usage() =
   echo "  --test           Run tests in directory (default: tests/) with bytecode VM"
   echo "  --test-c         Run tests in directory (default: tests/) with C backend"
   echo "                   Tests need .pass (expected output) or .fail (expected failure)"
+  echo "  --perf           Run performance benchmarks (default: performance/) and generate report"
   quit 1
 
 
@@ -125,6 +127,100 @@ proc compileAndRunCBackend(bytecode: RegBytecodeProgram, sourceFile: string, ver
   return runExitCode
 
 
+proc runPerformanceBenchmarks(perfDir: string = "performance"): int =
+  echo "===== Running performance benchmarks ====="
+  echo "Directory: ", perfDir
+  echo "Generating markdown report: performance_report.md"
+  echo ""
+
+  if not dirExists(perfDir):
+    echo "Error: ", perfDir, " directory not found"
+    return 1
+
+  # Discover all .etch files that have corresponding .py files
+  var benchmarks: seq[string] = @[]
+  for file in walkFiles(perfDir / "*.etch"):
+    let (_, name, _) = splitFile(file)
+    let pyFile = perfDir / name & ".py"
+    if fileExists(pyFile):
+      benchmarks.add(name)
+
+  if benchmarks.len == 0:
+    echo "No performance tests found!"
+    return 1
+
+  echo "Found ", benchmarks.len, " benchmarks:"
+  for benchmark in benchmarks:
+    echo "  - ", benchmark
+  echo ""
+
+  # Create report header
+  var report = "# Etch Performance Benchmarks\n\n"
+  report.add("**Generated**: " & $now() & "\n\n")
+  report.add("**Directory**: `" & perfDir & "`\n\n")
+  report.add("**Baseline**: C Backend (first result when available, otherwise VM)\n\n")
+  report.add("## Detailed Results\n\n")
+
+  var successCount = 0
+  var failCount = 0
+
+  for benchmark in benchmarks:
+    echo "----- Benchmarking: ", benchmark, " -----"
+
+    let etchFile = perfDir / benchmark & ".etch"
+    let pyFile = perfDir / benchmark & ".py"
+    let etchDir = perfDir / "__etch__"
+    let cExecutable = etchDir / benchmark & "_c"
+    let mdOutput = etchDir / benchmark & "_bench.md"
+
+    createDir(etchDir)
+
+    # Try to compile C backend (silently)
+    let etchExe = getAppFilename()
+    let (_, exitCode) = execCmdEx(etchExe & " --run c --release " & etchFile & " > /dev/null 2>&1")
+
+    # Check if C executable exists
+    let hasCBackend = fileExists(cExecutable) and exitCode == 0
+
+    # Run hyperfine based on whether C backend is available
+    var hyperCmd: string
+    if hasCBackend:
+      echo "  Running: C backend + VM + Python"
+      hyperCmd = "hyperfine --warmup 3 --export-markdown '" & mdOutput & "' " &
+                 "'" & cExecutable & "' " &
+                 "'" & etchExe & " --run --release " & etchFile & "' " &
+                 "'python3 " & pyFile & "' 2>/dev/null"
+    else:
+      echo "  Running: VM + Python (C backend not available)"
+      hyperCmd = "hyperfine --warmup 3 --export-markdown '" & mdOutput & "' " &
+                 "'" & etchExe & " --run --release " & etchFile & "' " &
+                 "'python3 " & pyFile & "' 2>/dev/null"
+
+    let (_, _) = execCmdEx(hyperCmd)
+
+    # Append results to report if available
+    if fileExists(mdOutput):
+      let mdContent = readFile(mdOutput)
+      report.add("### " & benchmark & "\n\n" & mdContent & "\n\n")
+      successCount.inc()
+      echo "  ✓ Results added to report"
+    else:
+      failCount.inc()
+      echo "  ✗ Benchmark failed"
+
+  # Write report
+  writeFile("performance_report.md", report)
+
+  echo ""
+  echo "===== Benchmark complete ====="
+  echo "Success: ", successCount, "/", benchmarks.len
+  if failCount > 0:
+    echo "Failed:  ", failCount
+  echo "Report saved to: performance_report.md"
+
+  return if failCount > 0: 1 else: 0
+
+
 when isMainModule:
   if paramCount() < 1: usage()
 
@@ -171,6 +267,11 @@ when isMainModule:
       if i + 1 <= paramCount() and not paramStr(i + 1).startsWith("--"):
         modeArg = paramStr(i + 1)
         inc i
+    elif a == "--perf":
+      mode = "perf"
+      if i + 1 <= paramCount() and not paramStr(i + 1).startsWith("--"):
+        modeArg = paramStr(i + 1)
+        inc i
     elif a == "--debug-server":
       mode = "debug-server"
       if i + 1 <= paramCount():
@@ -192,6 +293,10 @@ when isMainModule:
   if mode == "test-c":
     let testDir = if modeArg != "": modeArg else: "tests"
     quit runTests(testDir, verbose, not debug, "c")
+
+  if mode == "perf":
+    let perfDir = if modeArg != "": modeArg else: "performance"
+    quit runPerformanceBenchmarks(perfDir)
 
   if mode == "debug-server":
     if modeArg == "":

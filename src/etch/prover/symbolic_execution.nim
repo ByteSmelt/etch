@@ -42,6 +42,43 @@ proc symArray*(size: int64, sizeKnown: bool = true): Info =
   infoArray(size, sizeKnown)  # Use existing function from types.nim
 
 
+proc symStringConcat*(a, b: Info): Info =
+  ## Symbolically concatenate two strings and track the resulting length
+  if a.isString and b.isString:
+    # Both are strings - calculate combined length
+    if a.arraySizeKnown and b.arraySizeKnown:
+      # Both lengths known - result length is sum
+      let totalLength = a.arraySize + b.arraySize
+      return infoString(totalLength, sizeKnown = true)
+    elif a.arraySizeKnown:
+      # Only left side length known
+      let minLen = a.arraySize + b.minv
+      let maxLen = if b.maxv < IMax - a.arraySize: a.arraySize + b.maxv else: IMax
+      var res = infoString(-1, sizeKnown = false)
+      res.minv = minLen
+      res.maxv = maxLen
+      return res
+    elif b.arraySizeKnown:
+      # Only right side length known
+      let minLen = a.minv + b.arraySize
+      let maxLen = if a.maxv < IMax - b.arraySize: a.maxv + b.arraySize else: IMax
+      var res = infoString(-1, sizeKnown = false)
+      res.minv = minLen
+      res.maxv = maxLen
+      return res
+    else:
+      # Both unknown - add ranges
+      let minLen = a.minv + b.minv
+      let maxLen = if a.maxv < IMax - b.maxv: a.maxv + b.maxv else: IMax
+      var res = infoString(-1, sizeKnown = false)
+      res.minv = minLen
+      res.maxv = maxLen
+      return res
+  else:
+    # Unknown result
+    return infoString(-1, sizeKnown = false)
+
+
 proc symAdd*(a, b: Info): Info =
   if a.known and b.known:
     let res = a.cval + b.cval

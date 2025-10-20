@@ -5,17 +5,13 @@
 import std/strformat
 import ../frontend/ast
 import ../common/[types, errors]
-import types
+import types, symbolic_execution
 
 
 proc analyzeBinaryAddition*(e: Expr, a: Info, b: Info): Info =
   # Handle string concatenation - detect by operand types
   if a.isString and b.isString:
-    if a.arraySizeKnown and b.arraySizeKnown:
-      let totalLength = a.arraySize + b.arraySize
-      return infoString(totalLength, sizeKnown = true)
-    else:
-      return infoString(-1, sizeKnown = false)
+    return symStringConcat(a, b)
 
   # Handle array concatenation - detect by operand types
   if a.isArray and b.isArray:
@@ -27,11 +23,7 @@ proc analyzeBinaryAddition*(e: Expr, a: Info, b: Info): Info =
 
   # Handle string concatenation with type fallback
   if e.typ != nil and e.typ.kind == tkString:
-    if a.arraySizeKnown and b.arraySizeKnown:
-      let totalLength = a.arraySize + b.arraySize
-      return infoString(totalLength, sizeKnown = true)
-    else:
-      return infoString(-1, sizeKnown = false)
+    return symStringConcat(a, b)
 
   # Handle array concatenation with type fallback
   if e.typ != nil and e.typ.kind == tkArray:

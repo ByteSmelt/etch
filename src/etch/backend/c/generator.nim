@@ -95,6 +95,21 @@ struct EtchVTableEntry {
   EtchV value;
 };
 
+// Forward declarations of helper functions
+static inline EtchV etch_make_nil(void);
+static inline EtchV etch_make_int(int64_t val);
+static inline EtchV etch_make_float(double val);
+static inline EtchV etch_make_bool(bool val);
+static inline EtchV etch_make_char(char val);
+static inline EtchV etch_make_none(void);
+static inline EtchV etch_make_string(const char* val);
+static inline EtchV etch_make_array(size_t cap);
+static inline EtchV etch_make_table(void);
+static inline EtchV etch_make_some(EtchV val);
+static inline EtchV etch_make_ok(EtchV val);
+static inline EtchV etch_make_err(EtchV val);
+static inline void etch_panic(const char* msg);
+
 // Global variables table
 typedef struct {
   char* name;
