@@ -3,7 +3,7 @@
 
 import std/[os, strutils, osproc, tables, times]
 import ./etch/[compiler, tester]
-import ./etch/common/[types]
+import ./etch/common/[constants, types]
 import ./etch/interpreter/[regvm, regvm_dump, regvm_debugserver]
 import ./etch/backend/c/[generator]
 
@@ -68,7 +68,7 @@ proc generateCCodeToFile(bytecode: RegBytecodeProgram, sourceFile: string): stri
 
 proc compileAndRunCBackend(bytecode: RegBytecodeProgram, sourceFile: string, verbose: bool, debug: bool): int =
   let (dir, name, _) = splitFile(sourceFile)
-  let etchDir = joinPath(dir, "__etch__")
+  let etchDir = joinPath(dir, BYTECODE_CACHE_DIR)
   createDir(etchDir)
   let cFile = joinPath(etchDir, name & ".c")
   let exeFile = joinPath(etchDir, name & "_c")
@@ -169,7 +169,7 @@ proc runPerformanceBenchmarks(perfDir: string = "performance"): int =
 
     let etchFile = perfDir / benchmark & ".etch"
     let pyFile = perfDir / benchmark & ".py"
-    let etchDir = perfDir / "__etch__"
+    let etchDir = perfDir / BYTECODE_CACHE_DIR
     let cExecutable = etchDir / benchmark & "_c"
     let mdOutput = etchDir / benchmark & "_bench.md"
 
@@ -354,7 +354,7 @@ when isMainModule:
 
     # Check if we can use cached executable
     let (dir, name, _) = splitFile(sourceFile)
-    let etchDir = joinPath(dir, "__etch__")
+    let etchDir = joinPath(dir, BYTECODE_CACHE_DIR)
     let exeFile = joinPath(etchDir, name & "_c")
 
     var needsRecompile = true

@@ -94,8 +94,9 @@ Welcome to the Etch programming language documentation!
 2. Master [compile-time evaluation](comptime.md) for metaprogramming
 3. Learn [operator overloading](operator-overloading.md) for custom types
 4. Explore [C FFI](modules.md#c-ffi-foreign-function-interface) for system programming
-5. Study advanced [pattern matching](control-flow.md#pattern-matching) techniques
-6. Explore [higher-order functions](functions.md#higher-order-functions)
+5. C API [C API](c-api.md) for embeddings
+6. Study advanced [pattern matching](control-flow.md#pattern-matching) techniques
+7. Explore [higher-order functions](functions.md#higher-order-functions)
 
 ## Quick Reference
 

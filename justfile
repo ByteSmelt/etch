@@ -7,6 +7,10 @@ default:
 libs:
     make
 
+[working-directory: 'examples/capi']
+capi:
+    make
+
 # Test compiling and running all examples + debugger tests
 tests:
     @just libs
@@ -38,6 +42,21 @@ go file:
 build:
     nim c -d:danger -o:etch src/etch.nim
 
+# Build shared library
+build-lib:
+    mkdir -p lib
+    nim c --app:lib --noMain -d:release -o:lib/libetch.so src/etch_lib.nim
+
+# Build static library
+build-lib-static:
+    mkdir -p lib
+    nim c --app:staticlib --noMain -d:release -o:lib/libetch.a src/etch_lib.nim
+
+# Build both shared and static libraries
+build-libs:
+    @just build-lib
+    @just build-lib-static
+
 # Handle performance
 perf:
     @just build
@@ -50,6 +69,7 @@ clean:
     find examples -name "*.c" -depth 0 -type f -exec rm -f {} + 2>/dev/null || true
     find examples -name "*_c" -depth 0 -type f -exec rm -f {} + 2>/dev/null || true
     find . -name "nimcache" -type d -exec rm -rf {} + 2>/dev/null || true
+    rm -rf lib
 
 # Deal with VSCode extension packaging and installation
 [working-directory: 'vscode']

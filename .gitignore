@@ -8,6 +8,7 @@ nimble.develop
 nimble.paths
 
 /etch
+/lib
 __etch__/
 *.etcx
 *.etca
