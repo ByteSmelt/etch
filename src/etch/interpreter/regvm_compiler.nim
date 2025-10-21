@@ -31,8 +31,7 @@ type
 macro log(verbose: untyped, msg: untyped): untyped =
   result = quote do:
     if `verbose`:
-      let flags = CompilerFlags(verbose: true, debug: false)
-      logCompiler(flags, `msg`)
+      logCompiler(true, `msg`)
 
 
 # Helper to add constants

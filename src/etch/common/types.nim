@@ -1,13 +1,16 @@
 # types.nim
 # Common types used across the Etch implementation
 
-import std/[tables]
+import std/[tables, options]
 
 
 type
-  CompilerFlags* = object
+  CompilerOptions* = object
+    sourceFile*: string
+    sourceString*: Option[string]  ## Optional: compile from string instead of file
+    runVM*: bool
     verbose*: bool
-    debug*: bool
+    debug*: bool  ## Include debug info; if false, compile in release mode with optimizations
 
   Pos* = object
     line*, col*: int

@@ -2,7 +2,7 @@
 # C FFI interface for using Etch as an embedded scripting engine
 # This module provides a clean C API that can be linked into C/C++ applications
 
-import std/[tables, strutils, os]
+import std/[tables, strutils, os, options]
 import ./[compiler]
 import ./common/[types, constants, errors]
 import ./interpreter/[regvm, regvm_compiler, regvm_exec]
@@ -20,13 +20,20 @@ type
   EtchHostFunction* = proc(ctx: EtchContext, args: ptr ptr EtchValueObj,
                             numArgs: cint, userData: pointer): EtchValue {.cdecl.}
 
+  # Instruction callback type for debugging/inspection
+  # Called before each instruction is executed
+  # Return 0 to continue, non-zero to stop execution
+  EtchInstructionCallback* = proc(ctx: EtchContext, userData: pointer): cint {.cdecl.}
+
   # Internal representation (not exposed to C)
   EtchContextObj = object
     vm: RegisterVM
     program: RegBytecodeProgram
     lastError: string
     hostFunctions: Table[string, HostFunctionInfo]
-    verbose: bool
+    options: CompilerOptions
+    instructionCallback: EtchInstructionCallback
+    instructionCallbackUserData: pointer
 
   HostFunctionInfo = object
     callback: EtchHostFunction
@@ -41,15 +48,45 @@ type
 # ============================================================================
 
 proc etch_context_new*(): EtchContext {.exportc, cdecl, dynlib.} =
-  ## Create a new Etch context
+  ## Create a new Etch context with default options (non-verbose, debug mode)
   ## Returns: Pointer to context or nil on failure
   try:
     var ctx = cast[EtchContext](alloc0(sizeof(EtchContextObj)))
     ctx.hostFunctions = initTable[string, HostFunctionInfo]()
-    ctx.verbose = false
+    ctx.options = CompilerOptions(
+      sourceFile: "",
+      sourceString: none(string),
+      runVM: false,
+      verbose: false,
+      debug: true
+    )
     ctx.lastError = ""
+    ctx.instructionCallback = nil
+    ctx.instructionCallbackUserData = nil
     return ctx
-  except Exception as e:
+  except Exception:
+    return nil
+
+proc etch_context_new_with_options*(verbose: cint, debug: cint): EtchContext {.exportc, cdecl, dynlib.} =
+  ## Create a new Etch context with specified compiler options
+  ## verbose: Enable verbose logging (0 = off, non-zero = on)
+  ## debug: Enable debug mode (0 = release with optimizations, non-zero = debug)
+  ## Returns: Pointer to context or nil on failure
+  try:
+    var ctx = cast[EtchContext](alloc0(sizeof(EtchContextObj)))
+    ctx.hostFunctions = initTable[string, HostFunctionInfo]()
+    ctx.options = CompilerOptions(
+      sourceFile: "",
+      sourceString: none(string),
+      runVM: false,
+      verbose: (verbose != 0),
+      debug: (debug != 0)
+    )
+    ctx.lastError = ""
+    ctx.instructionCallback = nil
+    ctx.instructionCallbackUserData = nil
+    return ctx
+  except Exception:
     return nil
 
 proc etch_context_free*(ctx: EtchContext) {.exportc, cdecl, dynlib.} =
@@ -60,7 +97,13 @@ proc etch_context_free*(ctx: EtchContext) {.exportc, cdecl, dynlib.} =
 proc etch_context_set_verbose*(ctx: EtchContext, verbose: cint) {.exportc, cdecl, dynlib.} =
   ## Enable or disable verbose logging
   if ctx != nil:
-    ctx.verbose = (verbose != 0)
+    ctx.options.verbose = (verbose != 0)
+
+proc etch_context_set_debug*(ctx: EtchContext, debug: cint) {.exportc, cdecl, dynlib.} =
+  ## Enable or disable debug mode (affects optimization level)
+  ## debug: 0 = release mode with optimizations, non-zero = debug mode
+  if ctx != nil:
+    ctx.options.debug = (debug != 0)
 
 
 # ============================================================================
@@ -86,8 +129,7 @@ proc etch_clear_error*(ctx: EtchContext) {.exportc, cdecl, dynlib.} =
 # Compilation
 # ============================================================================
 
-proc etch_compile_string*(ctx: EtchContext, source: cstring,
-                          filename: cstring): cint {.exportc, cdecl, dynlib.} =
+proc etch_compile_string*(ctx: EtchContext, source: cstring, filename: cstring): cint {.exportc, cdecl, dynlib.} =
   ## Compile Etch source code from a string
   ## Returns: 0 on success, non-zero on error
   if ctx == nil:
@@ -97,28 +139,14 @@ proc etch_compile_string*(ctx: EtchContext, source: cstring,
     let srcStr = $source
     let fnameStr = if filename != nil: $filename else: "<string>"
 
-    # Write source to a temporary file for compilation
-    # This reuses the existing infrastructure without modification
-    let tempDir = getTempDir() / "__etch__"
-    createDir(tempDir)
-    let tempFile = tempDir / "temp_source.etch"
-    writeFile(tempFile, srcStr)
+    # Use context's compiler options
+    ctx.options.sourceFile = fnameStr
+    ctx.options.sourceString = some(srcStr)
+    ctx.options.runVM = false
 
-    let options = CompilerOptions(
-      sourceFile: tempFile,
-      runVM: false,
-      verbose: ctx.verbose,
-      debug: true,
-      release: false
-    )
-
-    let (prog, sourceHash, evaluatedGlobals) = parseAndTypecheck(options)
-    let flags = CompilerFlags(verbose: ctx.verbose, debug: true)
-    ctx.program = compileProgramWithGlobals(prog, sourceHash, evaluatedGlobals, tempFile, flags)
+    let (prog, sourceHash, evaluatedGlobals) = parseAndTypecheck(ctx.options)
+    ctx.program = compileProgramWithGlobals(prog, sourceHash, evaluatedGlobals, fnameStr, ctx.options)
     ctx.vm = newRegisterVM(ctx.program)
-
-    # Clean up temp file
-    removeFile(tempFile)
 
     ctx.lastError = ""
     return 0
@@ -162,7 +190,7 @@ proc etch_execute*(ctx: EtchContext): cint {.exportc, cdecl, dynlib.} =
       ctx.lastError = "No program compiled"
       return 1
 
-    let exitCode = ctx.vm.execute(ctx.verbose)
+    let exitCode = ctx.vm.execute(ctx.options.verbose)
     ctx.lastError = ""
     return cint(exitCode)
 
@@ -266,6 +294,18 @@ proc etch_value_get_type*(v: EtchValue): cint {.exportc, cdecl, dynlib.} =
     return -1
   return cint(v.value.kind)
 
+proc etch_value_is_bool*(v: EtchValue): cint {.exportc, cdecl, dynlib.} =
+  ## Check if value is a boolean
+  if v == nil:
+    return 0
+  return cint(v.value.kind == vkBool)
+
+proc etch_value_is_char*(v: EtchValue): cint {.exportc, cdecl, dynlib.} =
+  ## Check if value is a char
+  if v == nil:
+    return 0
+  return cint(v.value.kind == vkChar)
+
 proc etch_value_is_int*(v: EtchValue): cint {.exportc, cdecl, dynlib.} =
   ## Check if value is an integer
   if v == nil:
@@ -277,12 +317,6 @@ proc etch_value_is_float*(v: EtchValue): cint {.exportc, cdecl, dynlib.} =
   if v == nil:
     return 0
   return cint(v.value.kind == vkFloat)
-
-proc etch_value_is_bool*(v: EtchValue): cint {.exportc, cdecl, dynlib.} =
-  ## Check if value is a boolean
-  if v == nil:
-    return 0
-  return cint(v.value.kind == vkBool)
 
 proc etch_value_is_string*(v: EtchValue): cint {.exportc, cdecl, dynlib.} =
   ## Check if value is a string
@@ -416,5 +450,78 @@ proc etch_register_function*(ctx: EtchContext, name: cstring,
     return 0
   except Exception:
     return 1
+
+
+# ============================================================================
+# Instruction Callback and VM Inspection
+# ============================================================================
+
+proc etch_set_instruction_callback*(ctx: EtchContext, callback: EtchInstructionCallback,
+                                     userData: pointer) {.exportc, cdecl, dynlib.} =
+  ## Set a callback to be invoked before each instruction is executed
+  ## Useful for debugging, profiling, or step-by-step execution
+  ## callback: Function pointer called before each instruction (return 0 to continue, non-zero to stop)
+  ## userData: User-defined data passed to the callback
+  if ctx != nil:
+    ctx.instructionCallback = callback
+    ctx.instructionCallbackUserData = userData
+
+proc etch_get_call_stack_depth*(ctx: EtchContext): cint {.exportc, cdecl, dynlib.} =
+  ## Get the current call stack depth
+  ## Returns: Number of active stack frames, or -1 on error
+  if ctx == nil or ctx.vm == nil:
+    return -1
+  return cint(ctx.vm.frames.len)
+
+proc etch_get_program_counter*(ctx: EtchContext): cint {.exportc, cdecl, dynlib.} =
+  ## Get the current program counter (instruction index)
+  ## Returns: Current PC, or -1 on error
+  if ctx == nil or ctx.vm == nil or ctx.vm.currentFrame == nil:
+    return -1
+  return cint(ctx.vm.currentFrame.pc)
+
+proc etch_get_register_count*(ctx: EtchContext): cint {.exportc, cdecl, dynlib.} =
+  ## Get the number of registers in the current frame
+  ## Returns: Always returns 256 (max registers), or -1 on error
+  if ctx == nil or ctx.vm == nil:
+    return -1
+  return 256  # MAX_REGISTERS
+
+proc etch_get_register*(ctx: EtchContext, regIndex: cint): EtchValue {.exportc, cdecl, dynlib.} =
+  ## Get the value of a register in the current frame
+  ## regIndex: Register index (0-255)
+  ## Returns: Register value, or nil on error
+  if ctx == nil or ctx.vm == nil or ctx.vm.currentFrame == nil:
+    return nil
+  if regIndex < 0 or regIndex >= 256:
+    return nil
+
+  try:
+    var val = cast[EtchValue](alloc0(sizeof(EtchValueObj)))
+    val.value = ctx.vm.currentFrame.regs[regIndex]
+    return val
+  except Exception:
+    return nil
+
+proc etch_get_instruction_count*(ctx: EtchContext): cint {.exportc, cdecl, dynlib.} =
+  ## Get the total number of instructions in the program
+  ## Returns: Instruction count, or -1 on error
+  if ctx == nil or ctx.program.instructions.len == 0:
+    return -1
+  return cint(ctx.program.instructions.len)
+
+proc etch_get_current_function*(ctx: EtchContext): cstring {.exportc, cdecl, dynlib.} =
+  ## Get the name of the currently executing function
+  ## Returns: Function name (do not free), or nil on error
+  if ctx == nil or ctx.vm == nil or ctx.vm.currentFrame == nil:
+    return nil
+
+  # Find function at current PC
+  let pc = ctx.vm.currentFrame.pc
+  for funcName, funcInfo in ctx.program.functions:
+    if pc >= funcInfo.startPos and pc < funcInfo.endPos:
+      return cstring(funcName)
+
+  return cstring("<unknown>")
 
 

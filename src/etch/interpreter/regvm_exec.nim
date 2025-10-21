@@ -2,7 +2,7 @@
 # Execution engine for register-based VM with aggressive optimizations
 
 import std/[tables, macros, math, strutils]
-import ../common/[constants, cffi, values, types, logging]
+import ../common/[constants, cffi, values, logging]
 import regvm, regvm_debugger
 
 # Cross-platform deterministic PRNG using Xorshift64*
@@ -15,8 +15,7 @@ import regvm, regvm_debugger
 macro log(verbose: untyped, msg: untyped): untyped =
   result = quote do:
     if `verbose`:
-      let flags = CompilerFlags(verbose: true, debug: false)
-      logCompiler(flags, `msg`)
+      logCompiler(true, `msg`)
 
 
 proc etch_srand(vm: RegisterVM, seed: uint64) {.inline.} =

@@ -49,8 +49,19 @@ typedef struct EtchValueObj* EtchValue;
  * @param userData User-defined data pointer passed during registration
  * @return Result value (must be created with etch_value_new_* functions)
  */
-typedef EtchValue (*EtchHostFunction)(EtchContext ctx, EtchValue* args,
-                                      int numArgs, void* userData);
+typedef EtchValue (*EtchHostFunction)(EtchContext ctx, EtchValue* args, int numArgs, void* userData);
+
+/**
+ * Instruction callback signature for VM inspection
+ *
+ * Called before each instruction is executed. Useful for debugging,
+ * profiling, or implementing step-by-step execution.
+ *
+ * @param ctx Current Etch context
+ * @param userData User-defined data pointer passed during registration
+ * @return 0 to continue execution, non-zero to stop
+ */
+typedef int (*EtchInstructionCallback)(EtchContext ctx, void* userData);
 
 
 /* ============================================================================
@@ -79,11 +90,22 @@ typedef enum {
  * ========================================================================== */
 
 /**
- * Create a new Etch execution context
+ * Create a new Etch execution context with default options
+ *
+ * Default options: non-verbose, debug mode
  *
  * @return New context or NULL on failure
  */
 EtchContext etch_context_new(void);
+
+/**
+ * Create a new Etch execution context with specified compiler options
+ *
+ * @param verbose Enable verbose logging (0 = off, non-zero = on)
+ * @param debug Enable debug mode (0 = release/optimized, non-zero = debug)
+ * @return New context or NULL on failure
+ */
+EtchContext etch_context_new_with_options(int verbose, int debug);
 
 /**
  * Free an Etch context and all associated resources
@@ -99,6 +121,14 @@ void etch_context_free(EtchContext ctx);
  * @param verbose Non-zero to enable, zero to disable
  */
 void etch_context_set_verbose(EtchContext ctx, int verbose);
+
+/**
+ * Enable or disable debug mode (affects optimization level)
+ *
+ * @param ctx Context
+ * @param debug 0 = release mode with optimizations, non-zero = debug mode
+ */
+void etch_context_set_debug(EtchContext ctx, int debug);
 
 
 /* ============================================================================
@@ -166,8 +196,7 @@ int etch_execute(EtchContext ctx);
  * @param numArgs Number of arguments
  * @return Result value or NULL on error
  */
-EtchValue etch_call_function(EtchContext ctx, const char* name,
-                              EtchValue* args, int numArgs);
+EtchValue etch_call_function(EtchContext ctx, const char* name, EtchValue* args, int numArgs);
 
 
 /* ============================================================================
@@ -177,20 +206,20 @@ EtchValue etch_call_function(EtchContext ctx, const char* name,
 /** Create a nil value */
 EtchValue etch_value_new_nil(void);
 
+/** Create a boolean value (0 = false, non-zero = true) */
+EtchValue etch_value_new_bool(int v);
+
+/** Create a character value */
+EtchValue etch_value_new_char(char v);
+
 /** Create an integer value */
 EtchValue etch_value_new_int(int64_t v);
 
 /** Create a float value */
 EtchValue etch_value_new_float(double v);
 
-/** Create a boolean value (0 = false, non-zero = true) */
-EtchValue etch_value_new_bool(int v);
-
 /** Create a string value (copies the string) */
 EtchValue etch_value_new_string(const char* v);
-
-/** Create a character value */
-EtchValue etch_value_new_char(char v);
 
 
 /* ============================================================================
@@ -205,25 +234,46 @@ EtchValue etch_value_new_char(char v);
  */
 int etch_value_get_type(EtchValue v);
 
+/** Check if value is nil */
+int etch_value_is_nil(EtchValue v);
+
+/** Check if value is a boolean */
+int etch_value_is_bool(EtchValue v);
+
+/** Check if value is a char */
+int etch_value_is_char(EtchValue v);
+
 /** Check if value is an integer */
 int etch_value_is_int(EtchValue v);
 
 /** Check if value is a float */
 int etch_value_is_float(EtchValue v);
 
-/** Check if value is a boolean */
-int etch_value_is_bool(EtchValue v);
-
 /** Check if value is a string */
 int etch_value_is_string(EtchValue v);
-
-/** Check if value is nil */
-int etch_value_is_nil(EtchValue v);
 
 
 /* ============================================================================
  * Value Extraction
  * ========================================================================== */
+
+/**
+ * Extract boolean value
+ *
+ * @param v Value
+ * @param outVal Pointer to store result (0 or 1)
+ * @return 0 on success, non-zero if value is not a boolean
+ */
+int etch_value_to_bool(EtchValue v, int* outVal);
+
+/**
+ * Extract character value
+ *
+ * @param v Value
+ * @param outVal Pointer to store result
+ * @return 0 on success, non-zero if value is not a character
+ */
+int etch_value_to_char(EtchValue v, char* outVal);
 
 /**
  * Extract integer value
@@ -244,15 +294,6 @@ int etch_value_to_int(EtchValue v, int64_t* outVal);
 int etch_value_to_float(EtchValue v, double* outVal);
 
 /**
- * Extract boolean value
- *
- * @param v Value
- * @param outVal Pointer to store result (0 or 1)
- * @return 0 on success, non-zero if value is not a boolean
- */
-int etch_value_to_bool(EtchValue v, int* outVal);
-
-/**
  * Extract string value
  *
  * @param v Value
@@ -260,15 +301,6 @@ int etch_value_to_bool(EtchValue v, int* outVal);
  *         (do not free - owned by the value)
  */
 const char* etch_value_to_string(EtchValue v);
-
-/**
- * Extract character value
- *
- * @param v Value
- * @param outVal Pointer to store result
- * @return 0 on success, non-zero if value is not a character
- */
-int etch_value_to_char(EtchValue v, char* outVal);
 
 
 /* ============================================================================
@@ -335,8 +367,73 @@ EtchValue etch_get_global(EtchContext ctx, const char* name);
  * etch_register_function(ctx, "my_add", my_add, NULL);
  * @endcode
  */
-int etch_register_function(EtchContext ctx, const char* name,
-                           EtchHostFunction callback, void* userData);
+int etch_register_function(EtchContext ctx, const char* name, EtchHostFunction callback, void* userData);
+
+
+/* ============================================================================
+ * Instruction Callback and VM Inspection
+ * ========================================================================== */
+
+/**
+ * Set a callback to be invoked before each instruction is executed
+ *
+ * This is useful for debugging, profiling, or implementing step-by-step execution.
+ * The callback can inspect VM state using the inspection functions below.
+ *
+ * @param ctx Context
+ * @param callback Function pointer called before each instruction (return 0 to continue, non-zero to stop)
+ * @param userData User-defined data passed to the callback
+ */
+void etch_set_instruction_callback(EtchContext ctx, EtchInstructionCallback callback, void* userData);
+
+/**
+ * Get the current call stack depth
+ *
+ * @param ctx Context
+ * @return Number of active stack frames, or -1 on error
+ */
+int etch_get_call_stack_depth(EtchContext ctx);
+
+/**
+ * Get the current program counter (instruction index)
+ *
+ * @param ctx Context
+ * @return Current PC, or -1 on error
+ */
+int etch_get_program_counter(EtchContext ctx);
+
+/**
+ * Get the number of registers in the current frame
+ *
+ * @param ctx Context
+ * @return Always returns 256 (max registers), or -1 on error
+ */
+int etch_get_register_count(EtchContext ctx);
+
+/**
+ * Get the value of a register in the current frame
+ *
+ * @param ctx Context
+ * @param regIndex Register index (0-255)
+ * @return Register value (must be freed with etch_value_free), or NULL on error
+ */
+EtchValue etch_get_register(EtchContext ctx, int regIndex);
+
+/**
+ * Get the total number of instructions in the program
+ *
+ * @param ctx Context
+ * @return Instruction count, or -1 on error
+ */
+int etch_get_instruction_count(EtchContext ctx);
+
+/**
+ * Get the name of the currently executing function
+ *
+ * @param ctx Context
+ * @return Function name (do not free - owned by context), or NULL on error
+ */
+const char* etch_get_current_function(EtchContext ctx);
 
 
 #ifdef __cplusplus

@@ -40,16 +40,14 @@ proc makeCompilerOptions(sourceFile: string, runVM: bool, verbose: bool, debug: 
     sourceFile: sourceFile,
     runVM: runVM,
     verbose: verbose,
-    debug: debug,
-    release: not debug
+    debug: debug
   )
 
 
 proc compileToRegBytecode(options: CompilerOptions): RegBytecodeProgram =
   try:
     let (prog, sourceHash, evaluatedGlobals) = parseAndTypecheck(options)
-    let flags = CompilerFlags(verbose: options.verbose, debug: options.debug)
-    return compileProgramWithGlobals(prog, sourceHash, evaluatedGlobals, options.sourceFile, flags)
+    return compileProgramWithGlobals(prog, sourceHash, evaluatedGlobals, options.sourceFile, options)
   except OverflowDefect as e:
     echo "Internal compiler error: ", e.msg
     quit 1
@@ -308,8 +306,7 @@ when isMainModule:
 
     try:
       let (prog, sourceHash, evaluatedGlobals) = parseAndTypecheck(options)
-      let flags = CompilerFlags(verbose: verbose, debug: true)
-      let regBytecode = compileProgramWithGlobals(prog, sourceHash, evaluatedGlobals, modeArg, flags)
+      let regBytecode = compileProgramWithGlobals(prog, sourceHash, evaluatedGlobals, modeArg, options)
       runRegDebugServer(regBytecode, modeArg)
     except Exception as e:
       sendCompilationError(e.msg)

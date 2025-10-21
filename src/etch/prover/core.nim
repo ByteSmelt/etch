@@ -8,38 +8,38 @@ import ../common/[constants, logging, types]
 import types, expression_analysis
 
 
-proc prove*(prog: Program, filename: string = "<unknown>", flags: CompilerFlags = CompilerFlags()) =
-  logProver(flags, "Starting safety proof analysis for " & filename)
+proc prove*(prog: Program, filename: string = "<unknown>", options: CompilerOptions) =
+  logProver(options.verbose, "Starting safety proof analysis for " & filename)
   errors.loadSourceLines(filename)
   var env = Env(vals: initTable[string, Info](), nils: initTable[string, bool](), exprs: initTable[string, Expr](), declPos: initTable[string, Pos]())
 
-  logProver(flags, "Initializing environment with " & $prog.globals.len & " global variables")
+  logProver(options.verbose, "Initializing environment with " & $prog.globals.len & " global variables")
 
   # First pass: add all global variable declarations to environment (forward references)
   for g in prog.globals:
     if g.kind == skVar:
-      logProver(flags, "Adding global variable to environment: " & g.vname)
+      logProver(options.verbose, "Adding global variable to environment: " & g.vname)
       # Add variable as uninitialized first to allow forward references
       env.vals[g.vname] = infoUninitialized()
       env.nils[g.vname] = true
 
   # Second pass: analyze global variable initializations with full environment
-  logProver(flags, "Analyzing global variable initializations")
-  let globalCtx = newProverContext("", flags, prog)
+  logProver(options.verbose, "Analyzing global variable initializations")
+  let globalCtx = newProverContext("", options, prog)
   for g in prog.globals:
     if g.kind == skVar:
-      logProver(flags, "Proving global variable: " & g.vname)
+      logProver(options.verbose, "Proving global variable: " & g.vname)
     proveStmt(g, env, globalCtx)
 
   # Third pass: analyze main function directly
   if prog.funInstances.hasKey(MAIN_FUNCTION_NAME):
-    logProver(flags, "Analyzing main function")
+    logProver(options.verbose, "Analyzing main function")
     let mainFn = prog.funInstances[MAIN_FUNCTION_NAME]
     var mainEnv = Env(vals: env.vals, nils: env.nils, exprs: env.exprs, declPos: env.declPos) # copy global environment
-    logProver(flags, "Main function has " & $mainFn.body.len & " statements")
-    let mainCtx = newProverContext(MAIN_FUNCTION_NAME, flags, prog)
+    logProver(options.verbose, "Main function has " & $mainFn.body.len & " statements")
+    let mainCtx = newProverContext(MAIN_FUNCTION_NAME, options, prog)
     for i, stmt in mainFn.body:
-      logProver(flags, "Proving main statement " & $(i + 1) & "/" & $mainFn.body.len)
+      logProver(options.verbose, "Proving main statement " & $(i + 1) & "/" & $mainFn.body.len)
       proveStmt(stmt, mainEnv, mainCtx)
 
     # Check for unused local variables in main function (exclude globals)
@@ -48,6 +48,6 @@ proc prove*(prog: Program, filename: string = "<unknown>", flags: CompilerFlags 
     # Now check for unused global variables (after main analysis)
     checkUnusedGlobalVariables(mainEnv, globalCtx)
   else:
-    logProver(flags, "No main function found to analyze")
+    logProver(options.verbose, "No main function found to analyze")
 
-  logProver(flags, "Safety proof analysis complete")
+  logProver(options.verbose, "Safety proof analysis complete")

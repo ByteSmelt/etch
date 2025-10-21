@@ -1,12 +1,12 @@
 # compiler.nim
 # Etch compiler: compilation and execution orchestration
 
-import std/[os, tables, times, strformat, hashes]
+import std/[os, tables, times, strformat, hashes, options]
 import common/[constants, types, errors, logging, cffi, library_resolver]
 import frontend/[ast, lexer, parser]
 import interpreter/[regvm, regvm_compiler, regvm_exec, regvm_serialize]  # Register VM
 import prover/[core]
-import typechecker/[core, types, statements, inference]
+import typechecker/[core, types as tctypes, statements, inference]
 import ./[comptime, modules]
 
 type
@@ -15,21 +15,14 @@ type
     exitCode*: int
     error*: string
 
-  CompilerOptions* = object
-    sourceFile*: string
-    runVM*: bool
-    verbose*: bool
-    debug*: bool
-    release*: bool
-
 proc getBytecodeFileName*(sourceFile: string): string =
   ## Get the bytecode filename for a source file in bytecode subfolder
   let (dir, name, _) = splitFile(sourceFile)
   let etchDir = joinPath(dir, BYTECODE_CACHE_DIR)
   joinPath(etchDir, name & BYTECODE_FILE_EXTENSION)
 
-proc hashSourceAndFlags*(source: string, flags: CompilerFlags): string =
-  ## Generate a hash of the source code + compiler flags for cache validation
+proc hashSourceAndFlags*(source: string, options: CompilerOptions): string =
+  ## Generate a hash of the source code + compiler options for cache validation
   let sourceHash = hashes.hash(source)
   $sourceHash
 
@@ -65,14 +58,14 @@ proc ensureMainInst(prog: Program) =
           name: key, typarams: @[], params: mainFunc.params, ret: mainFunc.ret, body: mainFunc.body,
           isExported: mainFunc.isExported, isCFFI: mainFunc.isCFFI)
 
-proc ensureAllNonGenericInst(prog: Program, flags: CompilerFlags) =
+proc ensureAllNonGenericInst(prog: Program, options: CompilerOptions) =
   ## Instantiate all non-generic functions so they're available for comptime evaluation
   for name, overloads in prog.funs:
     for f in overloads:
       if f.typarams.len == 0 and f.name != MAIN_FUNCTION_NAME:  # Non-generic function, skip main (handled separately)
         # Generate unique key for overload
         let key = generateOverloadSignature(f)
-        if flags.verbose:
+        if options.verbose:
           echo &"[COMPILER] Creating function instance: {key} for {f.name}"
         if not prog.funInstances.hasKey(key):
           # Resolve user-defined types in parameters and return type
@@ -118,12 +111,12 @@ proc evaluateGlobalVariables(prog: Program): Table[string, GlobalValue] =
   ## All global initialization will happen at runtime
   return initTable[string, GlobalValue]()
 
-proc compileProgramWithGlobals*(prog: Program, sourceHash: string, evaluatedGlobals: Table[string, GlobalValue], sourceFile: string = "", flags: CompilerFlags = CompilerFlags(verbose: false, debug: false)): RegBytecodeProgram =
+proc compileProgramWithGlobals*(prog: Program, sourceHash: string, evaluatedGlobals: Table[string, GlobalValue], sourceFile: string = "", options: CompilerOptions): RegBytecodeProgram =
   ## Compile an AST program to register VM bytecode
   # Compile directly to register VM without needing old bytecode
   # Use optimization level 1 in debug mode, 2 in release mode
-  let optimizeLevel = if flags.debug: 1 else: 2
-  result = regvm_compiler.compileProgram(prog, optimizeLevel = optimizeLevel, verbose = flags.verbose, debug = flags.debug)
+  let optimizeLevel = if options.debug: 1 else: 2
+  result = regvm_compiler.compileProgram(prog, optimizeLevel = optimizeLevel, verbose = options.verbose, debug = options.debug)
 
   # Fill in CFFI details from the global registry
   for funcName, cffiInfo in result.cffiInfo:
@@ -144,45 +137,47 @@ proc compileProgramWithGlobals*(prog: Program, sourceHash: string, evaluatedGlob
 
 proc parseAndTypecheck*(options: CompilerOptions): (Program, string, Table[string, GlobalValue]) =
   ## Parse source file and perform type checking, return AST, hash, and evaluated globals
-  let flags = CompilerFlags(verbose: options.verbose, debug: options.debug)
+  logCompiler(options.verbose, "Starting compilation of " & options.sourceFile)
 
-  logCompiler(flags, "Starting compilation of " & options.sourceFile)
+  # Get source code - either from string or file
+  let src = if options.sourceString.isSome:
+    let sourceCode = options.sourceString.get()
+    logCompiler(options.verbose, "Compiling from string (" & $sourceCode.len & " characters)")
+    sourceCode
+  else:
+    let content = readFile(options.sourceFile)
+    logCompiler(options.verbose, "Read source file (" & $content.len & " characters)")
+    content
 
-  # Set up error reporting context
-  errors.loadSourceLines(options.sourceFile)
-
-  let src = readFile(options.sourceFile)
-  logCompiler(flags, "Read source file (" & $src.len & " characters)")
-
-  let srcHash = hashSourceAndFlags(src, flags)
-  logCompiler(flags, "Source hash: " & srcHash)
+  let srcHash = hashSourceAndFlags(src, options)
+  logCompiler(options.verbose, "Source hash: " & srcHash)
 
   let toks = lex(src)
-  logCompiler(flags, "Lexed " & $toks.len & " tokens")
+  logCompiler(options.verbose, "Lexed " & $toks.len & " tokens")
 
   var prog = parseProgram(toks, options.sourceFile)
-  logCompiler(flags, "Parsed AST with " & $prog.funs.len & " functions and " & $prog.globals.len & " globals")
+  logCompiler(options.verbose, "Parsed AST with " & $prog.funs.len & " functions and " & $prog.globals.len & " globals")
 
   # Process imports - load modules and FFI functions
-  logCompiler(flags, "Processing imports")
+  logCompiler(options.verbose, "Processing imports")
   globalModuleRegistry.processImports(prog, options.sourceFile)
-  logCompiler(flags, "After imports: " & $prog.funs.len & " functions and " & $prog.globals.len & " globals")
+  logCompiler(options.verbose, "After imports: " & $prog.funs.len & " functions and " & $prog.globals.len & " globals")
 
   # For this MVP, instantiation occurs when functions are called during typecheck inference
-  logCompiler(flags, "Starting type checking phase")
+  logCompiler(options.verbose, "Starting type checking phase")
   typecheck(prog)
-  logCompiler(flags, "Type checking complete")
+  logCompiler(options.verbose, "Type checking complete")
 
   # Force monomorphization for main if it is non-generic:
-  logCompiler(flags, "Ensuring main function instance")
+  logCompiler(options.verbose, "Ensuring main function instance")
   ensureMainInst(prog)
 
   # Instantiate all non-generic functions so they're available for comptime evaluation
-  logCompiler(flags, "Instantiating non-generic functions")
-  ensureAllNonGenericInst(prog, flags)
+  logCompiler(options.verbose, "Instantiating non-generic functions")
+  ensureAllNonGenericInst(prog, options)
 
   # Fold compile-time expressions BEFORE final type checking so injected variables are available
-  logCompiler(flags, "Folding compile-time expressions")
+  logCompiler(options.verbose, "Folding compile-time expressions")
   foldComptime(prog, prog)
 
   # Now do full type checking with injected variables available
@@ -222,16 +217,16 @@ proc parseAndTypecheck*(options: CompilerOptions): (Program, string, Table[strin
     for s in f.body: typecheckStmt(prog, f, sc, s, subst)
 
   # Evaluate global variables with full expression support
-  logCompiler(flags, "Evaluating global variables")
+  logCompiler(options.verbose, "Evaluating global variables")
   let evaluatedGlobals = evaluateGlobalVariables(prog)
-  logCompiler(flags, "Evaluated " & $evaluatedGlobals.len & " global variables")
+  logCompiler(options.verbose, "Evaluated " & $evaluatedGlobals.len & " global variables")
 
   # Run safety prover to ensure all variables are initialized
-  logCompiler(flags, "Running safety prover")
-  prove(prog, options.sourceFile, flags)
-  logCompiler(flags, "Safety proof complete")
+  logCompiler(options.verbose, "Running safety prover")
+  prove(prog, options.sourceFile, options)
+  logCompiler(options.verbose, "Safety proof complete")
 
-  logCompiler(flags, "Parse and typecheck phase complete")
+  logCompiler(options.verbose, "Parse and typecheck phase complete")
   return (prog, srcHash, evaluatedGlobals)
 
 proc runCachedBytecode*(bytecodeFile: string): CompilerResult =
@@ -305,19 +300,17 @@ proc saveBytecodeToCache*(regProg: RegBytecodeProgram, bytecodeFile: string) =
 
 proc compileAndRun*(options: CompilerOptions): CompilerResult =
   ## Main compilation and execution function
-  let flags = CompilerFlags(verbose: options.verbose, debug: options.debug)
-
   echo "Compiling: ", options.sourceFile
-  logCompiler(flags, "Compilation options: runVM=" & $options.runVM & ", verbose=" & $options.verbose)
+  logCompiler(options.verbose, "Compilation options: runVM=" & $options.runVM & ", verbose=" & $options.verbose)
 
   try:
     # Parse and typecheck
     let (prog, srcHash, evaluatedGlobals) = parseAndTypecheck(options)
 
     # Compile to register VM bytecode
-    logCompiler(flags, "Compiling to register VM bytecode")
-    var regProg = compileProgramWithGlobals(prog, srcHash, evaluatedGlobals, options.sourceFile, flags)
-    logCompiler(flags, "Register VM bytecode compilation complete (" & $regProg.instructions.len & " instructions)")
+    logCompiler(options.verbose, "Compiling to register VM bytecode")
+    var regProg = compileProgramWithGlobals(prog, srcHash, evaluatedGlobals, options.sourceFile, options)
+    logCompiler(options.verbose, "Register VM bytecode compilation complete (" & $regProg.instructions.len & " instructions)")
 
     # Add CFFI info from the registry
     for funcName, cffiFunc in globalCFFIRegistry.functions:
@@ -335,17 +328,17 @@ proc compileAndRun*(options: CompilerOptions): CompilerResult =
 
     # Save bytecode to cache
     let bytecodeFile = getBytecodeFileName(options.sourceFile)
-    logCompiler(flags, "Saving bytecode cache to: " & bytecodeFile)
+    logCompiler(options.verbose, "Saving bytecode cache to: " & bytecodeFile)
     saveBytecodeToCache(regProg, bytecodeFile)
 
     # Check if we should run the VM
     var exitCode = 0
     if options.runVM:
-      logCompiler(flags, "Starting Register VM execution")
+      logCompiler(options.verbose, "Starting Register VM execution")
       exitCode = runRegProgram(regProg, options.verbose)
-      logCompiler(flags, "Register VM execution finished with exit code: " & $exitCode)
+      logCompiler(options.verbose, "Register VM execution finished with exit code: " & $exitCode)
 
-    logCompiler(flags, "Compilation completed successfully")
+    logCompiler(options.verbose, "Compilation completed successfully")
     return CompilerResult(success: true, exitCode: 0)
 
   except EtchError as e:
@@ -359,23 +352,22 @@ proc compileAndRun*(options: CompilerOptions): CompilerResult =
 
 proc tryRunCachedOrCompile*(options: CompilerOptions): CompilerResult =
   ## Try to run cached bytecode, fall back to compilation if needed
-  let flags = CompilerFlags(verbose: options.verbose, debug: options.debug)
   let bytecodeFile = getBytecodeFileName(options.sourceFile)
 
-  logCompiler(flags, "Checking for cached bytecode at: " & bytecodeFile)
+  logCompiler(options.verbose, "Checking for cached bytecode at: " & bytecodeFile)
 
   # Check if we can use cached bytecode
   if options.runVM and not shouldRecompile(options.sourceFile, bytecodeFile, options):
-    logCompiler(flags, "Using cached bytecode")
+    logCompiler(options.verbose, "Using cached bytecode")
     let cachedResult = runCachedBytecode(bytecodeFile)
     if cachedResult.success:
-      logCompiler(flags, "Cached bytecode execution successful")
+      logCompiler(options.verbose, "Cached bytecode execution successful")
       return cachedResult
     else:
-      logCompiler(flags, "Cached bytecode execution failed: " & cachedResult.error)
+      logCompiler(options.verbose, "Cached bytecode execution failed: " & cachedResult.error)
       echo cachedResult.error
       echo "Recompiling..."
 
   # Compile from source
-  logCompiler(flags, "Compiling from source")
+  logCompiler(options.verbose, "Compiling from source")
   return compileAndRun(options)

@@ -1,22 +1,22 @@
 # logging.nim
 # Centralized logging utilities for the Etch language implementation
 
-import types
+import std/[macros]
 import constants
 
 
-# Verbose logging function
-template verboseLog*(verbose: bool, module: string, msg: untyped) =
-  if verbose:
-    echo "[", module, "] ", $msg
-
-
 # Convenience templates for each module
-template logCompiler*(flags: CompilerFlags, msg: untyped) =
-  verboseLog(flags.verbose, MODULE_COMPILER, msg)
+macro logCompiler*(verbose: untyped, msg: untyped): untyped =
+  result = quote do:
+    if `verbose`:
+      echo "[", MODULE_COMPILER, "] ", $`msg`
 
-template logProver*(flags: CompilerFlags, msg: untyped) =
-  verboseLog(flags.verbose, MODULE_PROVER, msg)
+macro logProver*(verbose: untyped, msg: untyped): untyped =
+  result = quote do:
+    if `verbose`:
+      echo "[", MODULE_PROVER, "] ", $`msg`
 
-template logVM*(flags: CompilerFlags, msg: untyped) =
-  verboseLog(flags.verbose, MODULE_VM, msg)
+macro logVM*(verbose: untyped, msg: untyped): untyped =
+  result = quote do:
+    if `verbose`:
+      echo "[", MODULE_VM, "] ", $`msg`

@@ -262,18 +262,18 @@ proc analyzeUserDefinedCall*(e: Expr, env: Env, ctx: ProverContext): Info =
   # User-defined function call - comprehensive call-site safety analysis
   let fn = ctx.prog.funInstances[e.fname]
 
-  logProver(ctx.flags, &"Analyzing user-defined function call: {e.fname}")
+  logProver(ctx.options.verbose, &"Analyzing user-defined function call: {e.fname}")
 
   # Check for recursion to prevent infinite analysis loops
   if e.fname in ctx.callStack:
-    logProver(ctx.flags, &"Recursive call detected for {e.fname}, using conservative analysis")
+    logProver(ctx.options.verbose, &"Recursive call detected for {e.fname}, using conservative analysis")
     # Still analyze arguments to mark variables as used
     for arg in e.args:
       discard analyzeExpr(arg, env, ctx)
     return Info(known: false, minv: IMin, maxv: IMax, nonZero: false, initialized: true)
 
   if ctx.callStack.len >= MAX_RECURSION_DEPTH:
-    logProver(ctx.flags, &"Maximum recursion depth reached, using conservative analysis for {e.fname}")
+    logProver(ctx.options.verbose, &"Maximum recursion depth reached, using conservative analysis for {e.fname}")
     # Still analyze arguments to mark variables as used
     for arg in e.args:
       discard analyzeExpr(arg, env, ctx)
@@ -284,14 +284,14 @@ proc analyzeUserDefinedCall*(e: Expr, env: Env, ctx: ProverContext): Info =
   for i, arg in e.args:
     let argInfo = analyzeExpr(arg, env, ctx)
     argInfos.add argInfo
-    logProver(ctx.flags, &"Argument {i}: {(if argInfo.known: $argInfo.cval else: \"[\" & $argInfo.minv & \"..\" & $argInfo.maxv & \"]\")}")
+    logProver(ctx.options.verbose, &"Argument {i}: {(if argInfo.known: $argInfo.cval else: \"[\" & $argInfo.minv & \"..\" & $argInfo.maxv & \"]\")}")
 
   # Add default parameter information
   for i in e.args.len..<fn.params.len:
     if fn.params[i].defaultValue.isSome:
       let defaultInfo = analyzeExpr(fn.params[i].defaultValue.get, env, ctx)
       argInfos.add defaultInfo
-      logProver(ctx.flags, &"Default param {i}: {(if defaultInfo.known: $defaultInfo.cval else: \"[\" & $defaultInfo.minv & \"..\" & $defaultInfo.maxv & \"]\")}")
+      logProver(ctx.options.verbose, &"Default param {i}: {(if defaultInfo.known: $defaultInfo.cval else: \"[\" & $defaultInfo.minv & \"..\" & $defaultInfo.maxv & \"]\")}")
     else:
       # This shouldn't happen if type checking is correct
       argInfos.add infoUnknown()
@@ -305,16 +305,16 @@ proc analyzeUserDefinedCall*(e: Expr, env: Env, ctx: ProverContext): Info =
 
   # If all arguments are constants, try to evaluate simple pure functions at compile time
   if allArgsConstant:
-    logProver(ctx.flags, "All arguments are constants - attempting compile-time evaluation")
+    logProver(ctx.options.verbose, "All arguments are constants - attempting compile-time evaluation")
     let evalResult = tryEvaluatePureFunction(e, argInfos, fn, ctx.prog)
     if evalResult.isSome:
-      logProver(ctx.flags, &"Function evaluated at compile-time to: {evalResult.get}")
+      logProver(ctx.options.verbose, &"Function evaluated at compile-time to: {evalResult.get}")
       return infoConst(evalResult.get)
 
   # Add function to call stack before comprehensive analysis
   var newCtx = ProverContext(
     fnContext: ctx.fnContext,
-    flags: ctx.flags,
+    options: ctx.options,
     prog: ctx.prog,
     callStack: ctx.callStack & @[e.fname]
   )
@@ -347,11 +347,11 @@ proc analyzeUserDefinedCall*(e: Expr, env: Env, ctx: ProverContext): Info =
     # Store the original argument expression if it's simple enough
     if i < e.args.len:
       callEnv.exprs[paramName] = e.args[i]
-    logProver(newCtx.flags, &"Parameter '{paramName}' mapped to: {(if argInfos[i].known: $argInfos[i].cval else: \"[\" & $argInfos[i].minv & \"..\" & $argInfos[i].maxv & \"]\")}")
+    logProver(newCtx.options.verbose, &"Parameter '{paramName}' mapped to: {(if argInfos[i].known: $argInfos[i].cval else: \"[\" & $argInfos[i].minv & \"..\" & $argInfos[i].maxv & \"]\")}")
 
   # Perform comprehensive safety analysis on function body
   let fnContext = &"function {functionNameFromSignature(e.fname)}"
-  logProver(newCtx.flags, &"Starting comprehensive analysis of function body with {fn.body.len} statements")
+  logProver(newCtx.options.verbose, &"Starting comprehensive analysis of function body with {fn.body.len} statements")
 
   # Recursive helper to analyze expressions for all safety violations
   proc checkExpressionSafety(expr: Expr) =
@@ -373,7 +373,7 @@ proc analyzeUserDefinedCall*(e: Expr, env: Env, ctx: ProverContext): Info =
         # Check for potential overflow/underflow
         # The binary operations module already does overflow checks
         # Use newCtx to preserve call stack
-        var tmpCtx = ProverContext(fnContext: fnContext, flags: newCtx.flags, prog: newCtx.prog, callStack: newCtx.callStack)
+        var tmpCtx = ProverContext(fnContext: fnContext, options: newCtx.options, prog: newCtx.prog, callStack: newCtx.callStack)
         discard analyzeBinaryExpr(expr, callEnv, tmpCtx)
       else:
         discard
@@ -381,7 +381,7 @@ proc analyzeUserDefinedCall*(e: Expr, env: Env, ctx: ProverContext): Info =
       # Array bounds checking
       checkExpressionSafety(expr.arrayExpr)
       checkExpressionSafety(expr.indexExpr)
-      var tmpCtx = ProverContext(fnContext: fnContext, flags: newCtx.flags, prog: newCtx.prog, callStack: newCtx.callStack)
+      var tmpCtx = ProverContext(fnContext: fnContext, options: newCtx.options, prog: newCtx.prog, callStack: newCtx.callStack)
       let indexInfo = analyzeExpr(expr.indexExpr, callEnv, tmpCtx)
       if indexInfo.known and indexInfo.cval < 0:
         raise newProverError(expr.pos, &"negative array index in {fnContext}")
@@ -394,11 +394,11 @@ proc analyzeUserDefinedCall*(e: Expr, env: Env, ctx: ProverContext): Info =
       if expr.endExpr.isSome:
         checkExpressionSafety(expr.endExpr.get)
       checkExpressionSafety(expr.sliceExpr)
-      var tmpCtx = ProverContext(fnContext: fnContext, flags: newCtx.flags, prog: newCtx.prog, callStack: newCtx.callStack)
+      var tmpCtx = ProverContext(fnContext: fnContext, options: newCtx.options, prog: newCtx.prog, callStack: newCtx.callStack)
       discard analyzeExpr(expr, callEnv, tmpCtx)
     of ekDeref:
       # Nil dereference checking
-      var tmpCtx = ProverContext(fnContext: fnContext, flags: newCtx.flags, prog: newCtx.prog, callStack: newCtx.callStack)
+      var tmpCtx = ProverContext(fnContext: fnContext, options: newCtx.options, prog: newCtx.prog, callStack: newCtx.callStack)
       let refInfo = analyzeExpr(expr.refExpr, callEnv, tmpCtx)
       if not refInfo.nonNil:
         raise newProverError(expr.pos, &"cannot prove reference is non-nil before dereference in {fnContext}")
@@ -415,25 +415,25 @@ proc analyzeUserDefinedCall*(e: Expr, env: Env, ctx: ProverContext): Info =
       for arg in expr.args:
         checkExpressionSafety(arg)
       # Check the function call itself - preserve call stack
-      var tmpCtx = ProverContext(fnContext: fnContext, flags: newCtx.flags, prog: newCtx.prog, callStack: newCtx.callStack)
+      var tmpCtx = ProverContext(fnContext: fnContext, options: newCtx.options, prog: newCtx.prog, callStack: newCtx.callStack)
       discard analyzeExpr(expr, callEnv, tmpCtx)
     else:
       # For other expression types, just analyze normally
-      var tmpCtx = ProverContext(fnContext: fnContext, flags: newCtx.flags, prog: newCtx.prog, callStack: newCtx.callStack)
+      var tmpCtx = ProverContext(fnContext: fnContext, options: newCtx.options, prog: newCtx.prog, callStack: newCtx.callStack)
       discard analyzeExpr(expr, callEnv, tmpCtx)
 
   # Check all statements in the function body using full statement analysis
   # Use newCtx to preserve the call stack
-  var fnCtx = ProverContext(fnContext: fnContext, flags: newCtx.flags, prog: newCtx.prog, callStack: newCtx.callStack)
+  var fnCtx = ProverContext(fnContext: fnContext, options: newCtx.options, prog: newCtx.prog, callStack: newCtx.callStack)
   for i, stmt in fn.body:
     # Check if previous statement made rest of function unreachable
     if callEnv.unreachable:
-      logProver(newCtx.flags, &"Skipping unreachable statement {i + 1}/{fn.body.len}: {stmt.kind}")
+      logProver(newCtx.options.verbose, &"Skipping unreachable statement {i + 1}/{fn.body.len}: {stmt.kind}")
       break
-    logProver(newCtx.flags, &"Analyzing statement {i + 1}/{fn.body.len}: {stmt.kind}")
+    logProver(newCtx.options.verbose, &"Analyzing statement {i + 1}/{fn.body.len}: {stmt.kind}")
     proveStmt(stmt, callEnv, fnCtx)
 
-  logProver(ctx.flags, &"Function {fnContext} analysis completed successfully")
+  logProver(ctx.options.verbose, &"Function {fnContext} analysis completed successfully")
 
   # Copy back global variable usage information from function call environment
   for k, callInfo in callEnv.vals:
@@ -446,20 +446,20 @@ proc analyzeUserDefinedCall*(e: Expr, env: Env, ctx: ProverContext): Info =
   # all possible return paths and merge their info
   for stmt in fn.body:
     if stmt.kind == skReturn and stmt.re.isSome:
-      let tmpCtx = newProverContext(fnContext, ctx.flags, ctx.prog)
+      let tmpCtx = newProverContext(fnContext, ctx.options, ctx.prog)
       let returnInfo = analyzeExpr(stmt.re.get, callEnv, tmpCtx)
       if returnInfo.known:
-        logProver(ctx.flags, &"Function return value: {returnInfo.cval}")
+        logProver(ctx.options.verbose, &"Function return value: {returnInfo.cval}")
       elif returnInfo.isArray and returnInfo.arraySizeKnown:
-        logProver(ctx.flags, &"Function return value: array of size {returnInfo.arraySize}")
+        logProver(ctx.options.verbose, &"Function return value: array of size {returnInfo.arraySize}")
       elif returnInfo.isArray:
-        logProver(ctx.flags, &"Function return value: array of unknown size (min: {returnInfo.arraySize})")
+        logProver(ctx.options.verbose, &"Function return value: array of unknown size (min: {returnInfo.arraySize})")
       else:
-        logProver(ctx.flags, &"Function return value: [{returnInfo.minv}..{returnInfo.maxv}]")
+        logProver(ctx.options.verbose, &"Function return value: [{returnInfo.minv}..{returnInfo.maxv}]")
       return returnInfo
 
   # No return statement found or void return
-  logProver(ctx.flags, &"Function {fnContext} has no explicit return value")
+  logProver(ctx.options.verbose, &"Function {fnContext} has no explicit return value")
   return infoUnknown()
 
 
@@ -854,7 +854,7 @@ proc analyzeMatchExpr(e: Expr, env: Env, ctx: ProverContext): Info =
 
 
 proc analyzeExpr*(e: Expr; env: Env, ctx: ProverContext): Info =
-  logProver(ctx.flags, "Analyzing " & $e.kind & (if e.kind == ekVar: " '" & e.vname & "'" else: ""))
+  logProver(ctx.options.verbose, "Analyzing " & $e.kind & (if e.kind == ekVar: " '" & e.vname & "'" else: ""))
 
   case e.kind
   of ekInt: return analyzeIntExpr(e)
@@ -963,37 +963,37 @@ proc analyzeExpr*(e: Expr; env: Env, ctx: ProverContext): Info =
 proc analyzeFunctionBody*(statements: seq[Stmt], env: Env, ctx: ProverContext) =
   ## Analyze a sequence of statements in a function body with full control flow analysis
   for i, stmt in statements:
-    logProver(ctx.flags, &"Analyzing statement {i + 1}/{statements.len}: {stmt.kind}")
+    logProver(ctx.options.verbose, &"Analyzing statement {i + 1}/{statements.len}: {stmt.kind}")
     proveStmt(stmt, env, ctx)
 
 
 proc proveVar(s: Stmt; env: Env, ctx: ProverContext) =
-  logProver(ctx.flags, "Declaring variable: " & s.vname)
+  logProver(ctx.options.verbose, "Declaring variable: " & s.vname)
   # Store declaration position for error reporting
   env.declPos[s.vname] = s.pos
   if s.vinit.isSome():
-    logProver(ctx.flags, "Variable " & s.vname & " has initializer")
+    logProver(ctx.options.verbose, "Variable " & s.vname & " has initializer")
     let info = analyzeExpr(s.vinit.get(), env, ctx)
     env.vals[s.vname] = info
     env.nils[s.vname] = not info.nonNil
     env.exprs[s.vname] = s.vinit.get()  # Store original expression
     if info.known:
-      logProver(ctx.flags, "Variable " & s.vname & " initialized with constant value: " & $info.cval)
+      logProver(ctx.options.verbose, "Variable " & s.vname & " initialized with constant value: " & $info.cval)
     elif info.isArray and info.arraySizeKnown:
-      logProver(ctx.flags, "Variable " & s.vname & " initialized with array of size: " & $info.arraySize)
+      logProver(ctx.options.verbose, "Variable " & s.vname & " initialized with array of size: " & $info.arraySize)
     elif info.isArray:
-      logProver(ctx.flags, "Variable " & s.vname & " initialized with array of unknown size (min: " & $info.arraySize & ")")
+      logProver(ctx.options.verbose, "Variable " & s.vname & " initialized with array of unknown size (min: " & $info.arraySize & ")")
     else:
-      logProver(ctx.flags, "Variable " & s.vname & " initialized with range [" & $info.minv & ".." & $info.maxv & "]")
+      logProver(ctx.options.verbose, "Variable " & s.vname & " initialized with range [" & $info.minv & ".." & $info.maxv & "]")
   else:
-    logProver(ctx.flags, "Variable " & s.vname & " declared without initializer (uninitialized)")
+    logProver(ctx.options.verbose, "Variable " & s.vname & " declared without initializer (uninitialized)")
     # Variable is declared but not initialized
     env.vals[s.vname] = infoUninitialized()
     env.nils[s.vname] = true
 
 
 proc proveAssign(s: Stmt; env: Env, ctx: ProverContext) =
-  logProver(ctx.flags, "Assignment to variable: " & s.aname)
+  logProver(ctx.options.verbose, "Assignment to variable: " & s.aname)
   # Check if the variable being assigned to exists
   if not env.vals.hasKey(s.aname):
     raise newProverError(s.pos, &"assignment to undeclared variable '{s.aname}'")
@@ -1007,20 +1007,20 @@ proc proveAssign(s: Stmt; env: Env, ctx: ProverContext) =
   # Track nil status: true if assigning nil, false if assigning non-nil
   env.nils[s.aname] = not info.nonNil
   if info.known:
-    logProver(ctx.flags, "Variable " & s.aname & " assigned constant value: " & $info.cval)
+    logProver(ctx.options.verbose, "Variable " & s.aname & " assigned constant value: " & $info.cval)
   else:
-    logProver(ctx.flags, "Variable " & s.aname & " assigned range [" & $info.minv & ".." & $info.maxv & "]")
+    logProver(ctx.options.verbose, "Variable " & s.aname & " assigned range [" & $info.minv & ".." & $info.maxv & "]")
 
 
 proc proveFieldAssign(s: Stmt; env: Env, ctx: ProverContext) =
-  logProver(ctx.flags, "Field assignment")
+  logProver(ctx.options.verbose, "Field assignment")
   # Analyze the target expression to check initialization
   discard analyzeExpr(s.faTarget, env, ctx)
   # Analyze the value expression
   let valueInfo = analyzeExpr(s.faValue, env, ctx)
   # For now we don't track field-level initialization
   # This would require more sophisticated tracking of object fields
-  logProver(ctx.flags, "Field assigned value with range [" & $valueInfo.minv & ".." & $valueInfo.maxv & "]")
+  logProver(ctx.options.verbose, "Field assigned value with range [" & $valueInfo.minv & ".." & $valueInfo.maxv & "]")
 
 
 proc hasReturn(stmts: seq[Stmt]): bool =
@@ -1032,33 +1032,33 @@ proc hasReturn(stmts: seq[Stmt]): bool =
 
 proc proveIf(s: Stmt; env: Env, ctx: ProverContext) =
   let condResult = evaluateCondition(s.cond, env, ctx)
-  logProver(ctx.flags, "If condition evaluation result: " & $condResult)
+  logProver(ctx.options.verbose, "If condition evaluation result: " & $condResult)
 
   case condResult
   of crAlwaysTrue:
-    logProver(ctx.flags, "Condition is always true - analyzing only then branch")
+    logProver(ctx.options.verbose, "Condition is always true - analyzing only then branch")
     # Check if this is an obvious constant condition that should trigger error
     if isObviousConstant(s.cond) and s.elseBody.len > 0:
       raise newProverError(s.pos, "unreachable code (condition is always true)")
     # Only analyze then branch
     var thenEnv = Env(vals: env.vals, nils: env.nils, exprs: env.exprs)
-    logProver(ctx.flags, "Analyzing " & $s.thenBody.len & " statements in then branch")
+    logProver(ctx.options.verbose, "Analyzing " & $s.thenBody.len & " statements in then branch")
     for st in s.thenBody: proveStmt(st, thenEnv, ctx)
 
     # If then branch has a return, the rest of the function is unreachable
     let thenReturns = hasReturn(s.thenBody)
     if thenReturns:
-      logProver(ctx.flags, "Then branch returns and condition is always true - any code after if is unreachable")
+      logProver(ctx.options.verbose, "Then branch returns and condition is always true - any code after if is unreachable")
       env.unreachable = true
       return
 
     # Copy then results back to main env
     for k, v in thenEnv.vals: env.vals[k] = v
     for k, v in thenEnv.exprs: env.exprs[k] = v
-    logProver(ctx.flags, "Then branch analysis complete")
+    logProver(ctx.options.verbose, "Then branch analysis complete")
     return
   of crAlwaysFalse:
-    logProver(ctx.flags, "Condition is always false - skipping then branch")
+    logProver(ctx.options.verbose, "Condition is always false - skipping then branch")
     # Check if this is an obvious constant condition that should trigger error
     if isObviousConstant(s.cond) and s.thenBody.len > 0 and s.elseBody.len == 0:
       raise newProverError(s.pos, "unreachable code (condition is always false)")
@@ -1118,12 +1118,12 @@ proc proveIf(s: Stmt; env: Env, ctx: ProverContext) =
         env.exprs[k] = v
     return
   of crUnknown:
-    logProver(ctx.flags, "Condition result is unknown at compile time - analyzing all branches")
+    logProver(ctx.options.verbose, "Condition result is unknown at compile time - analyzing all branches")
     discard # Continue with normal analysis
 
   # Normal case: condition is not known at compile time
   # Process then branch (condition could be true)
-  logProver(ctx.flags, "Analyzing control flow with condition refinement")
+  logProver(ctx.options.verbose, "Analyzing control flow with condition refinement")
   var thenEnv = Env(vals: env.vals, nils: env.nils, exprs: env.exprs)
   let condInfo = analyzeExpr(s.cond, env, ctx)
   if not (condInfo.known and condInfo.cval == 0):
@@ -1241,15 +1241,15 @@ proc proveIf(s: Stmt; env: Env, ctx: ProverContext) =
   let thenReturns = hasReturn(s.thenBody)
   let elseReturns = hasReturn(s.elseBody)
 
-  logProver(ctx.flags, &"Then branch returns: {thenReturns}, Else branch returns: {elseReturns}")
+  logProver(ctx.options.verbose, &"Then branch returns: {thenReturns}, Else branch returns: {elseReturns}")
 
   # If then branch returns, use else environment for continuation
   if thenReturns and not elseReturns:
-    logProver(ctx.flags, "Then branch has early return - using else environment for continuation")
+    logProver(ctx.options.verbose, "Then branch has early return - using else environment for continuation")
     # Log environment changes
     for k, v in elseEnv.vals:
       if env.vals.hasKey(k) and (v.arraySize != env.vals[k].arraySize or v.arraySizeKnown != env.vals[k].arraySizeKnown):
-        logProver(ctx.flags, &"Updating variable '{k}': arraySize {env.vals[k].arraySize} -> {v.arraySize}, arraySizeKnown {env.vals[k].arraySizeKnown} -> {v.arraySizeKnown}")
+        logProver(ctx.options.verbose, &"Updating variable '{k}': arraySize {env.vals[k].arraySize} -> {v.arraySize}, arraySizeKnown {env.vals[k].arraySizeKnown} -> {v.arraySizeKnown}")
       env.vals[k] = v
     for k, v in elseEnv.nils:
       env.nils[k] = v
@@ -1398,7 +1398,7 @@ proc proveWhile(s: Stmt; env: Env, ctx: ProverContext) =
 
 proc proveFor(s: Stmt; env: Env, ctx: ProverContext) =
   # Analyze for loop: for var in start..end or for var in array
-  logProver(ctx.flags, "Analyzing for loop variable: " & s.fvar)
+  logProver(ctx.options.verbose, "Analyzing for loop variable: " & s.fvar)
 
   var loopVarInfo: Info
   var iterationCount: Option[int64] = none(int64)
@@ -1406,7 +1406,7 @@ proc proveFor(s: Stmt; env: Env, ctx: ProverContext) =
   if s.farray.isSome():
     # Array iteration: for x in array
     let arrayInfo = analyzeExpr(s.farray.get(), env, ctx)
-    logProver(ctx.flags, "For loop over array with info: " & (if arrayInfo.isArray: "array" else: "unknown"))
+    logProver(ctx.options.verbose, "For loop over array with info: " & (if arrayInfo.isArray: "array" else: "unknown"))
 
     # Loop variable gets the element type - for now assume int (could be enhanced later)
     loopVarInfo = infoUnknown()
@@ -1427,8 +1427,8 @@ proc proveFor(s: Stmt; env: Env, ctx: ProverContext) =
     let startInfo = analyzeExpr(s.fstart.get(), env, ctx)
     let endInfo = analyzeExpr(s.fend.get(), env, ctx)
 
-    logProver(ctx.flags, "For loop start range: [" & $startInfo.minv & ".." & $startInfo.maxv & "]")
-    logProver(ctx.flags, "For loop end range: [" & $endInfo.minv & ".." & $endInfo.maxv & "]")
+    logProver(ctx.options.verbose, "For loop start range: [" & $startInfo.minv & ".." & $startInfo.maxv & "]")
+    logProver(ctx.options.verbose, "For loop end range: [" & $endInfo.minv & ".." & $endInfo.maxv & "]")
 
     # Check if loop will never execute
     if s.finclusive:
@@ -1461,7 +1461,7 @@ proc proveFor(s: Stmt; env: Env, ctx: ProverContext) =
       else:
         max(0'i64, endInfo.cval - startInfo.cval)
       iterationCount = some(count)
-      logProver(ctx.flags, "For loop has known iteration count: " & $count)
+      logProver(ctx.options.verbose, "For loop has known iteration count: " & $count)
 
   # Save current variable state if it exists
   let oldVarInfo = if env.vals.hasKey(s.fvar): env.vals[s.fvar] else: infoUninitialized()
@@ -1470,13 +1470,13 @@ proc proveFor(s: Stmt; env: Env, ctx: ProverContext) =
   env.vals[s.fvar] = loopVarInfo
   env.nils[s.fvar] = false
 
-  logProver(ctx.flags, "Loop variable " & s.fvar & " has range [" & $loopVarInfo.minv & ".." & $loopVarInfo.maxv & "]")
+  logProver(ctx.options.verbose, "Loop variable " & s.fvar & " has range [" & $loopVarInfo.minv & ".." & $loopVarInfo.maxv & "]")
 
   # Enhanced analysis: if we know the iteration count, use fixed-point iteration
   # to get tighter bounds on accumulated variables
   if iterationCount.isSome and iterationCount.get > 0:
     let maxIterations = min(iterationCount.get, 10'i64)  # Cap at 10 iterations for analysis
-    logProver(ctx.flags, "Using fixed-point iteration (up to " & $maxIterations & " passes) for precise analysis")
+    logProver(ctx.options.verbose, "Using fixed-point iteration (up to " & $maxIterations & " passes) for precise analysis")
 
     # Save initial environment state
     var prevEnv = Env(vals: initTable[string, Info](), nils: initTable[string, bool](), exprs: initTable[string, Expr]())
@@ -1494,7 +1494,7 @@ proc proveFor(s: Stmt; env: Env, ctx: ProverContext) =
     var converged = false
     var iteration = 0'i64
     while iteration < maxIterations and not converged:
-      logProver(ctx.flags, "Fixed-point iteration pass " & $(iteration + 1) & "/" & $maxIterations)
+      logProver(ctx.options.verbose, "Fixed-point iteration pass " & $(iteration + 1) & "/" & $maxIterations)
 
       # Create environment for this iteration
       var iterEnv = Env(vals: initTable[string, Info](), nils: initTable[string, bool](), exprs: initTable[string, Expr]())
@@ -1517,7 +1517,7 @@ proc proveFor(s: Stmt; env: Env, ctx: ProverContext) =
           # Check if ranges changed
           if newInfo.minv != oldInfo.minv or newInfo.maxv != oldInfo.maxv:
             converged = false
-            logProver(ctx.flags, "Variable " & k & " range updated: [" & $newInfo.minv & ".." & $newInfo.maxv & "]")
+            logProver(ctx.options.verbose, "Variable " & k & " range updated: [" & $newInfo.minv & ".." & $newInfo.maxv & "]")
           # Always update environment to propagate the `used` flag even if ranges didn't change
           env.vals[k] = newInfo
         elif k != s.fvar:
@@ -1534,16 +1534,16 @@ proc proveFor(s: Stmt; env: Env, ctx: ProverContext) =
       iteration += 1
 
       if converged:
-        logProver(ctx.flags, "Fixed-point reached after " & $iteration & " iterations")
+        logProver(ctx.options.verbose, "Fixed-point reached after " & $iteration & " iterations")
         break
 
     if not converged:
-      logProver(ctx.flags, "Fixed-point not reached after " & $maxIterations & " iterations, using widening")
+      logProver(ctx.options.verbose, "Fixed-point not reached after " & $maxIterations & " iterations, using widening")
       # Apply widening: if a variable is still growing, extrapolate to worst case
       # This is conservative but ensures we don't miss overflow issues
   else:
     # Fallback: single-pass analysis for unknown iteration count
-    logProver(ctx.flags, "Using single-pass analysis (iteration count unknown)")
+    logProver(ctx.options.verbose, "Using single-pass analysis (iteration count unknown)")
     for stmt in s.fbody:
       proveStmt(stmt, env, ctx)
 
@@ -1558,7 +1558,7 @@ proc proveFor(s: Stmt; env: Env, ctx: ProverContext) =
 proc proveBreak(s: Stmt; env: Env, ctx: ProverContext) =
   # Break statements are valid only inside loops, but this is a parse-time concern
   # For prover purposes, break doesn't change variable states
-  logProver(ctx.flags, "Break statement (control flow transfer)")
+  logProver(ctx.options.verbose, "Break statement (control flow transfer)")
 
 
 proc proveExpr(s: Stmt; env: Env, ctx: ProverContext) =
@@ -1596,7 +1596,7 @@ proc proveStmt*(s: Stmt; env: Env, ctx: ProverContext) =
     of skDiscard: "discard statement"
     of skDefer: "defer block"
 
-  logProver(ctx.flags, "Analyzing " & stmtKindStr & (if ctx.fnContext != "": " in " & ctx.fnContext else: ""))
+  logProver(ctx.options.verbose, "Analyzing " & stmtKindStr & (if ctx.fnContext != "": " in " & ctx.fnContext else: ""))
 
   case s.kind
   of skVar: proveVar(s, env, ctx)
@@ -1627,7 +1627,7 @@ proc proveStmt*(s: Stmt; env: Env, ctx: ProverContext) =
 
 proc checkUnusedVariables*(env: Env, ctx: ProverContext, scopeName: string = "", excludeGlobals: bool = false) =
   ## Check for unused variables in the current scope
-  logProver(ctx.flags, "Checking for unused variables" & (if scopeName != "": " in " & scopeName else: ""))
+  logProver(ctx.options.verbose, "Checking for unused variables" & (if scopeName != "": " in " & scopeName else: ""))
 
   for varName, info in env.vals:
     if info.initialized and not info.used:
@@ -1652,7 +1652,7 @@ proc checkUnusedVariables*(env: Env, ctx: ProverContext, scopeName: string = "",
 
 proc checkUnusedGlobalVariables*(env: Env, ctx: ProverContext) =
   ## Check for unused global variables specifically
-  logProver(ctx.flags, "Checking for unused global variables")
+  logProver(ctx.options.verbose, "Checking for unused global variables")
 
   if ctx.prog != nil:
     for g in ctx.prog.globals:
