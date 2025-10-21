@@ -663,3 +663,9 @@ proc inferExprTypes*(prog: Program; fd: FunDecl; sc: Scope; e: Expr; subst: var 
   of ekFieldAccess: return inferFieldAccessExpr(prog, fd, sc, e, subst)
   of ekNew: return inferNewExpr(prog, fd, sc, e, subst)
   of ekIf: return inferIfExpr(prog, fd, sc, e, subst)
+  of ekComptime:
+    # Type check the inner expression
+    let innerType = inferExprTypes(prog, fd, sc, e.comptimeExpr, subst, expectedTy)
+    e.comptimeExpr.typ = innerType
+    e.typ = innerType
+    return innerType

@@ -959,6 +959,11 @@ proc analyzeExpr*(e: Expr; env: Env, ctx: ProverContext): Info =
 
     return Info(known: false, initialized: true)
 
+  of ekComptime:
+    # Analyze the compile-time expression
+    # Since this is evaluated at compile-time, we analyze it as a normal expression
+    return analyzeExpr(e.comptimeExpr, env, ctx)
+
 
 proc analyzeFunctionBody*(statements: seq[Stmt], env: Env, ctx: ProverContext) =
   ## Analyze a sequence of statements in a function body with full control flow analysis

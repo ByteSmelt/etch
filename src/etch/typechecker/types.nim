@@ -453,6 +453,7 @@ proc simpleInferTypeFromExpr*(expr: Expr; sc: Scope = nil): EtchType =
   of ekFieldAccess: return simpleInferTypeFromFieldAccess(expr, sc)
   of ekMatch: return nil  # Match expressions need full type checker context
   of ekIf: return nil  # If expressions need full type checker context
+  of ekComptime: return simpleInferTypeFromExpr(expr.comptimeExpr, sc)  # Infer type from inner expression
 
 # Backward compatibility alias
 proc inferTypeFromExpr*(expr: Expr; sc: Scope = nil): EtchType =

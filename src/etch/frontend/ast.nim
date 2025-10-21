@@ -54,7 +54,7 @@ type
     ekBool, ekChar, ekInt, ekFloat, ekString, ekVar, ekBin, ekUn,
     ekCall, ekNewRef, ekDeref, ekArray, ekIndex, ekSlice, ekArrayLen, ekCast, ekNil,
     ekOptionSome, ekOptionNone, ekResultOk, ekResultErr, ekMatch,
-    ekObjectLiteral, ekFieldAccess, ekNew, ekIf
+    ekObjectLiteral, ekFieldAccess, ekNew, ekIf, ekComptime
 
   Expr* = ref object
     pos*: Pos
@@ -128,6 +128,8 @@ type
       ifThen*: seq[Stmt]                              # then body
       ifElifChain*: seq[tuple[cond: Expr, body: seq[Stmt]]]  # elif chain
       ifElse*: seq[Stmt]                              # else body
+    of ekComptime:
+      comptimeExpr*: Expr                             # expression to evaluate at compile-time
 
   StmtKind* = enum
     skVar, skAssign, skFieldAssign, skIf, skWhile, skFor, skBreak, skExpr, skReturn, skComptime, skTypeDecl, skImport, skDiscard, skDefer
@@ -290,6 +292,7 @@ proc `$`*(t: ExprKind): string =
   of ekObjectLiteral: "object literal"
   of ekNew: "new expression"
   of ekIf: "if expression"
+  of ekComptime: "compile-time expression"
 
 
 proc `$`*(bop: BinOp): string =

@@ -5,6 +5,9 @@ import std/[tables, macros, math, strutils]
 import ../common/[constants, cffi, values, logging]
 import regvm, regvm_debugger
 
+# Global table to store values injected during comptime execution
+var comptimeInjections*: Table[string, V] = initTable[string, V]()
+
 # Cross-platform deterministic PRNG using Xorshift64*
 # This ensures consistent random number generation across Linux, macOS, and Windows
 # Algorithm: https://en.wikipedia.org/wiki/Xorshift
@@ -1243,6 +1246,19 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
             setReg(vm, resultReg, makeString(""))
         else:
           setReg(vm, resultReg, makeString(""))
+
+      of "inject":
+        # inject(name: string, type: string, value: any) -> void
+        # Stores the value in comptimeInjections table for later retrieval
+        if numArgs == 3:
+          let nameVal = getReg(vm, resultReg + 1)
+          let typeVal = getReg(vm, resultReg + 2)
+          let valueVal = getReg(vm, resultReg + 3)
+          if isString(nameVal) and isString(typeVal):
+            # Store the value with its name as key
+            comptimeInjections[nameVal.sval] = valueVal
+        # inject returns void
+        setReg(vm, resultReg, makeInt(0))
 
       of "parseInt":
         if numArgs == 1:

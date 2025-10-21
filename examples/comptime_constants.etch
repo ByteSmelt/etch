@@ -49,16 +49,16 @@ fn main() -> void {
     let fib15: int = 610;  // fibonacci(15)
     print(fib15);
 
-    let gcd_result: int = 6;  // gcd(48, 18)
+    let gcd_result: int = gcd(48, 18);
     print(gcd_result);
 
-    let prime_check: int = 1;  // isPrime(17) = true
+    let prime_check: int = isPrime(17); // true
     print(prime_check);
 
-    let not_prime: int = 0;  // isPrime(15) = false
+    let not_prime: int = isPrime(15); // false
     print(not_prime);
 
-    let table_size: int = 64;  // power_of_two(6) = 2^6 = 64
+    let table_size: int = power_of_two(6); // 2^6 = 64
     print(table_size);
 }
 

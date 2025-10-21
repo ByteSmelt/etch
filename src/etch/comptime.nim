@@ -1,11 +1,11 @@
 # comptime.nim
 # Compile-time evaluation and injection helpers for Etch
 
-import std/[tables, options, strutils]
+import std/[tables, options]
 import common/[types]
 import prover/[function_evaluation, types]
 import frontend/ast
-import interpreter/[regvm, regvm_compiler, regvm_exec]
+import interpreter/[regvm_compiler, regvm_exec, regvm]
 
 
 proc hasImpureExpr(e: Expr): bool
@@ -142,6 +142,49 @@ proc foldExpr(prog: Program, e: var Expr) =
       foldExpr(prog, e.ifElifChain[i].cond)
       for j in 0..<e.ifElifChain[i].body.len: foldStmt(prog, e.ifElifChain[i].body[j])
     for i in 0..<e.ifElse.len: foldStmt(prog, e.ifElse[i])
+  of ekComptime:
+    foldExpr(prog, e.comptimeExpr)
+
+    # Try to evaluate the expression at compile-time
+    if e.comptimeExpr.kind == ekCall:
+      let call = e.comptimeExpr
+
+      # Special handling for readFile which should be evaluated at compile-time
+      if call.fname == "readFile" and call.args.len == 1 and call.args[0].kind == ekString:
+        let filename = call.args[0].sval
+        try:
+          let content = readFile(filename)
+          e = Expr(kind: ekString, sval: content, pos: e.pos)
+        except Exception as ex:
+          echo "Warning: Failed to read file '", filename, "' at compile-time: ", ex.msg
+          echo "Exception: ", ex.getStackTrace()
+      else:
+        # For other functions, try to evaluate using the prover
+        if prog.funInstances.hasKey(call.fname):
+          let fn = prog.funInstances[call.fname]
+          if isPureFunction(fn):
+            var allConstLiterals = true
+            var argInfos: seq[Info] = @[]
+
+            for arg in call.args:
+              case arg.kind
+              of ekInt:
+                argInfos.add(infoConst(arg.ival))
+              of ekFloat:
+                argInfos.add(infoConst(int64(arg.fval)))
+              of ekBool:
+                argInfos.add(infoConst(if arg.bval: 1'i64 else: 0'i64))
+              else:
+                allConstLiterals = false
+                break
+
+            if allConstLiterals and argInfos.len == fn.params.len:
+              let evalResult = tryEvaluatePureFunction(call, argInfos, fn, prog)
+              if evalResult.isSome:
+                e = Expr(kind: ekInt, ival: evalResult.get, pos: e.pos)
+    elif e.comptimeExpr.kind in [ekInt, ekFloat, ekString, ekBool]:
+      # Already a constant, just use it
+      e = e.comptimeExpr
   else: discard
 
 
@@ -210,6 +253,9 @@ proc foldStmt(prog: Program, s: var Stmt) =
     for i in 0..<s.cbody.len:
       foldStmt(prog, s.cbody[i])
 
+    # Clear the comptimeInjections table before execution
+    comptimeInjections.clear()
+
     # Execute the comptime block using the VM
     try:
       # Create a temporary function containing the comptime block
@@ -248,18 +294,16 @@ proc foldStmt(prog: Program, s: var Stmt) =
       echo "Warning: Failed to execute comptime block: ", e.msg
       echo "Exception: ", e.getStackTrace()
 
-    # Now extract injected variables
+    # Now extract injected variables from the VM execution
     var injectedVars: seq[Stmt] = @[]
-    var comptimeScope: Table[string, Expr] = initTable[string, Expr]()
 
+    # Process each inject() call in the AST to get the type information
+    # The actual values come from comptimeInjections table
     for stmt in s.cbody:
-      if stmt.kind == skVar and stmt.vinit.isSome:
-        comptimeScope[stmt.vname] = stmt.vinit.get()
-      elif stmt.kind == skExpr and stmt.sexpr.kind == ekCall and stmt.sexpr.fname == "inject":
+      if stmt.kind == skExpr and stmt.sexpr.kind == ekCall and stmt.sexpr.fname == "inject":
         if stmt.sexpr.args.len == 3:
           let nameExpr = stmt.sexpr.args[0]
           let typeExpr = stmt.sexpr.args[1]
-          var valueExpr = stmt.sexpr.args[2]
 
           if nameExpr.kind == ekString and typeExpr.kind == ekString:
             let varName = nameExpr.sval
@@ -273,19 +317,32 @@ proc foldStmt(prog: Program, s: var Stmt) =
               of "float": varType = tFloat()
               else: varType = tString() # default to string
 
-            if valueExpr.kind == ekVar and comptimeScope.hasKey(valueExpr.vname):
-              valueExpr = comptimeScope[valueExpr.vname]
+            # Get the actual value from the VM execution
+            if comptimeInjections.hasKey(varName):
+              let injectedValue = comptimeInjections[varName]
 
-            foldExpr(prog, valueExpr)
+              # Convert VM value to AST expression
+              var valueExpr: Expr
+              if injectedValue.isInt():
+                valueExpr = Expr(kind: ekInt, ival: injectedValue.ival, pos: stmt.pos)
+              elif injectedValue.isFloat():
+                valueExpr = Expr(kind: ekFloat, fval: injectedValue.fval, pos: stmt.pos)
+              elif injectedValue.isString():
+                valueExpr = Expr(kind: ekString, sval: injectedValue.sval, pos: stmt.pos)
+              elif injectedValue.isBool():
+                valueExpr = Expr(kind: ekBool, bval: injectedValue.bval, pos: stmt.pos)
+              else:
+                # Fallback to a default value
+                valueExpr = Expr(kind: ekInt, ival: 0, pos: stmt.pos)
 
-            let varDecl = Stmt(
-              kind: skVar,
-              vname: varName,
-              vtype: varType,
-              vinit: some(valueExpr),
-              pos: stmt.pos
-            )
-            injectedVars.add(varDecl)
+              let varDecl = Stmt(
+                kind: skVar,
+                vname: varName,
+                vtype: varType,
+                vinit: some(valueExpr),
+                pos: stmt.pos
+              )
+              injectedVars.add(varDecl)
 
     s.cbody = injectedVars
   of skDefer:

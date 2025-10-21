@@ -777,6 +777,12 @@ proc compileExpr*(c: var RegCompiler, e: Expr): uint8 =
     for jmpPos in jumpToEndPositions:
       c.prog.instructions[jmpPos].sbx = int16(endPos - jmpPos - 1)
 
+  of ekComptime:
+    # Compile-time expression should have been folded during comptime pass
+    # If we reach here, just compile the inner expression (it should be a constant now)
+    log(c.verbose, "Compiling ekComptime expression (should have been folded)")
+    result = c.compileExpr(e.comptimeExpr)
+
 proc compileBinOp(c: var RegCompiler, op: BinOp, dest, left, right: uint8, debug: RegDebugInfo = RegDebugInfo()) =
   case op:
   of boAdd: c.prog.emitABC(ropAdd, dest, left, right, debug)

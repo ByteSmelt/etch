@@ -234,6 +234,12 @@ proc parseBuiltinKeywordExpr(p: Parser; t: Token): Expr =
   of "if":
     return p.parseIfExpr(t)
 
+  of "comptime":
+    discard p.expect(tkSymbol, "(")
+    let e = p.parseExpr()
+    discard p.expect(tkSymbol, ")")
+    return Expr(kind: ekComptime, comptimeExpr: e, pos: p.posOf(t))
+
   of "some":
     discard p.expect(tkSymbol, "(")
     let e = p.parseExpr()

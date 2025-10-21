@@ -17,10 +17,13 @@ fn main() -> void {
             i = i + 1;
         }
 
-        # Inject code based on file content
         inject("injected_var", "string", config_content);
         inject("injected_num", "int", 42);
+        inject("injected_i", "int", i);
     }
 
     print(42);
+    print(injected_var);
+    print(injected_num);
+    print(injected_i);
 }
