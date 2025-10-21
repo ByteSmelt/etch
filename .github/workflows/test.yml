@@ -57,8 +57,12 @@ jobs:
     - name: Build release binary
       run: nim c -d:danger -o:etch src/etch.nim
 
-    - name: Run example tests
+    - name: Run example tests VM
       run: nim r src/etch.nim --test examples/
+
+    - name: Run example tests C
+      if: matrix.os == 'ubuntu-latest' || matrix.os == 'macos-latest'
+      run: nim r src/etch.nim --test-c examples/
 
     - name: Run debugger tests
       run: nimble test
