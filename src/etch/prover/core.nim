@@ -3,14 +3,14 @@
 
 
 import std/[tables]
-import ../frontend/ast, ../common/errors
+import ../frontend/ast
 import ../common/[constants, logging, types]
 import types, expression_analysis
 
 
 proc prove*(prog: Program, filename: string = "<unknown>", options: CompilerOptions) =
   logProver(options.verbose, "Starting safety proof analysis for " & filename)
-  errors.loadSourceLines(filename)
+  # Source lines will be lazily loaded on error in formatError() (file is on disk)
   var env = Env(vals: initTable[string, Info](), nils: initTable[string, bool](), exprs: initTable[string, Expr](), declPos: initTable[string, Pos]())
 
   logProver(options.verbose, "Initializing environment with " & $prog.globals.len & " global variables")

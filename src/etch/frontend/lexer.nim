@@ -21,7 +21,7 @@ const keywords = [
 
 proc isKeyword(w: string): bool = w in keywords
 
-proc lex*(src: string): seq[Token] =
+proc lex*(src: string, filename: string = ""): seq[Token] =
   var line = 1
   var col  = 1
 
@@ -48,7 +48,7 @@ proc lex*(src: string): seq[Token] =
       while i+1 < src.len:
         # Check for nested comment start
         if src[i] == '/' and src[i+1] == '*':
-          let pos = Pos(line: line, col: col, filename: "")
+          let pos = Pos(line: line, col: col, filename: filename)
           raise newParseError(pos, "Nested multiline comments are not supported")
         if src[i] == '*' and src[i+1] == '/':
           inc i, 2 # skip */
@@ -62,7 +62,7 @@ proc lex*(src: string): seq[Token] =
           inc col
         inc i
       if not found_end:
-        let pos = Pos(line: comment_start_line, col: comment_start_col, filename: "")
+        let pos = Pos(line: comment_start_line, col: comment_start_col, filename: filename)
         raise newParseError(pos, "Unterminated multiline comment")
       continue
 
@@ -126,7 +126,7 @@ proc lex*(src: string): seq[Token] =
           content.add src[m]
           inc m
       if m >= src.len:
-        let pos = Pos(line: line, col: tokenCol, filename: "")
+        let pos = Pos(line: line, col: tokenCol, filename: filename)
         raise newParseError(pos, "Unterminated string literal")
       inc m # skip closing quote
       result.add Token(kind: tkString, lex: content, line: line, col: tokenCol)
@@ -155,13 +155,13 @@ proc lex*(src: string): seq[Token] =
           content.add src[m]
           inc m
       if m >= src.len:
-        let pos = Pos(line: line, col: tokenCol, filename: "")
+        let pos = Pos(line: line, col: tokenCol, filename: filename)
         raise newParseError(pos, "Unterminated character literal")
       if src[m] != '\'':
-        let pos = Pos(line: line, col: tokenCol, filename: "")
+        let pos = Pos(line: line, col: tokenCol, filename: filename)
         raise newParseError(pos, "Expected closing quote for character literal")
       if content.len != 1:
-        let pos = Pos(line: line, col: tokenCol, filename: "")
+        let pos = Pos(line: line, col: tokenCol, filename: filename)
         raise newParseError(pos, "Character literal must contain exactly one character")
       inc m # skip closing quote
       result.add Token(kind: tkChar, lex: content, line: line, col: tokenCol)

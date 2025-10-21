@@ -40,6 +40,9 @@ typedef struct EtchContextObj* EtchContext;
 /** Opaque handle to an Etch value */
 typedef struct EtchValueObj* EtchValue;
 
+/** Opaque handle to an Etch debug server */
+typedef struct EtchDebugServerObj* EtchDebugServer;
+
 /**
  * Host function callback signature
  *
@@ -434,6 +437,100 @@ int etch_get_instruction_count(EtchContext ctx);
  * @return Function name (do not free - owned by context), or NULL on error
  */
 const char* etch_get_current_function(EtchContext ctx);
+
+
+/* ============================================================================
+ * Debug Server API
+ * ========================================================================== */
+
+/**
+ * Create a new debug server from a compiled program
+ *
+ * Use this to enable debugging of Etch scripts running in your C/C++ application.
+ * The debug server implements the Debug Adapter Protocol (DAP) used by VSCode.
+ *
+ * @param ctx Context with compiled program (after calling etch_compile_string or etch_compile_file)
+ * @param sourceFile Source file path for debug info
+ * @return Debug server handle or NULL on failure
+ *
+ * Example workflow:
+ * @code
+ *   EtchContext ctx = etch_context_new();
+ *   etch_compile_file(ctx, "script.etch");
+ *
+ *   EtchDebugServer server = etch_debug_server_new(ctx, "script.etch");
+ *
+ *   // Main debug loop
+ *   char line[4096];
+ *   while (etch_debug_server_is_running(server) && fgets(line, sizeof(line), stdin)) {
+ *       char* response = NULL;
+ *       etch_debug_server_handle_request(server, line, &response);
+ *       if (response) {
+ *           printf("%s\n", response);
+ *           fflush(stdout);
+ *           etch_free_string(response);
+ *       }
+ *   }
+ *
+ *   etch_debug_server_free(server);
+ *   etch_context_free(ctx);
+ * @endcode
+ */
+EtchDebugServer etch_debug_server_new(EtchContext ctx, const char* sourceFile);
+
+/**
+ * Free a debug server
+ *
+ * @param debugServer Debug server to free
+ */
+void etch_debug_server_free(EtchDebugServer debugServer);
+
+/**
+ * Handle a Debug Adapter Protocol (DAP) request
+ *
+ * This function processes a single DAP request and returns the response.
+ * Both request and response are JSON strings following the DAP specification.
+ *
+ * @param debugServer Debug server handle
+ * @param requestJson JSON string containing the DAP request (null-terminated)
+ * @param outResponseJson Pointer to store response JSON string (caller must free with etch_free_string)
+ * @return 0 on success, non-zero on error
+ *
+ * Supported DAP commands:
+ * - initialize: Initialize debug session
+ * - launch: Start debugging
+ * - setBreakpoints: Set breakpoints
+ * - continue: Continue execution
+ * - next: Step over
+ * - stepIn: Step into
+ * - stepOut: Step out
+ * - pause: Pause execution
+ * - stackTrace: Get call stack
+ * - scopes: Get variable scopes
+ * - variables: Get variable values
+ * - threads: Get thread list
+ * - disconnect: End debug session
+ */
+int etch_debug_server_handle_request(EtchDebugServer debugServer,
+                                      const char* requestJson,
+                                      char** outResponseJson);
+
+/**
+ * Check if the debug server is still running
+ *
+ * @param debugServer Debug server handle
+ * @return 1 if running, 0 if stopped or NULL
+ */
+int etch_debug_server_is_running(EtchDebugServer debugServer);
+
+/**
+ * Free a string allocated by the Etch library
+ *
+ * Use this to free strings returned by etch_debug_server_handle_request
+ *
+ * @param str String to free
+ */
+void etch_free_string(char* str);
 
 
 #ifdef __cplusplus

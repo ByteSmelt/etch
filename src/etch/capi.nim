@@ -2,10 +2,10 @@
 # C FFI interface for using Etch as an embedded scripting engine
 # This module provides a clean C API that can be linked into C/C++ applications
 
-import std/[tables, strutils, os, options]
+import std/[tables, strutils, os, options, json]
 import ./[compiler]
 import ./common/[types, constants, errors]
-import ./interpreter/[regvm, regvm_compiler, regvm_exec]
+import ./interpreter/[regvm, regvm_compiler, regvm_exec, regvm_debugserver]
 import ./frontend/[ast, parser, lexer]
 import ./typechecker/[core, types as tctypes, statements, inference]
 
@@ -14,6 +14,7 @@ type
   # Opaque handles for C API
   EtchContext* = ptr EtchContextObj
   EtchValue* = ptr EtchValueObj
+  EtchDebugServer* = ptr EtchDebugServerObj
 
   # Host function callback type
   # Returns an EtchValue, takes array of arguments and user data pointer
@@ -41,6 +42,10 @@ type
 
   EtchValueObj = object
     value: V
+
+  EtchDebugServerObj = object
+    server: RegDebugServer
+    sourceFile: string
 
 
 # ============================================================================
@@ -523,5 +528,91 @@ proc etch_get_current_function*(ctx: EtchContext): cstring {.exportc, cdecl, dyn
       return cstring(funcName)
 
   return cstring("<unknown>")
+
+
+# ============================================================================
+# Debug Server API
+# ============================================================================
+
+proc etch_debug_server_new*(ctx: EtchContext, sourceFile: cstring): EtchDebugServer {.exportc, cdecl, dynlib.} =
+  ## Create a new debug server from a compiled program
+  ## ctx: Context with compiled program
+  ## sourceFile: Source file path for debug info
+  ## Returns: Debug server handle or nil on failure
+  if ctx == nil or ctx.program.instructions.len == 0:
+    return nil
+
+  try:
+    let srcFile = if sourceFile != nil: $sourceFile else: "<unknown>"
+    let debugServer = newRegDebugServer(ctx.program, srcFile)
+
+    var serverObj = cast[EtchDebugServer](alloc0(sizeof(EtchDebugServerObj)))
+    serverObj.server = debugServer
+    serverObj.sourceFile = srcFile
+    return serverObj
+  except Exception:
+    return nil
+
+proc etch_debug_server_free*(debugServer: EtchDebugServer) {.exportc, cdecl, dynlib.} =
+  ## Free a debug server
+  ## debugServer: Debug server to free
+  if debugServer != nil:
+    dealloc(debugServer)
+
+proc etch_debug_server_handle_request*(debugServer: EtchDebugServer,
+                                        requestJson: cstring,
+                                        outResponseJson: ptr cstring): cint {.exportc, cdecl, dynlib.} =
+  ## Handle a debug adapter protocol request
+  ## debugServer: Debug server handle
+  ## requestJson: JSON string containing the DAP request
+  ## outResponseJson: Pointer to store response JSON string (caller must free with etch_free_string)
+  ## Returns: 0 on success, non-zero on error
+  if debugServer == nil or requestJson == nil or outResponseJson == nil:
+    return 1
+
+  try:
+    let request = parseJson($requestJson)
+    let response = handleDebugRequest(debugServer.server, request)
+
+    # Add request ID to response
+    if request.hasKey("seq"):
+      response["request_seq"] = request["seq"]
+    response["type"] = %"response"
+    response["command"] = request["command"]
+
+    let responseStr = $response
+    # Allocate and copy response string
+    let responseLen = responseStr.len + 1
+    let responseCStr = cast[cstring](alloc0(responseLen))
+    copyMem(cast[pointer](responseCStr), unsafeAddr responseStr[0], responseStr.len)
+
+    outResponseJson[] = responseCStr
+    return 0
+  except Exception as e:
+    # Return error as JSON
+    let errorResponse = %*{
+      "type": "response",
+      "success": false,
+      "message": e.msg
+    }
+    let errorStr = $errorResponse
+    let errorLen = errorStr.len + 1
+    let errorCStr = cast[cstring](alloc0(errorLen))
+    copyMem(cast[pointer](errorCStr), unsafeAddr errorStr[0], errorStr.len)
+    outResponseJson[] = errorCStr
+    return 1
+
+proc etch_debug_server_is_running*(debugServer: EtchDebugServer): cint {.exportc, cdecl, dynlib.} =
+  ## Check if the debug server is still running
+  ## Returns: 1 if running, 0 if not
+  if debugServer == nil or debugServer.server == nil:
+    return 0
+  return if debugServer.server.running: 1 else: 0
+
+proc etch_free_string*(str: cstring) {.exportc, cdecl, dynlib.} =
+  ## Free a string allocated by the Etch library
+  ## str: String to free
+  if str != nil:
+    dealloc(cast[pointer](str))
 
 

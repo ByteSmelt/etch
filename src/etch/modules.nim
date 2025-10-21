@@ -97,7 +97,8 @@ proc loadModule*(registry: ModuleRegistry, importPath: string, fromFile: string)
   registry.loadedPaths.incl(resolvedPath)
 
   let source = readFile(resolvedPath)
-  let tokens = lex(source)
+  # Source lines will be lazily loaded on error in formatError() (file is on disk)
+  let tokens = lex(source, resolvedPath)
   let program = parseProgram(tokens, resolvedPath)
 
   let exports = extractExports(program)

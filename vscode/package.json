@@ -107,6 +107,11 @@
                 "description": "Absolute path to the Etch program.",
                 "default": "${workspaceFolder}/${command:AskForProgramName}"
               },
+              "debugExecutable": {
+                "type": "string",
+                "description": "Optional: Path to custom debug executable (C binary embedding Etch). If not specified, uses the Etch compiler.",
+                "default": ""
+              },
               "stopOnEntry": {
                 "type": "boolean",
                 "description": "Automatically stop after launch.",
@@ -138,6 +143,18 @@
               "request": "launch",
               "name": "Launch Etch Program",
               "program": "^\"\\${workspaceFolder}/\\${command:AskForProgramName}\"",
+              "stopOnEntry": true
+            }
+          },
+          {
+            "label": "Etch Debug: Launch C Binary",
+            "description": "Debug Etch scripts running inside a C/C++ application.",
+            "body": {
+              "type": "etch",
+              "request": "launch",
+              "name": "Debug C Binary with Etch",
+              "program": "^\"\\${workspaceFolder}/script.etch\"",
+              "debugExecutable": "^\"\\${workspaceFolder}/my_app\"",
               "stopOnEntry": true
             }
           }

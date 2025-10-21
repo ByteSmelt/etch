@@ -77,7 +77,9 @@ class EtchDebugAdapter extends DebugSession {
 
         const launchArgs = args as any;
         const program = launchArgs.program;
+        const debugExecutable = launchArgs.debugExecutable;
         log(`Program path: ${program}`);
+        log(`Debug executable: ${debugExecutable || '(default: etch compiler)'}`);
 
         const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(program));
         const workspacePath = workspaceFolder?.uri.fsPath || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
@@ -88,12 +90,27 @@ class EtchDebugAdapter extends DebugSession {
             return;
         }
 
-        const etchExecutablePath = path.join(workspacePath, 'etch');
-        log(`Attempting to launch: ${etchExecutablePath} --debug-server ${program}`);
+        // Determine which executable to use
+        let executablePath: string;
+        let executableArgs: string[];
+
+        if (debugExecutable && debugExecutable.trim() !== '') {
+            // Use custom debug executable (C binary embedding Etch)
+            executablePath = debugExecutable;
+            executableArgs = [program];
+            log(`Using custom debug executable: ${executablePath} ${program}`);
+        } else {
+            // Use default Etch compiler debug server
+            executablePath = path.join(workspacePath, 'etch');
+            executableArgs = ['--debug-server', program];
+            log(`Using Etch compiler debug server: ${executablePath} --debug-server ${program}`);
+        }
+
+        log(`Attempting to launch: ${executablePath} ${executableArgs.join(' ')}`);
 
         try {
-            // Spawn the Etch debug server process
-            this.etchProcess = spawn(etchExecutablePath, ['--debug-server', program], {
+            // Spawn the debug server process
+            this.etchProcess = spawn(executablePath, executableArgs, {
                 cwd: workspacePath,
                 stdio: ['pipe', 'pipe', 'pipe']
             });

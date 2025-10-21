@@ -143,16 +143,19 @@ proc parseAndTypecheck*(options: CompilerOptions): (Program, string, Table[strin
   let src = if options.sourceString.isSome:
     let sourceCode = options.sourceString.get()
     logCompiler(options.verbose, "Compiling from string (" & $sourceCode.len & " characters)")
+    # Cache source lines for string compilation (not on disk, so must cache upfront)
+    errors.loadSourceLinesFromString(sourceCode, options.sourceFile)
     sourceCode
   else:
     let content = readFile(options.sourceFile)
     logCompiler(options.verbose, "Read source file (" & $content.len & " characters)")
+    # For file compilation, source lines will be lazily loaded on error in formatError()
     content
 
   let srcHash = hashSourceAndFlags(src, options)
   logCompiler(options.verbose, "Source hash: " & srcHash)
 
-  let toks = lex(src)
+  let toks = lex(src, options.sourceFile)
   logCompiler(options.verbose, "Lexed " & $toks.len & " tokens")
 
   var prog = parseProgram(toks, options.sourceFile)
