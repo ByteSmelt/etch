@@ -1,7 +1,7 @@
 # etch_cli.nim
 # CLI for Etch: parse, typecheck, monomorphize on call, prove safety, run VM or emit C
 
-import std/[os, strutils, osproc, tables, times]
+import std/[os, strutils, osproc, tables, times, strformat, sequtils]
 import ./etch/[compiler, tester]
 import ./etch/common/[constants, types, cffi, logging]
 import ./etch/interpreter/[regvm, regvm_dump, regvm_debugserver]
@@ -105,10 +105,9 @@ proc compileAndRunCBackend(bytecode: RegBytecodeProgram, sourceFile: string, ver
   if verbose:
     echo "Generated C code: ", cFile
 
-  var linkerFlags = " -lm"
-  var libDirs: seq[string] = @[]  # Collect unique library directories
+  # Collect unique library directories from CFFI info
+  var libDirs: seq[string] = @[]
 
-  # Extract library directories from actual library paths
   for funcName, cffiInfo in bytecode.cffiInfo:
     let libName = cffiInfo.library
 
@@ -129,48 +128,54 @@ proc compileAndRunCBackend(bytecode: RegBytecodeProgram, sourceFile: string, ver
       if libDir != "" and libDir notin libDirs:
         libDirs.add(libDir)
 
-    # Add linker flag for the library
-    let linkName = if libName.startsWith("lib"): libName[3..^1] else: libName
-    if not linkerFlags.contains("-l" & linkName):
-      linkerFlags &= " -l" & linkName
-
-  # Build -L flags for all unique library directories
-  var libPaths = ""
-  for libDir in libDirs:
-    libPaths &= " -L" & libDir
-
   if verbose and libDirs.len > 0:
     echo "Library directories found:"
     for libDir in libDirs:
       echo "  ", libDir
 
-  let optFlags = if not debug: " -O3" else: ""
-
-  # Add rpath for dynamic library loading at runtime (macOS and Linux)
-  # This tells the dynamic linker where to find shared libraries relative to the executable
-  var rpathFlags = ""
-  if libDirs.len > 0:
-    # Build rpath entries for each unique library directory
-    when defined(macosx) or defined(macos):
-      # Use @executable_path to make path relative to executable location
-      for libDir in libDirs:
-        # Calculate relative path from executable to library directory
-        let relPath = relativePath(libDir, etchDir)
-        rpathFlags &= " -Wl,-rpath,@executable_path/" & relPath
-    else:
-      # Use $ORIGIN for Linux/Unix to make path relative to executable location
-      # IMPORTANT: -z origin flag is required to enable $ORIGIN processing on Linux
-      rpathFlags &= " -Wl,-z,origin"
-      for libDir in libDirs:
-        # Calculate relative path from executable to library directory
-        let relPath = relativePath(libDir, etchDir)
-        # Escape $ for shell: \$ORIGIN (double backslash in Nim string = single backslash in output)
-        rpathFlags &= " -Wl,-rpath,\\$ORIGIN/" & relPath
+  # Build compilation command as seq[string]
+  var compileArgs: seq[string] = @[]
 
   when defined(macosx) or defined(macos):
-    let compileCmd = "xcrun clang" & optFlags & " -o " & exeFile & " " & cFile & libPaths & linkerFlags & rpathFlags & " 2>&1"
+    compileArgs.add("xcrun")
+    compileArgs.add("clang")
   else:
-    let compileCmd = "clang" & optFlags & " -o " & exeFile & " " & cFile & libPaths & linkerFlags & rpathFlags & " 2>&1"
+    compileArgs.add("clang")
+
+  if not debug:
+    compileArgs.add("-O3")
+    compileArgs.add("-fomit-frame-pointer")
+
+  compileArgs.add("-o")
+  compileArgs.add(exeFile)
+  compileArgs.add(cFile)
+
+  # Add library paths
+  for libDir in libDirs:
+    compileArgs.add(&"-L{libDir}")
+
+  # Add linker flags (already includes -lm and library names)
+  compileArgs.add("-lm")
+  for funcName, cffiInfo in bytecode.cffiInfo:
+    let libName = cffiInfo.library
+    if libName notin ["c", "cmath", "math", "m", "pthread", "dl"]:
+      let linkName = if libName.startsWith("lib"): libName[3..^1] else: libName
+      compileArgs.add(&"-l{linkName}")
+
+  # Add rpath for dynamic library loading at runtime (macOS and Linux)
+  if libDirs.len > 0:
+    when defined(macosx) or defined(macos):
+      for libDir in libDirs:
+        let relPath = relativePath(libDir, etchDir)
+        compileArgs.add(&"-Wl,-rpath,@executable_path/{relPath}")
+    else:
+      compileArgs.add("-Wl,-z,origin")
+      for libDir in libDirs:
+        let relPath = relativePath(libDir, etchDir)
+        compileArgs.add(&"-Wl,-rpath,$ORIGIN/{relPath}")
+
+  # Build shell command with proper quoting
+  let compileCmd = compileArgs.map(quoteShell).join(" ") & " 2>&1"
 
   if verbose:
     echo "Compiling: ", compileCmd
@@ -239,25 +244,26 @@ proc runPerformanceBenchmarks(perfDir: string = "performance"): int =
 
     # Try to compile C backend (silently)
     let etchExe = getAppFilename()
-    let (_, exitCode) = execCmdEx(etchExe & " --run c --release " & etchFile & " > /dev/null 2>&1")
+    let compileTestCmd = &"{quoteShell(etchExe)} --run c --release {quoteShell(etchFile)} > /dev/null 2>&1"
+    let (_, exitCode) = execCmdEx(compileTestCmd)
 
     # Check if C executable exists
     let hasCBackend = fileExists(cExecutable) and exitCode == 0
 
     # Run hyperfine based on whether C backend is available
-    var hyperCmd: string
+    var hyperArgs: seq[string] = @["hyperfine", "--warmup", "3", "--export-markdown", mdOutput]
+
     if hasCBackend:
       echo "  Running: C backend + VM + Python"
-      hyperCmd = "hyperfine --warmup 3 --export-markdown '" & mdOutput & "' " &
-                 "'" & cExecutable & "' " &
-                 "'" & etchExe & " --run --release " & etchFile & "' " &
-                 "'python3 " & pyFile & "' 2>/dev/null"
+      hyperArgs.add(cExecutable)
+      hyperArgs.add(&"{etchExe} --run --release {etchFile}")
+      hyperArgs.add(&"python3 {pyFile}")
     else:
       echo "  Running: VM + Python (C backend not available)"
-      hyperCmd = "hyperfine --warmup 3 --export-markdown '" & mdOutput & "' " &
-                 "'" & etchExe & " --run --release " & etchFile & "' " &
-                 "'python3 " & pyFile & "' 2>/dev/null"
+      hyperArgs.add(&"{etchExe} --run --release {etchFile}")
+      hyperArgs.add(&"python3 {pyFile}")
 
+    let hyperCmd = hyperArgs.map(quoteShell).join(" ") & " 2>/dev/null"
     let (_, _) = execCmdEx(hyperCmd)
 
     # Append results to report if available

@@ -18,20 +18,20 @@ tests:
     nimble test
 
 # Test compiling and running a specific example file
-test file:
+test file OPTS="":
     @just libs
-    nim r src/etch.nim --test {{file}}
+    nim r src/etch.nim --test {{file}} {{OPTS}}
 
 # Test compiling and running all examples + debugger tests (c)
-tests-c:
+tests-c OPTS="":
     @just libs
-    nim r src/etch.nim --test-c examples/
+    nim r src/etch.nim --test-c examples/ {{OPTS}}
     #nimble test
 
 # Test compiling and running a specific example file (c)
-test-c file:
+test-c file OPTS="":
     @just libs
-    nim r src/etch.nim --test-c {{file}}
+    nim r src/etch.nim --test-c {{file}} {{OPTS}}
 
 # Run a specific example file
 go file:
