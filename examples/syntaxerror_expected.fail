@@ -1,4 +1,4 @@
-examples/syntaxerror_expected_1.etch:3:3: error: expected symbol ';', got identifier 'y'
+examples/syntaxerror_expected.etch:3:3: error: expected symbol ';', got identifier 'y'
   2 |   let x: int = print
   3 |   y
         ^

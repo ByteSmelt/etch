@@ -1035,6 +1035,209 @@ proc hasReturn(stmts: seq[Stmt]): bool =
       return true
   return false
 
+
+proc applyConstraintToInfo(info: Info, cond: Expr, baseEnv: Env, ctx: ProverContext, negate: bool, varName: string): Info =
+  ## Apply a constraint to a single Info value and return the refined Info
+  ## This is a pure function that doesn't mutate the input
+  ## varName is the variable we're refining
+  result = info  # Start with a copy
+
+  # Try to extract constraint from the condition
+  # Handle cases where variable is on either side of the comparison
+  var isLeftSide = (cond.lhs.kind == ekVar and cond.lhs.vname == varName)
+  var isRightSide = (cond.rhs.kind == ekVar and cond.rhs.vname == varName)
+
+  if not isLeftSide and not isRightSide:
+    # This condition doesn't constrain this variable
+    return result
+
+  case cond.bop
+  of boNe:
+    # Handle x != value or value != x
+    let valueExpr = if isLeftSide: cond.rhs else: cond.lhs
+    if valueExpr.kind == ekInt and valueExpr.ival == 0:
+      if not negate:
+        # x != 0: x is nonZero
+        result.nonZero = true
+      else:
+        # !(x != 0): x == 0
+        result.minv = 0
+        result.maxv = 0
+        result.known = true
+        result.cval = 0
+  of boEq:
+    # Handle x == value or value == x
+    let valueExpr = if isLeftSide: cond.rhs else: cond.lhs
+    if valueExpr.kind == ekInt and valueExpr.ival == 0:
+      if not negate:
+        # x == 0
+        result.minv = 0
+        result.maxv = 0
+        result.known = true
+        result.cval = 0
+      else:
+        # !(x == 0): x != 0, x is nonZero
+        result.nonZero = true
+    elif valueExpr.kind == ekInt:
+      # x == constant
+      let constVal = valueExpr.ival
+      if not negate:
+        result.minv = constVal
+        result.maxv = constVal
+        result.known = true
+        result.cval = constVal
+  of boGe, boGt, boLe, boLt:
+    # Handle comparisons: x op value or value op x
+    let rhsExpr = if isLeftSide: cond.rhs else: cond.lhs
+    let rhsInfo = analyzeExpr(rhsExpr, baseEnv, ctx)
+
+    # We need range information (known value or bounded range)
+    if not rhsInfo.known and (rhsInfo.minv == IMin or rhsInfo.maxv == IMax):
+      # RHS is completely unbounded, can't refine
+      return result
+
+    # Get the effective comparison value
+    # For known values, use cval; for ranges, use conservative bounds
+    let constraintValue = if rhsInfo.known: rhsInfo.cval else:
+      # For inequality constraints with ranges, use conservative bound
+      case cond.bop
+      of boGe, boGt: rhsInfo.minv  # x >= [a,b] → x >= a (conservative)
+      of boLe, boLt: rhsInfo.maxv  # x <= [a,b] → x <= b (conservative)
+      else: return result
+
+    # Apply the constraint based on which side the variable is on
+    if isLeftSide:
+      # Variable on left: x op value
+      case cond.bop
+      of boGe:
+        if not negate:
+          # x >= value
+          result.minv = max(result.minv, constraintValue)
+        else:
+          # !(x >= value): x < value, so x <= value - 1
+          result.maxv = min(result.maxv, constraintValue - 1)
+      of boGt:
+        if not negate:
+          # x > value: x >= value + 1
+          result.minv = max(result.minv, constraintValue + 1)
+        else:
+          # !(x > value): x <= value
+          result.maxv = min(result.maxv, constraintValue)
+      of boLe:
+        if not negate:
+          # x <= value
+          result.maxv = min(result.maxv, constraintValue)
+        else:
+          # !(x <= value): x > value, so x >= value + 1
+          result.minv = max(result.minv, constraintValue + 1)
+      of boLt:
+        if not negate:
+          # x < value: x <= value - 1
+          result.maxv = min(result.maxv, constraintValue - 1)
+        else:
+          # !(x < value): x >= value
+          result.minv = max(result.minv, constraintValue)
+      else: discard
+    else:
+      # Variable on right: value op x
+      # Reverse the comparison: value op x ↔ x op' value
+      case cond.bop
+      of boGe:
+        # value >= x → x <= value
+        if not negate:
+          result.maxv = min(result.maxv, constraintValue)
+        else:
+          # !(value >= x): x > value
+          result.minv = max(result.minv, constraintValue + 1)
+      of boGt:
+        # value > x → x < value
+        if not negate:
+          result.maxv = min(result.maxv, constraintValue - 1)
+        else:
+          # !(value > x): x >= value
+          result.minv = max(result.minv, constraintValue)
+      of boLe:
+        # value <= x → x >= value
+        if not negate:
+          result.minv = max(result.minv, constraintValue)
+        else:
+          # !(value <= x): x < value
+          result.maxv = min(result.maxv, constraintValue - 1)
+      of boLt:
+        # value < x → x > value
+        if not negate:
+          result.minv = max(result.minv, constraintValue + 1)
+        else:
+          # !(value < x): x <= value
+          result.maxv = min(result.maxv, constraintValue)
+      else: discard
+  else:
+    discard
+
+
+proc collectVariablesInCondition(cond: Expr): seq[string] =
+  ## Recursively collect all variable names mentioned in a condition
+  result = @[]
+  case cond.kind
+  of ekVar:
+    if cond.vname notin result:
+      result.add(cond.vname)
+  of ekBin:
+    for v in collectVariablesInCondition(cond.lhs):
+      if v notin result:
+        result.add(v)
+    for v in collectVariablesInCondition(cond.rhs):
+      if v notin result:
+        result.add(v)
+  of ekUn:
+    for v in collectVariablesInCondition(cond.ue):
+      if v notin result:
+        result.add(v)
+  of ekArrayLen:
+    for v in collectVariablesInCondition(cond.lenExpr):
+      if v notin result:
+        result.add(v)
+  else:
+    discard
+
+
+proc applyConstraints(env: Env, cond: Expr, baseEnv: Env, ctx: ProverContext, negate: bool = false) =
+  ## Apply constraints from a condition expression to an environment
+  ## Handles compound conditions (AND/OR) recursively
+  ## Modifies env in place for efficiency (env is already a copy from copyEnv)
+  if cond.kind != ekBin:
+    return
+
+  case cond.bop
+  of boAnd:
+    # For AND: both sides must be true
+    if not negate:
+      # In then branch: both sides are true - recursively apply both
+      applyConstraints(env, cond.lhs, baseEnv, ctx, negate = false)
+      applyConstraints(env, cond.rhs, baseEnv, ctx, negate = false)
+    else:
+      # In else branch: at least one side is false (De Morgan's law: not(A and B) = not(A) or not(B))
+      # We can't make strong assumptions here - be conservative
+      discard
+  of boOr:
+    # For OR: at least one side must be true
+    if not negate:
+      # In then branch: at least one side is true - be conservative
+      discard
+    else:
+      # In else branch: both sides are false (De Morgan's law: not(A or B) = not(A) and not(B))
+      applyConstraints(env, cond.lhs, baseEnv, ctx, negate = true)
+      applyConstraints(env, cond.rhs, baseEnv, ctx, negate = true)
+  of boNe, boEq, boGe, boGt, boLe, boLt:
+    # Apply constraint to all variables mentioned in this condition
+    let variables = collectVariablesInCondition(cond)
+    for varName in variables:
+      if env.vals.hasKey(varName):
+        let refinedInfo = applyConstraintToInfo(env.vals[varName], cond, baseEnv, ctx, negate, varName)
+        env.vals[varName] = refinedInfo
+  else:
+    discard
+
 proc proveIf(s: Stmt; env: Env, ctx: ProverContext) =
   let condResult = evaluateCondition(s.cond, env, ctx)
   logProver(ctx.options.verbose, "If condition evaluation result: " & $condResult)
@@ -1127,118 +1330,59 @@ proc proveIf(s: Stmt; env: Env, ctx: ProverContext) =
     discard # Continue with normal analysis
 
   # Normal case: condition is not known at compile time
-  # Process then branch (condition could be true)
+  # Create independent copies of environment for each branch
   logProver(ctx.options.verbose, "Analyzing control flow with condition refinement")
-  var thenEnv = Env(vals: env.vals, nils: env.nils, exprs: env.exprs)
   let condInfo = analyzeExpr(s.cond, env, ctx)
+
+  # Process then branch (condition could be true)
+  var thenEnv = copyEnv(env)
   if not (condInfo.known and condInfo.cval == 0):
     # Control flow sensitive analysis: refine environment based on condition
-    if s.cond.kind == ekBin:
-      case s.cond.bop
-      of boNe: # x != 0 means x is nonZero in then branch
-        if s.cond.rhs.kind == ekInt and s.cond.rhs.ival == 0 and s.cond.lhs.kind == ekVar:
-          if thenEnv.vals.hasKey(s.cond.lhs.vname):
-            thenEnv.vals[s.cond.lhs.vname].nonZero = true
-      of boGe: # x >= value: in then branch, x >= value
-        if s.cond.lhs.kind == ekVar and thenEnv.vals.hasKey(s.cond.lhs.vname):
-          let rhsInfo = analyzeExpr(s.cond.rhs, env, ctx)
-          if rhsInfo.known:
-            # In then branch: x >= rhsInfo.cval
-            thenEnv.vals[s.cond.lhs.vname].minv = max(thenEnv.vals[s.cond.lhs.vname].minv, rhsInfo.cval)
-      of boGt: # x > value: in then branch, x >= value + 1
-        if s.cond.lhs.kind == ekVar and thenEnv.vals.hasKey(s.cond.lhs.vname):
-          let rhsInfo = analyzeExpr(s.cond.rhs, env, ctx)
-          if rhsInfo.known:
-            # In then branch: x > rhsInfo.cval means x >= rhsInfo.cval + 1
-            thenEnv.vals[s.cond.lhs.vname].minv = max(thenEnv.vals[s.cond.lhs.vname].minv, rhsInfo.cval + 1)
-      of boLe: # x <= value: in then branch, x <= value
-        if s.cond.lhs.kind == ekVar and thenEnv.vals.hasKey(s.cond.lhs.vname):
-          let rhsInfo = analyzeExpr(s.cond.rhs, env, ctx)
-          if rhsInfo.known:
-            # In then branch: x <= rhsInfo.cval
-            thenEnv.vals[s.cond.lhs.vname].maxv = min(thenEnv.vals[s.cond.lhs.vname].maxv, rhsInfo.cval)
-      of boLt: # x < value: in then branch, x <= value - 1
-        if s.cond.lhs.kind == ekVar and thenEnv.vals.hasKey(s.cond.lhs.vname):
-          let rhsInfo = analyzeExpr(s.cond.rhs, env, ctx)
-          if rhsInfo.known:
-            # In then branch: x < rhsInfo.cval means x <= rhsInfo.cval - 1
-            thenEnv.vals[s.cond.lhs.vname].maxv = min(thenEnv.vals[s.cond.lhs.vname].maxv, rhsInfo.cval - 1)
-      else: discard
+    # Apply constraint refinements recursively (handles compound conditions with AND/OR)
+    logProver(ctx.options.verbose, "Applying condition constraints to then branch")
+    applyConstraints(thenEnv, s.cond, env, ctx, negate = false)
     for st in s.thenBody: proveStmt(st, thenEnv, ctx)
 
   # Process elif chain
   var elifEnvs: seq[Env] = @[]
   for i, elifBranch in s.elifChain:
-    var elifEnv = Env(vals: env.vals, nils: env.nils)
-
+    # Create independent copy for elif branch
+    var elifEnv = copyEnv(env)
     # Control flow analysis for elif condition
-    if elifBranch.cond.kind == ekBin:
-      case elifBranch.cond.bop
-      of boNe: # x != 0 means x is nonZero in elif branch
-        if elifBranch.cond.rhs.kind == ekInt and elifBranch.cond.rhs.ival == 0 and elifBranch.cond.lhs.kind == ekVar:
-          if elifEnv.vals.hasKey(elifBranch.cond.lhs.vname):
-            elifEnv.vals[elifBranch.cond.lhs.vname].nonZero = true
-      else: discard
-
+    logProver(ctx.options.verbose, "Applying condition constraints to elif branch")
+    applyConstraints(elifEnv, elifBranch.cond, env, ctx, negate = false)
     for st in elifBranch.body: proveStmt(st, elifEnv, ctx)
     elifEnvs.add(elifEnv)
 
   # Process else branch
-  var elseEnv = Env(vals: env.vals, nils: env.nils, exprs: env.exprs)
+  var elseEnv = copyEnv(env)
   # Control flow sensitive analysis for else (condition is false)
-  if s.cond.kind == ekBin:
-    case s.cond.bop
-    of boNe: # #a != #b: in else branch (condition false), #a == #b
-      # Handle array/string length equality: if (#a != #b) is false, then #a == #b
-      if s.cond.lhs.kind == ekArrayLen and s.cond.rhs.kind == ekArrayLen:
-        # Both sides are array/string lengths
-        let lhsInfo = analyzeExpr(s.cond.lhs, env, ctx)
-        let rhsInfo = analyzeExpr(s.cond.rhs, env, ctx)
+  # Special case: Handle array/string length equality
+  if s.cond.kind == ekBin and s.cond.bop == boNe and
+     s.cond.lhs.kind == ekArrayLen and s.cond.rhs.kind == ekArrayLen:
+    # Handle array/string length equality: if (#a != #b) is false, then #a == #b
+    let lhsInfo = analyzeExpr(s.cond.lhs, env, ctx)
+    let rhsInfo = analyzeExpr(s.cond.rhs, env, ctx)
 
-        # If we know one size, constrain the other to match
-        if lhsInfo.arraySizeKnown and (lhsInfo.isArray or lhsInfo.isString):
-          # Constrain the rhs array to have the same size
-          if s.cond.rhs.arrayExpr.kind == ekVar and elseEnv.vals.hasKey(s.cond.rhs.arrayExpr.vname):
-            elseEnv.vals[s.cond.rhs.arrayExpr.vname].arraySize = lhsInfo.arraySize
-            elseEnv.vals[s.cond.rhs.arrayExpr.vname].arraySizeKnown = true
-            elseEnv.vals[s.cond.rhs.arrayExpr.vname].minv = lhsInfo.arraySize
-            elseEnv.vals[s.cond.rhs.arrayExpr.vname].maxv = lhsInfo.arraySize
-        elif rhsInfo.arraySizeKnown and (rhsInfo.isArray or rhsInfo.isString):
-          # Constrain the lhs array to have the same size
-          if s.cond.lhs.arrayExpr.kind == ekVar and elseEnv.vals.hasKey(s.cond.lhs.arrayExpr.vname):
-            elseEnv.vals[s.cond.lhs.arrayExpr.vname].arraySize = rhsInfo.arraySize
-            elseEnv.vals[s.cond.lhs.arrayExpr.vname].arraySizeKnown = true
-            elseEnv.vals[s.cond.lhs.arrayExpr.vname].minv = rhsInfo.arraySize
-            elseEnv.vals[s.cond.lhs.arrayExpr.vname].maxv = rhsInfo.arraySize
-    of boEq: # x == 0 means x is nonZero in else branch
-      if s.cond.rhs.kind == ekInt and s.cond.rhs.ival == 0 and s.cond.lhs.kind == ekVar:
-        if elseEnv.vals.hasKey(s.cond.lhs.vname):
-          elseEnv.vals[s.cond.lhs.vname].nonZero = true
-    of boGe: # x >= value: in else branch (condition false), x < value
-      if s.cond.lhs.kind == ekVar and elseEnv.vals.hasKey(s.cond.lhs.vname):
-        let rhsInfo = analyzeExpr(s.cond.rhs, env, ctx)
-        if rhsInfo.known:
-          # In else branch: !(x >= rhsInfo.cval) means x < rhsInfo.cval, so x <= rhsInfo.cval - 1
-          elseEnv.vals[s.cond.lhs.vname].maxv = min(elseEnv.vals[s.cond.lhs.vname].maxv, rhsInfo.cval - 1)
-    of boGt: # x > value: in else branch (condition false), x <= value
-      if s.cond.lhs.kind == ekVar and elseEnv.vals.hasKey(s.cond.lhs.vname):
-        let rhsInfo = analyzeExpr(s.cond.rhs, env, ctx)
-        if rhsInfo.known:
-          # In else branch: !(x > rhsInfo.cval) means x <= rhsInfo.cval
-          elseEnv.vals[s.cond.lhs.vname].maxv = min(elseEnv.vals[s.cond.lhs.vname].maxv, rhsInfo.cval)
-    of boLe: # x <= value: in else branch (condition false), x > value
-      if s.cond.lhs.kind == ekVar and elseEnv.vals.hasKey(s.cond.lhs.vname):
-        let rhsInfo = analyzeExpr(s.cond.rhs, env, ctx)
-        if rhsInfo.known:
-          # In else branch: !(x <= rhsInfo.cval) means x > rhsInfo.cval, so x >= rhsInfo.cval + 1
-          elseEnv.vals[s.cond.lhs.vname].minv = max(elseEnv.vals[s.cond.lhs.vname].minv, rhsInfo.cval + 1)
-    of boLt: # x < value: in else branch (condition false), x >= value
-      if s.cond.lhs.kind == ekVar and elseEnv.vals.hasKey(s.cond.lhs.vname):
-        let rhsInfo = analyzeExpr(s.cond.rhs, env, ctx)
-        if rhsInfo.known:
-          # In else branch: !(x < rhsInfo.cval) means x >= rhsInfo.cval
-          elseEnv.vals[s.cond.lhs.vname].minv = max(elseEnv.vals[s.cond.lhs.vname].minv, rhsInfo.cval)
-    else: discard
+    # If we know one size, constrain the other to match
+    if lhsInfo.arraySizeKnown and (lhsInfo.isArray or lhsInfo.isString):
+      # Constrain the rhs array to have the same size
+      if s.cond.rhs.arrayExpr.kind == ekVar and elseEnv.vals.hasKey(s.cond.rhs.arrayExpr.vname):
+        elseEnv.vals[s.cond.rhs.arrayExpr.vname].arraySize = lhsInfo.arraySize
+        elseEnv.vals[s.cond.rhs.arrayExpr.vname].arraySizeKnown = true
+        elseEnv.vals[s.cond.rhs.arrayExpr.vname].minv = lhsInfo.arraySize
+        elseEnv.vals[s.cond.rhs.arrayExpr.vname].maxv = lhsInfo.arraySize
+    elif rhsInfo.arraySizeKnown and (rhsInfo.isArray or rhsInfo.isString):
+      # Constrain the lhs array to have the same size
+      if s.cond.lhs.arrayExpr.kind == ekVar and elseEnv.vals.hasKey(s.cond.lhs.arrayExpr.vname):
+        elseEnv.vals[s.cond.lhs.arrayExpr.vname].arraySize = rhsInfo.arraySize
+        elseEnv.vals[s.cond.lhs.arrayExpr.vname].arraySizeKnown = true
+        elseEnv.vals[s.cond.lhs.arrayExpr.vname].minv = rhsInfo.arraySize
+        elseEnv.vals[s.cond.lhs.arrayExpr.vname].maxv = rhsInfo.arraySize
+
+  # Apply negated constraint refinements recursively (handles compound conditions with AND/OR)
+  logProver(ctx.options.verbose, "Applying negated condition constraints to else branch")
+  applyConstraints(elseEnv, s.cond, env, ctx, negate = true)
 
   for st in s.elseBody: proveStmt(st, elseEnv, ctx)
 

@@ -90,3 +90,15 @@ proc union*(a, b: Info): Info =
     # For union, if sizes/lengths differ, we don't know the size
     result.arraySizeKnown = a.arraySizeKnown and b.arraySizeKnown and a.arraySize == b.arraySize
     result.arraySize = (if result.arraySizeKnown: a.arraySize else: -1)
+
+
+proc copyEnv*(env: Env): Env =
+  ## Create a deep copy of an environment for independent branch analysis
+  ## This ensures modifications to one branch don't affect others
+  result = Env()
+  # Tables are value types in Nim, so assignment creates a copy
+  result.vals = env.vals
+  result.nils = env.nils
+  result.exprs = env.exprs
+  result.declPos = env.declPos
+  result.unreachable = env.unreachable

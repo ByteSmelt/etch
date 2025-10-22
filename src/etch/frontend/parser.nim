@@ -221,7 +221,7 @@ proc parseBuiltinKeywordExpr(p: Parser; t: Token): Expr =
         initExpr = some(p.parseExpr())
       return Expr(kind: ekNew, newType: typeExpr, initExpr: initExpr, pos: p.posOf(t))
     else:
-      # Old syntax: new(value) - infer type from value
+      # Inferred syntax: new(value) - infer type from value
       discard p.expect(tkSymbol, "(")
       let valueExpr = p.parseExpr()
       discard p.expect(tkSymbol, ")")
@@ -379,26 +379,32 @@ proc parsePattern(p: Parser): Pattern =
 
   # Fall back to regular patterns
   discard p.eat()
+
   case t.lex
   of "some":
     discard p.expect(tkSymbol, "(")
     let bindName = p.expect(tkIdent).lex
     discard p.expect(tkSymbol, ")")
     return Pattern(kind: pkSome, bindName: bindName)
+
   of "none":
     return Pattern(kind: pkNone)
+
   of "ok":
     discard p.expect(tkSymbol, "(")
     let bindName = p.expect(tkIdent).lex
     discard p.expect(tkSymbol, ")")
     return Pattern(kind: pkOk, bindName: bindName)
+
   of "error":
     discard p.expect(tkSymbol, "(")
     let bindName = p.expect(tkIdent).lex
     discard p.expect(tkSymbol, ")")
     return Pattern(kind: pkErr, bindName: bindName)
+
   of "_":
     return Pattern(kind: pkWildcard)
+
   else:
     # Try parsing as a type pattern for user-defined types
     p.i -= 1  # backtrack
@@ -460,6 +466,7 @@ proc parseSymbolExpr(p: Parser; t: Token): Expr =
     let e = p.parseExpr()
     discard p.expect(tkSymbol, ")")
     return e
+
   of "[":
     # Array literal: [expr1, expr2, ...]
     var elements: seq[Expr] = @[]
@@ -470,15 +477,19 @@ proc parseSymbolExpr(p: Parser; t: Token): Expr =
         elements.add p.parseExpr()
     discard p.expect(tkSymbol, "]")
     return Expr(kind: ekArray, elements: elements, pos: p.posOf(t))
+
   of "-":
     let e = p.parseExpr(6) # highest prefix binding
     return Expr(kind: ekUn, uop: uoNeg, ue: e, pos: p.posOf(t))
+
   of "@":
     let e = p.parseExpr(100)  # Maximum precedence
     return Expr(kind: ekDeref, refExpr: e, pos: p.posOf(t))
+
   of "#":
     let e = p.parseExpr(6)
     return Expr(kind: ekArrayLen, lenExpr: e, pos: p.posOf(t))
+
   of "{":
     # Object literal: { field1: expr1, field2: expr2 }
     var fieldInits: seq[tuple[name: string, value: Expr]] = @[]
@@ -499,6 +510,7 @@ proc parseSymbolExpr(p: Parser; t: Token): Expr =
     discard p.expect(tkSymbol, "}")
     # Object type will be inferred during type checking
     return Expr(kind: ekObjectLiteral, objectType: nil, fieldInits: fieldInits, pos: p.posOf(t))
+
   else:
     let actualName = friendlyTokenName(t.kind, t.lex)
     raise newParseError(p.posOf(t), &"unexpected {actualName}")
