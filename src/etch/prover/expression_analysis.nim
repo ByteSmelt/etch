@@ -1541,7 +1541,12 @@ proc proveWhile(s: Stmt; env: Env, ctx: ProverContext) =
       originalVars[k] = v
 
     # Create loop body environment for remaining analysis
-    var loopEnv = Env(vals: env.vals, nils: env.nils, exprs: env.exprs)
+    var loopEnv = copyEnv(env)
+
+    # Apply loop condition constraints as invariants
+    # Inside the loop, the condition must be true
+    logProver(ctx.options.verbose, "Applying while loop condition as invariant")
+    applyConstraints(loopEnv, s.wcond, env, ctx, negate = false)
 
     # Analyze loop body with traditional method
     for st in s.wbody:
@@ -1689,13 +1694,11 @@ proc proveFor(s: Stmt; env: Env, ctx: ProverContext) =
       logProver(ctx.options.verbose, "Fixed-point iteration pass " & $(iteration + 1) & "/" & $maxIterations)
 
       # Create environment for this iteration
-      var iterEnv = Env(vals: initTable[string, Info](), nils: initTable[string, bool](), exprs: initTable[string, Expr]())
-      for k, v in env.vals:
-        iterEnv.vals[k] = v
-      for k, v in env.nils:
-        iterEnv.nils[k] = v
-      for k, v in env.exprs:
-        iterEnv.exprs[k] = v
+      var iterEnv = copyEnv(env)
+
+      # Loop invariant: the loop variable maintains its range throughout
+      # This is already set in env, but we ensure it's preserved
+      iterEnv.vals[s.fvar] = loopVarInfo
 
       # Analyze loop body with current environment
       for stmt in s.fbody:

@@ -1,0 +1,156 @@
+// Stress test: Complex nested conditions with AND/OR
+
+fn testDeeplyNestedAnd() -> int {
+  let arr: array[int] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+  let input = readFile("examples/data/input.txt");
+  let maybeX = input.parseInt();
+
+  let x = match maybeX {
+    some(value) => value;
+    none => 5;
+  };
+
+  // Deeply nested AND conditions
+  if x >= 0 and x < 100 {
+    if x >= 2 and x < 50 {
+      if x >= 3 and x < 20 {
+        if x >= 4 and x < 10 {
+          // x is now constrained to [4, 9]
+          return arr[x];  // ✅ Should be proven safe!
+        }
+      }
+    }
+  }
+
+  return -1;
+}
+
+fn testComplexOrChain() -> int {
+  let arr: array[int] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+  let input = readFile("examples/data/input.txt");
+  let maybeX = input.parseInt();
+
+  let x = match maybeX {
+    some(value) => value;
+    none => 2;
+  };
+
+  // Multiple OR conditions creating disjunctive intervals
+  if (x >= 0 and x < 2) or (x >= 3 and x < 5) or (x >= 7 and x < 9) {
+    // x is in [0,1] ∪ [3,4] ∪ [7,8]
+    return arr[x];  // ✅ Should be proven safe!
+  }
+
+  return -1;
+}
+
+fn testMixedAndOr() -> int {
+  let arr: array[int] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+  let input = readFile("examples/data/input.txt");
+  let maybeX = input.parseInt();
+
+  let x = match maybeX {
+    some(value) => value;
+    none => 3;
+  };
+
+  // Mixed AND/OR: (A and B) or (C and D)
+  if (x >= 0 and x < 4) or (x >= 6 and x < 9) {
+    // x is in [0,3] ∪ [6,8]
+    return arr[x];  // ✅ Should be proven safe!
+  }
+
+  return -1;
+}
+
+fn testNestedOrInAnd() -> int {
+  let arr: array[int] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+  let input = readFile("examples/data/input.txt");
+  let maybeX = input.parseInt();
+
+  let x = match maybeX {
+    some(value) => value;
+    none => 1;
+  };
+
+  // (A or B) and C - should narrow to intersection with bounded intervals
+  if ((x >= 2 and x < 5) or (x >= 6 and x < 9)) and x < 8 {
+    // ((x in [2,4]) or (x in [6,8])) and (x < 8) = [2,4] ∪ [6,7]
+    return arr[x];  // ✅ Should be proven safe!
+  }
+
+  return -1;
+}
+
+fn testComplexBoundaryCheck() -> int {
+  let arr: array[int] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+  let input = readFile("examples/data/input.txt");
+  let maybeX = input.parseInt();
+
+  let x = match maybeX {
+    some(value) => value;
+    none => 8;
+  };
+
+  // Complex condition with multiple layers
+  if x >= 0 {
+    if x < 20 {
+      if (x >= 5 and x < 10) or (x >= 12 and x < 15) {
+        // x is in [5,9] ∪ [12,14]
+        return arr[x];  // ✅ Should be proven safe!
+      }
+    }
+  }
+
+  return -1;
+}
+
+fn testFourWayOr() -> int {
+  let arr: array[int] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19];
+  let input = readFile("examples/data/input.txt");
+  let maybeX = input.parseInt();
+
+  let x = match maybeX {
+    some(value) => value;
+    none => 0;
+  };
+
+  // Four-way OR condition
+  if (x >= 0 and x < 3) or (x >= 5 and x < 8) or (x >= 10 and x < 13) or (x >= 15 and x < 18) {
+    // x is in [0,2] ∪ [5,7] ∪ [10,12] ∪ [15,17]
+    return arr[x];  // ✅ Should be proven safe!
+  }
+
+  return -1;
+}
+
+fn testNegatedComplexCondition() -> int {
+  let arr: array[int] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+  let input = readFile("examples/data/input.txt");
+  let maybeX = input.parseInt();
+
+  let x = match maybeX {
+    some(value) => value;
+    none => 0;
+  };
+
+  // Using else branch to test negated conditions
+  if x < 0 or x >= 10 {
+    return -1;
+  } else {
+    // x is in [0, 9]
+    return arr[x];  // ✅ Should be proven safe!
+  }
+}
+
+fn main() -> void {
+  print("Test 1 (deeply nested AND): " + toString(testDeeplyNestedAnd()));
+  print("Test 2 (complex OR chain): " + toString(testComplexOrChain()));
+  print("Test 3 (mixed AND/OR): " + toString(testMixedAndOr()));
+  print("Test 4 (nested OR in AND): " + toString(testNestedOrInAnd()));
+  print("Test 5 (complex boundary): " + toString(testComplexBoundaryCheck()));
+  print("Test 6 (four-way OR): " + toString(testFourWayOr()));
+  print("Test 7 (negated condition): " + toString(testNegatedComplexCondition()));
+  print("");
+  print("✅ All complex condition stress tests passed!");
+}

@@ -1,0 +1,166 @@
+// Stress test: Boundary value testing with edge cases
+
+fn testZeroLengthCheck() -> int {
+  let arr: array[int] = [0, 1, 2, 3, 4];
+  let input = readFile("examples/data/input.txt");
+  let maybeX = input.parseInt();
+
+  let x = match maybeX {
+    some(value) => value;
+    none => 0;
+  };
+
+  // Test exact array length boundary
+  if x >= 0 and x < #arr {
+    return arr[x];  // ✅ Should be proven safe!
+  }
+
+  return -1;
+}
+
+fn testSingleElement() -> int {
+  let arr: array[int] = [42];
+  let input = readFile("examples/data/input.txt");
+  let maybeX = input.parseInt();
+
+  let x = match maybeX {
+    some(value) => value;
+    none => 0;
+  };
+
+  // Single element array - x must be exactly 0
+  if x == 0 {
+    return arr[x];  // ✅ Should be proven safe!
+  }
+
+  return -1;
+}
+
+fn testExactBoundaries() -> int {
+  let arr: array[int] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+  let input = readFile("examples/data/input.txt");
+  let maybeX = input.parseInt();
+
+  let x = match maybeX {
+    some(value) => value;
+    none => 0;
+  };
+
+  // Test exact lower and upper boundaries
+  if x >= 0 and x <= 9 {
+    return arr[x];  // ✅ Should be proven safe!
+  }
+
+  return -1;
+}
+
+fn testOffByOneProtection() -> int {
+  let arr: array[int] = [0, 1, 2, 3, 4];
+  let input = readFile("examples/data/input.txt");
+  let maybeX = input.parseInt();
+
+  let x = match maybeX {
+    some(value) => value;
+    none => 0;
+  };
+
+  // Careful off-by-one check
+  if x >= 0 and x < 5 {
+    return arr[x];  // ✅ Should be proven safe!
+  }
+
+  return -1;
+}
+
+fn testNarrowWindow() -> int {
+  let arr: array[int] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+  let input = readFile("examples/data/input.txt");
+  let maybeX = input.parseInt();
+
+  let x = match maybeX {
+    some(value) => value;
+    none => 5;
+  };
+
+  // Very narrow valid window
+  if x >= 5 and x <= 5 {
+    // x is exactly 5
+    return arr[x];  // ✅ Should be proven safe!
+  }
+
+  return -1;
+}
+
+fn testBoundaryWithOffset() -> int {
+  let arr: array[int] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+  let input = readFile("examples/data/input.txt");
+  let maybeX = input.parseInt();
+
+  let x = match maybeX {
+    some(value) => value;
+    none => 2;
+  };
+
+  // Test accessing with offset
+  if x >= 0 and x < 8 {
+    let offset = x + 2;
+    if offset < 10 {
+      return arr[offset];  // ✅ Should be proven safe!
+    }
+  }
+
+  return -1;
+}
+
+fn testMultipleChecks() -> int {
+  let arr: array[int] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+  let input = readFile("examples/data/input.txt");
+  let maybeX = input.parseInt();
+
+  let x = match maybeX {
+    some(value) => value;
+    none => 0;
+  };
+
+  // Multiple redundant checks - prover should handle
+  if x >= 0 {
+    if x < 10 {
+      if x >= 0 and x < 10 {
+        return arr[x];  // ✅ Should be proven safe!
+      }
+    }
+  }
+
+  return -1;
+}
+
+fn testMinusOne() -> int {
+  let arr: array[int] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+  let input = readFile("examples/data/input.txt");
+  let maybeX = input.parseInt();
+
+  let x = match maybeX {
+    some(value) => value;
+    none => 5;
+  };
+
+  // Test last valid index (length - 1)
+  if x >= 0 and x <= #arr - 1 {
+    return arr[x];  // ✅ Should be proven safe!
+  }
+
+  return -1;
+}
+
+fn main() -> void {
+  print("Test 1 (zero-length check): " + toString(testZeroLengthCheck()));
+  print("Test 2 (single element): " + toString(testSingleElement()));
+  print("Test 3 (exact boundaries): " + toString(testExactBoundaries()));
+  print("Test 4 (off-by-one protection): " + toString(testOffByOneProtection()));
+  print("Test 5 (narrow window): " + toString(testNarrowWindow()));
+  print("Test 6 (boundary with offset): " + toString(testBoundaryWithOffset()));
+  print("Test 7 (multiple checks): " + toString(testMultipleChecks()));
+  print("Test 8 (minus one): " + toString(testMinusOne()));
+  print("");
+  print("✅ All boundary stress tests passed!");
+}
