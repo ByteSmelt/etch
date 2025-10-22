@@ -9,6 +9,7 @@ nimble.paths
 
 /etch
 /lib
+/bin
 __etch__/
 *.etcx
 *.etca

@@ -21,7 +21,7 @@
 #ifndef ETCH_HPP
 #define ETCH_HPP
 
-#include "etch.h"
+#include <etch.h>
 
 #include <string>
 #include <memory>

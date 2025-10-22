@@ -3,13 +3,36 @@
 default:
     @just -l
 
+# Build the libraries needed for examples
 [working-directory: 'examples/clib']
 libs:
     make
 
-[working-directory: 'examples/capi']
-capi:
-    make
+# Build the binaries
+build-bin:
+    mkdir -p bin
+    nim c -d:release -o:bin/etch src/etch.nim
+
+build-lib:
+    mkdir -p lib
+    nim c --app:lib --noMain -d:release -o:lib/libetch.so src/etch_lib.nim
+
+build-lib-static:
+    mkdir -p lib
+    nim c --app:staticlib --noMain -d:release -o:lib/libetch.a src/etch_lib.nim
+
+build-libs:
+    @just build-lib
+    @just build-lib-static
+
+build:
+    @just build-bin
+    @just build-libs
+
+# Run a specific example file
+go file:
+    @just libs
+    nim r src/etch.nim --verbose --run {{file}}
 
 # Test compiling and running all examples + debugger tests
 tests:
@@ -17,7 +40,6 @@ tests:
     nim r src/etch.nim --test examples/
     nimble test
 
-# Test compiling and running a specific example file
 test file OPTS="":
     @just libs
     nim r src/etch.nim --test {{file}} {{OPTS}}
@@ -26,38 +48,22 @@ test file OPTS="":
 tests-c OPTS="":
     @just libs
     nim r src/etch.nim --test-c examples/ {{OPTS}}
-    #nimble test
 
-# Test compiling and running a specific example file (c)
 test-c file OPTS="":
     @just libs
     nim r src/etch.nim --test-c {{file}} {{OPTS}}
 
-# Run a specific example file
-go file:
-    @just libs
-    nim r src/etch.nim --verbose --run {{file}}
+# Test c api (needs libraries)
+[working-directory: 'examples/capi']
+test-capi:
+    @just build
+    make
+    ./simple_example
+    ./cpp_example
+    ./host_functions_example
+    ./vm_inspection_example
 
-# Build the project
-build:
-    nim c -d:danger -o:etch src/etch.nim
-
-# Build shared library
-build-lib:
-    mkdir -p lib
-    nim c --app:lib --noMain -d:release -o:lib/libetch.so src/etch_lib.nim
-
-# Build static library
-build-lib-static:
-    mkdir -p lib
-    nim c --app:staticlib --noMain -d:release -o:lib/libetch.a src/etch_lib.nim
-
-# Build both shared and static libraries
-build-libs:
-    @just build-lib
-    @just build-lib-static
-
-# Handle performance
+# Test performance
 perf:
     @just build
     nimble perf
@@ -69,7 +75,7 @@ clean:
     find examples -name "*.c" -depth 0 -type f -exec rm -f {} + 2>/dev/null || true
     find examples -name "*_c" -depth 0 -type f -exec rm -f {} + 2>/dev/null || true
     find . -name "nimcache" -type d -exec rm -rf {} + 2>/dev/null || true
-    rm -rf lib
+    rm -rf bin/* lib/*
 
 # Deal with VSCode extension packaging and installation
 [working-directory: 'vscode']
