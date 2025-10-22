@@ -75,7 +75,7 @@ clean:
     find examples -name "*.c" -depth 0 -type f -exec rm -f {} + 2>/dev/null || true
     find examples -name "*_c" -depth 0 -type f -exec rm -f {} + 2>/dev/null || true
     find . -name "nimcache" -type d -exec rm -rf {} + 2>/dev/null || true
-    rm -rf bin/* lib/*
+    rm -rf ./bin ./lib
 
 # Deal with VSCode extension packaging and installation
 [working-directory: 'vscode']
