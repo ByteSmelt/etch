@@ -558,8 +558,20 @@ proc analyzeIndexExpr*(e: Expr, env: Env, ctx: ProverContext): Info =
 
     # Range-based bounds checking when array size is known but index is in a range
     elif arrayInfo.arraySizeKnown:
-      if indexInfo.minv >= arrayInfo.arraySize or indexInfo.maxv >= arrayInfo.arraySize:
-        raise newProverError(e.indexExpr.pos, &"index range [{indexInfo.minv}, {indexInfo.maxv}] extends beyond array bounds [0, {arrayInfo.arraySize-1}]")
+      # Check for disjunctive intervals
+      if indexInfo.isDisjunctive:
+        # All intervals must be within bounds
+        for interval in indexInfo.intervals:
+          if interval.minv < 0:
+            raise newProverError(e.indexExpr.pos, &"index interval [{interval.minv}, {interval.maxv}] includes negative values")
+          if interval.maxv >= arrayInfo.arraySize:
+            raise newProverError(e.indexExpr.pos, &"index interval [{interval.minv}, {interval.maxv}] extends beyond array bounds [0, {arrayInfo.arraySize-1}]")
+      else:
+        # Single interval check
+        if indexInfo.minv < 0:
+          raise newProverError(e.indexExpr.pos, &"index range [{indexInfo.minv}, {indexInfo.maxv}] includes negative values")
+        if indexInfo.minv >= arrayInfo.arraySize or indexInfo.maxv >= arrayInfo.arraySize:
+          raise newProverError(e.indexExpr.pos, &"index range [{indexInfo.minv}, {indexInfo.maxv}] extends beyond array bounds [0, {arrayInfo.arraySize-1}]")
 
     # Bounds checking when array size is in a range (stored in minv/maxv)
     # For arrayNew with runtime size, the size range is stored in minv/maxv
@@ -1222,8 +1234,39 @@ proc applyConstraints(env: Env, cond: Expr, baseEnv: Env, ctx: ProverContext, ne
   of boOr:
     # For OR: at least one side must be true
     if not negate:
-      # In then branch: at least one side is true - be conservative
-      discard
+      # In then branch: at least one side is true
+      # We need to compute disjunctive intervals: apply each side separately and union
+      logProver(ctx.options.verbose, "Applying disjunctive OR constraint")
+
+      # Collect all variables mentioned in the condition
+      let variables = collectVariablesInCondition(cond)
+
+      for varName in variables:
+        if not env.vals.hasKey(varName):
+          continue
+
+        # Create two temp environments for left and right branches
+        var leftEnv = copyEnv(env)
+        var rightEnv = copyEnv(env)
+
+        # Apply left constraint
+        applyConstraints(leftEnv, cond.lhs, baseEnv, ctx, negate = false)
+        # Apply right constraint
+        applyConstraints(rightEnv, cond.rhs, baseEnv, ctx, negate = false)
+
+        # Get intervals from both branches
+        let leftIntervals = leftEnv.vals[varName].getIntervals()
+        let rightIntervals = rightEnv.vals[varName].getIntervals()
+
+        # Union the intervals
+        let combined = unionIntervals(leftIntervals, rightIntervals)
+
+        # Update the variable with disjunctive intervals
+        var updatedInfo = env.vals[varName]
+        updatedInfo.setIntervals(combined)
+        env.vals[varName] = updatedInfo
+
+        logProver(ctx.options.verbose, &"Variable '{varName}' has disjunctive intervals: {combined.len} intervals")
     else:
       # In else branch: both sides are false (De Morgan's law: not(A or B) = not(A) and not(B))
       applyConstraints(env, cond.lhs, baseEnv, ctx, negate = true)
