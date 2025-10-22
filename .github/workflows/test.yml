@@ -97,6 +97,13 @@ jobs:
         echo "10. Check for -z origin flag:"
         grep -o -- "-Wl,-z,origin" /tmp/cffi_compile.log && echo "✓ -z origin flag present" || echo "✗ -z origin flag missing"
         echo ""
+        echo "11. Verify RUNPATH contains valid \$ORIGIN:"
+        if readelf -d examples/__etch__/cffi_mock_test_c 2>/dev/null | grep "RUNPATH" | grep -q '\$ORIGIN'; then
+          echo "✓ RUNPATH contains \$ORIGIN"
+        else
+          echo "✗ RUNPATH is corrupted or missing \$ORIGIN"
+        fi
+        echo ""
 
     - name: Run example tests C
       if: matrix.os == 'ubuntu-latest' || matrix.os == 'macos-latest'

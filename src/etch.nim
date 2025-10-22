@@ -164,9 +164,8 @@ proc compileAndRunCBackend(bytecode: RegBytecodeProgram, sourceFile: string, ver
       for libDir in libDirs:
         # Calculate relative path from executable to library directory
         let relPath = relativePath(libDir, etchDir)
-        # Use $$ORIGIN (double $ escapes in Nim, becomes $ORIGIN in output)
-        # No shell quotes needed since execCmdEx doesn't use a shell
-        rpathFlags &= " -Wl,-rpath,$$ORIGIN/" & relPath
+        # Escape $ for shell: \$ORIGIN (double backslash in Nim string = single backslash in output)
+        rpathFlags &= " -Wl,-rpath,\\$ORIGIN/" & relPath
 
   when defined(macosx) or defined(macos):
     let compileCmd = "xcrun clang" & optFlags & " -o " & exeFile & " " & cFile & libPaths & linkerFlags & rpathFlags & " 2>&1"
