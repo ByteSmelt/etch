@@ -197,17 +197,37 @@ proc runSingleTest*(testFile: string, verbose: bool = false, release: bool = fal
         if not result.passed:
           result.error = "Output mismatch"
 
-proc clearCachedBytecode(testFile: string) =
-  ## Clear the cached bytecode (.etcx) file for a given test file
+proc clearCachedFiles(testFile: string) =
+  ## Clear all cached files for a given test file:
+  ## - Bytecode (.etcx)
+  ## - Generated C code (.c)
+  ## - Compiled C executable (_c)
   let (dir, name, _) = testFile.splitFile
   let cacheDir = dir / BYTECODE_CACHE_DIR
-  let bytecodeFile = cacheDir / name & BYTECODE_FILE_EXTENSION
 
+  # Remove cached bytecode
+  let bytecodeFile = cacheDir / name & BYTECODE_FILE_EXTENSION
   if fileExists(bytecodeFile):
     try:
       removeFile(bytecodeFile)
     except:
       discard  # Silently ignore errors
+
+  # Remove cached C code
+  let cFile = cacheDir / name & ".c"
+  if fileExists(cFile):
+    try:
+      removeFile(cFile)
+    except:
+      discard
+
+  # Remove cached C executable
+  let cExeFile = cacheDir / name & "_c"
+  if fileExists(cExeFile):
+    try:
+      removeFile(cExeFile)
+    except:
+      discard
 
 proc findTestFiles*(directory: string): seq[string] =
   ## Find all .etch files in directory that have corresponding .result or .error files
@@ -274,8 +294,8 @@ proc runTests*(path: string = "examples", verbose: bool = false, release: bool =
       let testName = testFile.splitFile.name
       echo fmt"Running {testName}... "
 
-      # Clear cached bytecode before first run
-      clearCachedBytecode(testFile)
+      # Clear all cached files before first run (bytecode, C code, C executable)
+      clearCachedFiles(testFile)
 
       # First run: without cached bytecode (fresh compilation)
       let res1 = runSingleTest(testFile, verbose, release, backend)
