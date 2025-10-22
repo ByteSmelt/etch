@@ -92,6 +92,7 @@ proc compileAndRunCBackend(bytecode: RegBytecodeProgram, sourceFile: string, ver
   let optFlags = if not debug: " -O3" else: ""
 
   # Add rpath for dynamic library loading at runtime (macOS and Linux)
+  # This tells the dynamic linker where to find shared libraries relative to the executable
   var rpathFlags = ""
   if libPaths != "":
     # Extract library directories from -L flags and add as rpath
@@ -101,7 +102,8 @@ proc compileAndRunCBackend(bytecode: RegBytecodeProgram, sourceFile: string, ver
         # Use @executable_path to make path relative to executable location
         rpathFlags = " -Wl,-rpath,@executable_path/../clib"
       else:
-        rpathFlags = " -Wl,-rpath,$ORIGIN/../clib"
+        # Use $ORIGIN for Linux/Unix to make path relative to executable location
+        rpathFlags = " -Wl,-rpath,'$$ORIGIN/../clib'"
 
   when defined(macosx) or defined(macos):
     let compileCmd = "xcrun clang" & optFlags & " -o " & exeFile & " " & cFile & libPaths & linkerFlags & rpathFlags & " 2>&1"
