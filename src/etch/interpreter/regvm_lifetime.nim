@@ -219,17 +219,20 @@ proc canReuseRegister*(tracker: LifetimeTracker, register: uint8, pc: int): bool
 
 proc optimizeLifetimes*(tracker: var LifetimeTracker) =
   ## Optimize lifetime ranges based on actual usage
+  ## Note: We add early destructor points for optimization but keep the original
+  ## endPC for debugger visibility. Variables should remain visible in the debugger
+  ## even after their last use, as long as they're in scope.
   for i in 0..<tracker.ranges.len:
     var lifetime = addr tracker.ranges[i]
-    # If variable is never used after definition, we can shrink its lifetime
+    # If variable is never used after definition, we can add an early destructor point
+    # for memory cleanup, but we should NOT shrink the lifetime for debugger purposes
     if lifetime.lastUsePC != -1 and lifetime.lastUsePC < lifetime.endPC:
       # Add early destructor point
       let earlyDestructPC = lifetime.lastUsePC + 1
       if not tracker.destructorPoints.hasKey(earlyDestructPC):
         tracker.destructorPoints[earlyDestructPC] = @[]
       tracker.destructorPoints[earlyDestructPC].add(lifetime.varName)
-      # Update end PC to last use
-      lifetime.endPC = lifetime.lastUsePC
+      # Do NOT update endPC - keep it at scope exit for debugger visibility
 
 proc exportFunctionData*(tracker: LifetimeTracker, functionName: string): FunctionLifetimeData =
   ## Export lifetime data for a specific function
