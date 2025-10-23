@@ -12,13 +12,13 @@ def main():
         # Mix of operations to test different arithmetic paths
         sum = a + b
         diff = a - b
-        prod = a * b % 1000
+        prod = a * b
         quotient = a // (b % 10 + 1)
 
-        result = (result % 1000 + sum % 1000) % 10000
-        result = (result % 1000 + diff % 1000) % 10000
-        result = (result % 1000 + prod % 1000) % 10000
-        result = (result % 1000 + quotient % 1000) % 10000
+        result = (result + sum)
+        result = (result + diff)
+        result = (result + prod)
+        result = (result + quotient)
 
     print(result)
 

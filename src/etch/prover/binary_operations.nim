@@ -197,7 +197,29 @@ proc analyzeBinaryDivision*(e: Expr, a: Info, b: Info, ctx: ProverContext): Info
     if not b.nonZero:
       raise newProverError(e.pos, if ctx.fnContext != "": &"cannot prove divisor is non-zero in {ctx.fnContext}" else: "cannot prove divisor is non-zero")
 
-  # When divisor range is unknown, we can't be precise but result is still non-zero if dividend is non-zero
+    # Divisor is not a constant, but we know it's non-zero
+    # We can compute conservative bounds based on the ranges
+    # For a/b where a in [a.minv, a.maxv] and b in [b.minv, b.maxv]:
+    # - If b doesn't contain 0, we can compute bounds by considering all corners
+
+    # Check if the divisor range contains zero (shouldn't happen since we checked nonZero)
+    if b.minv <= 0 and b.maxv >= 0:
+      # Divisor range contains zero, we can't compute precise bounds
+      return Info(known: false, minv: IMin, maxv: IMax, nonZero: a.nonZero, initialized: true)
+
+    # Compute all possible division results at the corners
+    var results: seq[int64] = @[]
+    for aVal in [a.minv, a.maxv]:
+      for bVal in [b.minv, b.maxv]:
+        if bVal != 0:
+          results.add(aVal div bVal)
+
+    if results.len > 0:
+      let minResult = min(results)
+      let maxResult = max(results)
+      return Info(known: false, minv: minResult, maxv: maxResult, nonZero: a.nonZero, initialized: true)
+
+  # Fallback: when divisor range is unknown, we can't be precise
   return Info(known: false, minv: IMin, maxv: IMax, nonZero: a.nonZero, initialized: true)
 
 
