@@ -454,13 +454,13 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
           flushOutput()
           return -1  # Special return code: paused for debugging
 
-    log(verbose, "[" & $pc & "] " & $instr.op & " a=" & $instr.a &
-          (if instr.opType == 0: " b=" & $instr.b & " c=" & $instr.c
-          elif instr.opType == 1: " bx=" & $instr.bx
-          elif instr.opType == 2: " sbx=" & $instr.sbx
-          else: " ax=" & $instr.ax))
-
-    log(verbose, "PC=" & $pc & " op=" & $instr.op)
+    if verbose:
+      log(verbose, "[" & $pc & "] " & $instr.op & " a=" & $instr.a &
+            (if instr.opType == 0: " b=" & $instr.b & " c=" & $instr.c
+            elif instr.opType == 1: " bx=" & $instr.bx
+            elif instr.opType == 2: " sbx=" & $instr.sbx
+            else: " ax=" & $instr.ax))
+      log(verbose, "PC=" & $pc & " op=" & $instr.op)
 
     inc pc
 
@@ -493,8 +493,9 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
 
     of ropLoadNil:
       log(verbose, "ropLoadNil: setting reg" & $instr.a & ".." & $instr.b & " to nil")
+      let nilValue = makeNil()
       for i in instr.a..instr.b:
-        setReg(vm, i, makeNil())
+        setReg(vm, i, nilValue)
 
     # --- Global Access ---
     of ropGetGlobal:
@@ -736,7 +737,6 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
         elif isFloat(val):
           res = makeInt(int64(getFloat(val)))
         elif isString(val):
-          # Try to parse string to int
           try:
             res = makeInt(int64(parseInt(val.sval)))
           except:
@@ -750,7 +750,6 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
         elif isInt(val):
           res = makeFloat(float64(getInt(val)))
         elif isString(val):
-          # Try to parse string to float
           try:
             res = makeFloat(parseFloat(val.sval))
           except:
@@ -842,14 +841,10 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
     # --- Arrays ---
     of ropNewArray:
       # Create array with actual size, initialized to nil
-      # Optimization: Use setLen instead of newSeq to avoid double initialization
-      var nilSeq: seq[V] = @[]
-      nilSeq.setLen(instr.bx)
-      # setLen zero-initializes, but we need to set proper vkNil
+      var nilSeq = newSeq[V](instr.bx)
       let nilValue = makeNil()
       for i in 0 ..< nilSeq.len:
         nilSeq[i] = nilValue
-      # Use ensureMove to transfer ownership to the register
       setReg(vm, instr.a, makeArray(ensureMove(nilSeq)))
       log(verbose, "ropNewArray: created array of size " & $instr.bx & " in reg " & $instr.a)
 
@@ -894,7 +889,6 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
         if actualStart >= actualEnd:
           setReg(vm, instr.a, makeString(""))
         else:
-          # Use ensureMove for the sliced string
           var slicedStr = arr.sval[actualStart..<actualEnd]
           setReg(vm, instr.a, makeString(ensureMove(slicedStr)))
       elif arr.kind == vkArray:
@@ -909,7 +903,6 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
           var emptyArr: seq[V] = @[]
           setReg(vm, instr.a, makeArray(ensureMove(emptyArr)))
         else:
-          # Use ensureMove for the sliced array
           var slicedArr = arr.aval[actualStart..<actualEnd]
           setReg(vm, instr.a, makeArray(ensureMove(slicedArr)))
       else:
@@ -918,13 +911,12 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
     of ropSetIndex:
       var arr = getReg(vm, instr.a)
       let idx = getReg(vm, instr.b)
-      let val = getReg(vm, instr.c)
       if arr.kind == vkArray and idx.isInt():
         let i = idx.ival
         if i >= 0:
           if i >= arr.aval.len:
             arr.aval.setLen(i + 1)
-          arr.aval[i] = val
+          arr.aval[i] = getReg(vm, instr.c)
           setReg(vm, instr.a, arr)  # Important: write back the updated array
 
     of ropGetIndexI:
@@ -939,12 +931,11 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
 
     of ropSetIndexI:
       var arr = getReg(vm, instr.a)
-      let idx = int(instr.bx and 0xFF)
-      let val = getReg(vm, uint8(instr.bx shr 8))
       if arr.kind == vkArray:
+        let idx = int(instr.bx and 0xFF)
         if idx >= arr.aval.len:
           arr.aval.setLen(idx + 1)
-        arr.aval[idx] = val
+        arr.aval[idx] = getReg(vm, uint8(instr.bx shr 8))
         setReg(vm, instr.a, arr)  # Important: write back the updated array
 
     of ropLen:
@@ -986,8 +977,7 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
       var table = getReg(vm, instr.b)
       if isTable(table):
         let fieldName = vm.constants[instr.c].sval
-        let value = getReg(vm, instr.a)
-        table.tval[fieldName] = value
+        table.tval[fieldName] = getReg(vm, instr.a)
         setReg(vm, instr.b, table)
         log(verbose, "ropSetField: set field '" & fieldName & "' in table")
       else:
@@ -999,17 +989,14 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
 
     of ropTest:
       let val = getReg(vm, instr.a)
-      let isTrue = val.kind != vkNil and
-                    not (val.kind == vkBool and not val.bval)
-      log(verbose, "ropTest: reg" & $instr.a & " val=" & $val & " isTrue=" & $isTrue &
-          " expected=" & $(instr.c != 0) & " skip=" & $(isTrue != (instr.c != 0)))
+      let isTrue = val.kind != vkNil and not (val.kind == vkBool and not val.bval)
+      log(verbose, "ropTest: reg" & $instr.a & " val=" & $val & " isTrue=" & $isTrue & " expected=" & $(instr.c != 0) & " skip=" & $(isTrue != (instr.c != 0)))
       if isTrue != (instr.c != 0):
         inc pc
 
     of ropTestSet:
       let val = getReg(vm, instr.b)
-      let isTrue = val.kind != vkNil and
-                    not (val.kind == vkBool and not val.bval)
+      let isTrue = val.kind != vkNil and not (val.kind == vkBool and not val.bval)
       if isTrue == (instr.c != 0):
         setReg(vm, instr.a, val)
       else:
@@ -1023,13 +1010,14 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
       let step = getReg(vm, instr.a + 2)
 
       # Debug output
-      log(verbose, "ForLoop: idx=" & (if idx.isInt(): $idx.ival else: "nil/non-int") &
-             " limit=" & (if limit.isInt(): $limit.ival else: "nil/non-int") &
-             " step=" & (if step.isInt(): $step.ival else: "nil/non-int") &
-             " sbx=" & $instr.sbx)
-      log(verbose, "  -> reg[" & $instr.a & "] type kind = " & $idx.kind)
-      log(verbose, "  -> reg[" & $(instr.a + 1) & "] type kind = " & $limit.kind)
-      log(verbose, "  -> reg[" & $(instr.a + 2) & "] type kind = " & $step.kind)
+      if verbose:
+        log(verbose, "ForLoop: idx=" & (if idx.isInt(): $idx.ival else: "nil/non-int") &
+              " limit=" & (if limit.isInt(): $limit.ival else: "nil/non-int") &
+              " step=" & (if step.isInt(): $step.ival else: "nil/non-int") &
+              " sbx=" & $instr.sbx)
+        log(verbose, "  -> reg[" & $instr.a & "] type kind = " & $idx.kind)
+        log(verbose, "  -> reg[" & $(instr.a + 1) & "] type kind = " & $limit.kind)
+        log(verbose, "  -> reg[" & $(instr.a + 2) & "] type kind = " & $step.kind)
 
       if idx.isInt() and limit.isInt() and step.isInt():
         let newIdx = idx.ival + step.ival
@@ -1428,7 +1416,6 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
       elif isFloat(b) and isFloat(c) and isFloat(d):
         setReg(vm, instr.a, makeFloat(getFloat(b) + getFloat(c) + getFloat(d)))
       elif isString(b) and isString(c) and isString(d):
-        # String concatenation: b + c + d
         setReg(vm, instr.a, makeString(b.sval & c.sval & d.sval))
       else:
         # Mixed types or unsupported - fall back to nil
@@ -1451,9 +1438,8 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
       # Combined compare and jump
       let b = getReg(vm, uint8(instr.ax and 0xFF))
       let c = getReg(vm, uint8((instr.ax shr 8) and 0xFF))
-      let jmpOffset = int16((instr.ax shr 16) and 0xFFFF)
-
       if doLt(b, c):
+        let jmpOffset = int16((instr.ax shr 16) and 0xFFFF)
         pc += int(jmpOffset)
 
     of ropIncTest:

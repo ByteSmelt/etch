@@ -71,9 +71,9 @@ perf:
 clean:
     find . -name "*.etcx" -delete
     find . -name "*.exe" -delete
-    find examples -name "*.c" -depth 0 -type f -exec rm -f {} + 2>/dev/null || true
-    find examples -name "*_c" -depth 0 -type f -exec rm -f {} + 2>/dev/null || true
-    find . -name "nimcache" -type d -exec rm -rf {} + 2>/dev/null || true
+    rm -rf __etch__
+    rm -rf examples/__etch__
+    rm -rf performance/__etch__
     rm -rf ./bin ./lib
 
 # Deal with VSCode extension packaging and installation
