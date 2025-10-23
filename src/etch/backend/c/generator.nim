@@ -932,70 +932,6 @@ proc emitInstruction(gen: var CGenerator, instr: RegInstruction, pc: int) =
     let c = instr.c
     gen.emit(&"r[{a}] = etch_mod(r[{b}], r[{c}]);  // Mod")
 
-  of ropDivI:
-    if instr.opType == 1:
-      let regIdx = instr.bx and 0xFF
-      let imm8 = uint8((instr.bx shr 8) and 0xFF)
-      let imm = if imm8 < 128: int(imm8) else: int(imm8) - 256
-      gen.emit(&"r[{a}] = etch_div(r[{regIdx}], etch_make_int({imm}));  // DivI")
-    else:
-      gen.emit(&"// TODO: DivI with opType {instr.opType}")
-
-  of ropModI:
-    if instr.opType == 1:
-      let regIdx = instr.bx and 0xFF
-      let imm8 = uint8((instr.bx shr 8) and 0xFF)
-      let imm = if imm8 < 128: int(imm8) else: int(imm8) - 256
-      gen.emit(&"r[{a}] = etch_mod(r[{regIdx}], etch_make_int({imm}));  // ModI")
-    else:
-      gen.emit(&"// TODO: ModI with opType {instr.opType}")
-
-  # Type-specialized arithmetic (zero-overhead integer/float operations)
-  of ropAddInt:
-    let b = instr.b
-    let c = instr.c
-    gen.emit(&"r[{a}] = etch_make_int(r[{b}].ival + r[{c}].ival);  // AddInt (specialized)")
-
-  of ropSubInt:
-    let b = instr.b
-    let c = instr.c
-    gen.emit(&"r[{a}] = etch_make_int(r[{b}].ival - r[{c}].ival);  // SubInt (specialized)")
-
-  of ropMulInt:
-    let b = instr.b
-    let c = instr.c
-    gen.emit(&"r[{a}] = etch_make_int(r[{b}].ival * r[{c}].ival);  // MulInt (specialized)")
-
-  of ropDivInt:
-    let b = instr.b
-    let c = instr.c
-    gen.emit(&"r[{a}] = etch_make_int(r[{b}].ival / r[{c}].ival);  // DivInt (specialized)")
-
-  of ropModInt:
-    let b = instr.b
-    let c = instr.c
-    gen.emit(&"r[{a}] = etch_make_int(r[{b}].ival % r[{c}].ival);  // ModInt (specialized)")
-
-  of ropAddF:
-    let b = instr.b
-    let c = instr.c
-    gen.emit(&"r[{a}] = etch_make_float(r[{b}].fval + r[{c}].fval);  // AddF (specialized)")
-
-  of ropSubF:
-    let b = instr.b
-    let c = instr.c
-    gen.emit(&"r[{a}] = etch_make_float(r[{b}].fval - r[{c}].fval);  // SubF (specialized)")
-
-  of ropMulF:
-    let b = instr.b
-    let c = instr.c
-    gen.emit(&"r[{a}] = etch_make_float(r[{b}].fval * r[{c}].fval);  // MulF (specialized)")
-
-  of ropDivF:
-    let b = instr.b
-    let c = instr.c
-    gen.emit(&"r[{a}] = etch_make_float(r[{b}].fval / r[{c}].fval);  // DivF (specialized)")
-
   of ropPow:
     let b = instr.b
     let c = instr.c
@@ -1025,16 +961,6 @@ proc emitInstruction(gen: var CGenerator, instr: RegInstruction, pc: int) =
     # When a=0: skip if TRUE; when a≠0: skip if FALSE
     let cond = if a == 0: "etch_le" else: "!etch_le"
     gen.emit(&"if ({cond}(r[{b}], r[{c}])) goto L{pc + 2};  // Le")
-
-  of ropLtInt:
-    # When a=0: skip if TRUE; when a≠0: skip if FALSE
-    let cond = if a == 0: &"(r[{instr.b}].ival < r[{instr.c}].ival)" else: &"!(r[{instr.b}].ival < r[{instr.c}].ival)"
-    gen.emit(&"if ({cond}) goto L{pc + 2};  // LtInt (specialized)")
-
-  of ropLeInt:
-    # When a=0: skip if TRUE; when a≠0: skip if FALSE
-    let cond = if a == 0: &"(r[{instr.b}].ival <= r[{instr.c}].ival)" else: &"!(r[{instr.b}].ival <= r[{instr.c}].ival)"
-    gen.emit(&"if ({cond}) goto L{pc + 2};  // LeInt (specialized)")
 
   of ropEqStore:
     let b = instr.b
@@ -1069,20 +995,6 @@ proc emitInstruction(gen: var CGenerator, instr: RegInstruction, pc: int) =
     let b = instr.b
     let c = instr.c
     gen.emit(&"r[{a}] = etch_or(r[{b}], r[{c}]);  // Or")
-
-  of ropAndI:
-    if instr.opType == 1:
-      let regIdx = instr.bx and 0xFF
-      let immBool = ((instr.bx shr 8) and 0xFF) != 0
-      let immStr = if immBool: "true" else: "false"
-      gen.emit(&"if (r[{regIdx}].kind == VK_BOOL) r[{a}] = etch_make_bool(r[{regIdx}].bval && {immStr});  // AndI")
-
-  of ropOrI:
-    if instr.opType == 1:
-      let regIdx = instr.bx and 0xFF
-      let immBool = ((instr.bx shr 8) and 0xFF) != 0
-      let immStr = if immBool: "true" else: "false"
-      gen.emit(&"if (r[{regIdx}].kind == VK_BOOL) r[{a}] = etch_make_bool(r[{regIdx}].bval || {immStr});  // OrI")
 
   of ropJmp:
     let offset = instr.sbx

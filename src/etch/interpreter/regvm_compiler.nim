@@ -254,40 +254,6 @@ proc compileExpr*(c: var RegCompiler, e: Expr): uint8 =
       else:
         # Fall back to regular instruction
         c.compileBinOp(e.bop, result, leftReg, rightReg, c.makeDebugInfo(e.pos))
-    # Type-specialized instructions for integer operations (optimization level 2+)
-    elif c.optimizeLevel >= 2 and e.typ.kind == tkInt:
-      let debug = c.makeDebugInfo(e.pos)
-      case e.bop:
-      of boAdd:
-        c.prog.emitABC(ropAddInt, result, leftReg, rightReg, debug)
-      of boSub:
-        c.prog.emitABC(ropSubInt, result, leftReg, rightReg, debug)
-      of boMul:
-        c.prog.emitABC(ropMulInt, result, leftReg, rightReg, debug)
-      of boDiv:
-        c.prog.emitABC(ropDivInt, result, leftReg, rightReg, debug)
-      of boMod:
-        c.prog.emitABC(ropModInt, result, leftReg, rightReg, debug)
-      of boLt:
-        c.prog.emitABC(ropLtInt, 0, leftReg, rightReg, debug)
-      of boLe:
-        c.prog.emitABC(ropLeInt, 0, leftReg, rightReg, debug)
-      else:
-        c.compileBinOp(e.bop, result, leftReg, rightReg, debug)
-    # Type-specialized instructions for float operations (optimization level 2+)
-    elif c.optimizeLevel >= 2 and e.typ.kind == tkFloat:
-      let debug = c.makeDebugInfo(e.pos)
-      case e.bop:
-      of boAdd:
-        c.prog.emitABC(ropAddF, result, leftReg, rightReg, debug)
-      of boSub:
-        c.prog.emitABC(ropSubF, result, leftReg, rightReg, debug)
-      of boMul:
-        c.prog.emitABC(ropMulF, result, leftReg, rightReg, debug)
-      of boDiv:
-        c.prog.emitABC(ropDivF, result, leftReg, rightReg, debug)
-      else:
-        c.compileBinOp(e.bop, result, leftReg, rightReg, debug)
     else:
       c.compileBinOp(e.bop, result, leftReg, rightReg, c.makeDebugInfo(e.pos))
 
