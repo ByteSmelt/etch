@@ -11,7 +11,7 @@ import ./etch/backend/c/[generator]
 proc usage() =
   echo "Etch - minimal language toolchain"
   echo "Usage:"
-  echo "  etch [--run [BACKEND]] [--verbose] [--release] [--gen BACKEND] file.etch"
+  echo "  etch [--run [BACKEND]] [--verbose] [--release] [--profile] [--gen BACKEND] file.etch"
   echo "  etch --test [DIR|FILE]"
   echo "  etch --test-c [DIR|FILE]"
   echo "  etch --perf [DIR]"
@@ -19,6 +19,7 @@ proc usage() =
   echo "  --run [BACKEND]      Execute the program (default: bytecode VM, optional: c)"
   echo "  --verbose            Enable verbose debug output"
   echo "  --release            Optimize and skip debug information in bytecode"
+  echo "  --profile            Enable VM profiling (reports instruction timing and hotspots)"
   echo "  --gen BACKEND        Generate code for specified backend (c)"
   echo "  --debug-server       Start debug server for VSCode integration"
   echo "  --dump-bytecode      Dump bytecode instructions with debug info"
@@ -35,12 +36,13 @@ proc validateFile(path: string) =
     quit 1
 
 
-proc makeCompilerOptions(sourceFile: string, runVM: bool, verbose: bool, debug: bool): CompilerOptions =
+proc makeCompilerOptions(sourceFile: string, runVM: bool, verbose: bool, debug: bool, profile: bool = false): CompilerOptions =
   CompilerOptions(
     sourceFile: sourceFile,
     runVM: runVM,
     verbose: verbose,
-    debug: debug
+    debug: debug,
+    profile: profile
   )
 
 
@@ -313,6 +315,7 @@ when isMainModule:
 
   var verbose = false
   var debug = true
+  var profile = false
   var mode = ""
   var modeArg = ""
   var runVm = false
@@ -328,6 +331,8 @@ when isMainModule:
       verbose = true
     elif a == "--release":
       debug = false
+    elif a == "--profile":
+      profile = true
     elif a == "--run":
       runVm = true
       # Check if there's an optional backend argument (not a file path)
@@ -463,7 +468,7 @@ when isMainModule:
     quit exitCode
 
   # Normal VM execution or compilation without running
-  let options = makeCompilerOptions(sourceFile, runVm, verbose, debug)
+  let options = makeCompilerOptions(sourceFile, runVm, verbose, debug, profile)
   let compilerResult = tryRunCachedOrCompile(options)
 
   if not compilerResult.success:

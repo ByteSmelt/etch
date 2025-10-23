@@ -1,9 +1,9 @@
 # regvm_exec.nim
 # Execution engine for register-based VM with aggressive optimizations
 
-import std/[tables, macros, math, strutils]
+import std/[tables, macros, math, strutils, times]
 import ../common/[constants, cffi, values, logging]
-import regvm, regvm_debugger
+import regvm, regvm_debugger, regvm_profiler
 
 # Global table to store values injected during comptime execution
 var comptimeInjections*: Table[string, V] = initTable[string, V]()
@@ -47,7 +47,9 @@ proc newRegisterVM*(prog: RegBytecodeProgram): RegisterVM =
     debugger: nil,  # No debugger by default - zero cost
     isDebugging: false,  # Not in debug mode
     cffiRegistry: cast[pointer](globalCFFIRegistry),  # Use global C FFI registry
-    rngState: 1'u64  # Initialize RNG with default seed
+    rngState: 1'u64,  # Initialize RNG with default seed
+    profiler: nil,  # No profiler by default - zero cost
+    isProfiling: false  # Not profiling by default
   )
   result.currentFrame = addr result.frames[0]
 
@@ -61,12 +63,32 @@ proc newRegisterVMWithDebugger*(prog: RegBytecodeProgram, debugger: RegEtchDebug
     debugger: cast[pointer](debugger),
     isDebugging: true,  # Set debug mode flag
     cffiRegistry: cast[pointer](globalCFFIRegistry),  # Use global C FFI registry
-    rngState: 1'u64  # Initialize RNG with default seed
+    rngState: 1'u64,  # Initialize RNG with default seed
+    profiler: nil,  # No profiler by default - zero cost
+    isProfiling: false  # Not profiling by default
   )
   result.currentFrame = addr result.frames[0]
   # Attach the debugger to this VM
   if debugger != nil:
     debugger.attachToVM(cast[pointer](result))
+
+
+proc newRegisterVMWithProfiler*(prog: RegBytecodeProgram): RegisterVM =
+  let profiler = newProfiler()
+  GC_ref(profiler)  # Keep profiler alive
+  result = RegisterVM(
+    frames: @[RegisterFrame()],
+    program: prog,
+    constants: prog.constants,
+    globals: initTable[string, V](),
+    debugger: nil,
+    isDebugging: false,
+    cffiRegistry: cast[pointer](globalCFFIRegistry),
+    rngState: 1'u64,
+    profiler: cast[pointer](profiler),
+    isProfiling: true
+  )
+  result.currentFrame = addr result.frames[0]
 
 
 # Fast register access macros
@@ -416,6 +438,15 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
   let maxInstr = instructions.len
   vm.currentFrame.pc = pc  # Initialize PC in frame
 
+  # Track entry function (typically "main") for profiling
+  if vm.profiler != nil and not vm.isDebugging:
+    let profiler = cast[RegVMProfiler](vm.profiler)
+    # Find which function contains the entry point
+    for funcName, funcInfo in vm.program.functions:
+      if pc >= funcInfo.startPos and pc <= funcInfo.endPos:
+        profiler.enterFunction(funcName)
+        break
+
   # Output buffer for print statements - significantly improves performance
   var outputBuffer: string = ""
   var outputCount = 0
@@ -434,6 +465,12 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
   while pc < maxInstr:
     let instr = instructions[pc]
     vm.currentFrame.pc = pc  # Update frame PC for debugger
+
+    # Profiler hook - before instruction
+    if vm.profiler != nil:
+      let profiler = cast[RegVMProfiler](vm.profiler)
+      let debug = instr.debug
+      profiler.recordInstructionStart(instr.op, debug.sourceFile, debug.line, debug.functionName)
 
     # Debugger hook - before instruction
     if vm.debugger != nil:
@@ -1122,6 +1159,11 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
 
           debugger.pushStackFrame(funcName, targetFile, targetLine, false)
 
+        # Profiler hook - enter function
+        if vm.profiler != nil:
+          let profiler = cast[RegVMProfiler](vm.profiler)
+          profiler.enterFunction(funcName)
+
         # Create new frame for the function
         var newFrame = RegisterFrame()
         newFrame.returnAddr = pc + 1
@@ -1341,11 +1383,25 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
         let debugger = cast[RegEtchDebugger](vm.debugger)
         debugger.popStackFrame()
 
+      # Profiler hook - exit function
+      if vm.profiler != nil:
+        let profiler = cast[RegVMProfiler](vm.profiler)
+        profiler.exitFunction()
+
       # Check if we're returning from main (only 1 frame)
       if vm.frames.len <= 1:
         # Flush output buffer before exiting
         flushOutput()
         stdout.flushFile()
+
+        # Generate profiler report if profiling is enabled
+        if vm.isProfiling and vm.profiler != nil:
+          let profiler = cast[RegVMProfiler](vm.profiler)
+          # Capture execution end time before report generation
+          profiler.executionEndTime = getTime()
+          let report = profiler.generateReport()
+          echo report
+
         return 0
 
       # Get return value (if any)
@@ -1370,6 +1426,14 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
         continue
       else:
         # No more frames, exit
+        # Generate profiler report if profiling is enabled
+        if vm.isProfiling and vm.profiler != nil:
+          let profiler = cast[RegVMProfiler](vm.profiler)
+          # Capture execution end time before report generation
+          profiler.executionEndTime = getTime()
+          let report = profiler.generateReport()
+          echo report
+
         return 0
 
     of ropPushDefer:
@@ -1455,13 +1519,34 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
       # Unimplemented instructions
       discard
 
+    # Profiler hook - after instruction
+    if vm.profiler != nil:
+      let profiler = cast[RegVMProfiler](vm.profiler)
+      profiler.recordInstructionEnd(instr.op)
+
   # Flush any remaining buffered output
   flushOutput()
   # Ensure all output is written to terminal
   stdout.flushFile()
+
+  # Generate profiler report if profiling is enabled
+  if vm.isProfiling and vm.profiler != nil:
+    let profiler = cast[RegVMProfiler](vm.profiler)
+    # Exit the entry function (main)
+    profiler.exitFunction()
+    # Capture execution end time before report generation
+    profiler.executionEndTime = getTime()
+    let report = profiler.generateReport()
+    echo report
+
   return 0
 
 # Run a register-based program
 proc runRegProgram*(prog: RegBytecodeProgram, verbose: bool = false): int =
   let vm = newRegisterVM(prog)
+  return vm.execute(verbose)
+
+# Run a register-based program with profiling
+proc runRegProgramWithProfiler*(prog: RegBytecodeProgram, verbose: bool = false): int =
+  let vm = newRegisterVMWithProfiler(prog)
   return vm.execute(verbose)

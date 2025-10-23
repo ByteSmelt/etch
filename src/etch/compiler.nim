@@ -236,7 +236,7 @@ proc parseAndTypecheck*(options: CompilerOptions): (Program, string, Table[strin
   logCompiler(options.verbose, "Parse and typecheck phase complete")
   return (prog, srcHash, evaluatedGlobals)
 
-proc runCachedBytecode*(bytecodeFile: string): CompilerResult =
+proc runCachedBytecode*(bytecodeFile: string, verbose: bool = false, profile: bool = false): CompilerResult =
   echo "Using cached bytecode: ", bytecodeFile
   try:
     let prog = loadRegBytecode(bytecodeFile)
@@ -290,7 +290,10 @@ proc runCachedBytecode*(bytecodeFile: string): CompilerResult =
 
       globalCFFIRegistry.loadFunction(cffiInfo.library, funcName, cffiInfo.symbol, signature)
 
-    let exitCode = runRegProgram(prog, verbose = false)
+    let exitCode = if profile:
+      runRegProgramWithProfiler(prog, verbose)
+    else:
+      runRegProgram(prog, verbose)
     return CompilerResult(success: true, exitCode: exitCode)
   except Exception as e:
     return CompilerResult(success: false, error: "Failed to run cached bytecode: " & e.msg)
@@ -352,7 +355,10 @@ proc compileAndRun*(options: CompilerOptions): CompilerResult =
     var exitCode = 0
     if options.runVM:
       logCompiler(options.verbose, "Starting Register VM execution")
-      exitCode = runRegProgram(regProg, options.verbose)
+      if options.profile:
+        exitCode = runRegProgramWithProfiler(regProg, options.verbose)
+      else:
+        exitCode = runRegProgram(regProg, options.verbose)
       logCompiler(options.verbose, "Register VM execution finished with exit code: " & $exitCode)
 
     logCompiler(options.verbose, "Compilation completed successfully")
@@ -376,7 +382,7 @@ proc tryRunCachedOrCompile*(options: CompilerOptions): CompilerResult =
   # Check if we can use cached bytecode
   if options.runVM and not shouldRecompile(options.sourceFile, bytecodeFile, options):
     logCompiler(options.verbose, "Using cached bytecode")
-    let cachedResult = runCachedBytecode(bytecodeFile)
+    let cachedResult = runCachedBytecode(bytecodeFile, options.verbose, options.profile)
     if cachedResult.success:
       logCompiler(options.verbose, "Cached bytecode execution successful")
       return cachedResult

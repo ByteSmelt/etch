@@ -31,6 +31,4 @@ task perf, "Run performance benchmarks":
   echo "===== Building etch binary in release mode ====="
   exec "nim c -d:release -o:bin/etch src/etch.nim"
   echo "===== Running performance benchmarks ====="
-  exec "./bin/etch --perf performance/nested_loops.etch"
-  exec "cp performance_report.md performance_report_2.md"
-  exec "./bin/etch --perf performance/function_calls.etch"
+  exec "./bin/etch --perf"

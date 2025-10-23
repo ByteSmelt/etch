@@ -11,6 +11,7 @@ type
     runVM*: bool
     verbose*: bool
     debug*: bool  ## Include debug info; if false, compile in release mode with optimizations
+    profile*: bool  ## Enable VM profiling
 
   Pos* = object
     line*, col*: int

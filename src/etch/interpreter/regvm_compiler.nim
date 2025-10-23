@@ -280,7 +280,8 @@ proc compileExpr*(c: var RegCompiler, e: Expr): uint8 =
   of ekArray:
     result = c.allocator.allocReg()
     log(c.verbose, &"Array expression allocated reg {result}")
-    c.prog.emitABx(ropNewArray, result, uint16(e.elements.len), c.makeDebugInfo(e.pos))
+    let debug = c.makeDebugInfo(e.pos)
+    c.prog.emitABx(ropNewArray, result, uint16(e.elements.len), debug)
 
     # Set array elements
     for i, elem in e.elements:
@@ -289,8 +290,8 @@ proc compileExpr*(c: var RegCompiler, e: Expr): uint8 =
       # TODO: Optimize with immediate index using different encoding
       let idxReg = c.allocator.allocReg()
       let constIdx = c.addConst(regvm.makeInt(int64(i)))
-      c.prog.emitABx(ropLoadK, idxReg, constIdx, c.makeDebugInfo(e.pos))
-      c.prog.emitABC(ropSetIndex, result, idxReg, elemReg, c.makeDebugInfo(e.pos))
+      c.prog.emitABx(ropLoadK, idxReg, constIdx, debug)
+      c.prog.emitABC(ropSetIndex, result, idxReg, elemReg, debug)
       c.allocator.freeReg(idxReg)
       c.allocator.freeReg(elemReg)
 
@@ -299,13 +300,13 @@ proc compileExpr*(c: var RegCompiler, e: Expr): uint8 =
     result = c.allocator.allocReg()
 
     # Optimize for constant integer indices
+    let debug = c.makeDebugInfo(e.pos)
     if c.optimizeLevel >= 1 and e.indexExpr.kind == ekInt and
        e.indexExpr.ival >= 0 and e.indexExpr.ival < 256:
-      c.prog.emitABx(ropGetIndexI, result,
-                      uint16(arrReg) or (uint16(e.indexExpr.ival) shl 8), c.makeDebugInfo(e.pos))
+      c.prog.emitABx(ropGetIndexI, result, uint16(arrReg) or (uint16(e.indexExpr.ival) shl 8), debug)
     else:
       let idxReg = c.compileExpr(e.indexExpr)
-      c.prog.emitABC(ropGetIndex, result, arrReg, idxReg, c.makeDebugInfo(e.pos))
+      c.prog.emitABC(ropGetIndex, result, arrReg, idxReg, debug)
 
   of ekSlice:
     # Handle array/string slicing: arr[start:end]
@@ -501,6 +502,7 @@ proc compileExpr*(c: var RegCompiler, e: Expr): uint8 =
 
       # Pattern matching - simplified version
       var shouldJumpToNext = -1
+      let debug = c.makeDebugInfo(e.pos)
 
       case matchCase.pattern.kind:
       of pkSome:
@@ -508,49 +510,49 @@ proc compileExpr*(c: var RegCompiler, e: Expr): uint8 =
         # ropTestTag: skips next if tags MATCH
         # So if tag is some, skip the jump and execute case body
         # If tag is not some, execute jump to next case
-        c.prog.emitABC(ropTestTag, matchReg, uint8(vkSome), 0, c.makeDebugInfo(e.pos))  # Test if tag is some
+        c.prog.emitABC(ropTestTag, matchReg, uint8(vkSome), 0, debug)  # Test if tag is some
         log(c.verbose, &"  Emitted ropTestTag for some at PC={c.prog.instructions.len - 1}")
         shouldJumpToNext = c.prog.instructions.len
-        c.prog.emitAsBx(ropJmp, 0, 0, c.makeDebugInfo(e.pos))  # Jump to next case if not some
+        c.prog.emitAsBx(ropJmp, 0, 0, debug)  # Jump to next case if not some
 
         # Extract the value if it's some
         if matchCase.pattern.bindName != "":
           # Unwrap the some value
           let unwrappedReg = c.allocator.allocReg()
-          c.prog.emitABC(ropUnwrapOption, unwrappedReg, matchReg, 0, c.makeDebugInfo(e.pos))
+          c.prog.emitABC(ropUnwrapOption, unwrappedReg, matchReg, 0, debug)
           c.allocator.regMap[matchCase.pattern.bindName] = unwrappedReg
           log(c.verbose, &"  Bound some pattern variable '{matchCase.pattern.bindName}' to unwrapped reg {unwrappedReg}")
 
       of pkNone:
         # Check if it's none
-        c.prog.emitABC(ropTestTag, matchReg, uint8(vkNone), 0, c.makeDebugInfo(e.pos))  # Test if tag is none
+        c.prog.emitABC(ropTestTag, matchReg, uint8(vkNone), 0, debug)  # Test if tag is none
         log(c.verbose, &"  Emitted ropTestTag for none at PC={c.prog.instructions.len - 1}")
         shouldJumpToNext = c.prog.instructions.len
-        c.prog.emitAsBx(ropJmp, 0, 0, c.makeDebugInfo(e.pos))  # Jump to next case if not none
+        c.prog.emitAsBx(ropJmp, 0, 0, debug)  # Jump to next case if not none
         log(c.verbose, &"  Emitted ropJmp at PC={c.prog.instructions.len - 1} (will be patched)");
 
       of pkOk:
         # Check if it's an ovalue
-        c.prog.emitABC(ropTestTag, matchReg, uint8(vkOk), 0, c.makeDebugInfo(e.pos))  # Test if tag is ok
+        c.prog.emitABC(ropTestTag, matchReg, uint8(vkOk), 0, debug)  # Test if tag is ok
         shouldJumpToNext = c.prog.instructions.len
-        c.prog.emitAsBx(ropJmp, 0, 0, c.makeDebugInfo(e.pos))
+        c.prog.emitAsBx(ropJmp, 0, 0, debug)
 
         if matchCase.pattern.bindName != "":
           # Unwrap the ok value
           let unwrappedReg = c.allocator.allocReg()
-          c.prog.emitABC(ropUnwrapResult, unwrappedReg, matchReg, 0, c.makeDebugInfo(e.pos))
+          c.prog.emitABC(ropUnwrapResult, unwrappedReg, matchReg, 0, debug)
           c.allocator.regMap[matchCase.pattern.bindName] = unwrappedReg
 
       of pkErr:
         # Check if it's an error value
-        c.prog.emitABC(ropTestTag, matchReg, uint8(vkErr), 0, c.makeDebugInfo(e.pos))  # Test if tag is error
+        c.prog.emitABC(ropTestTag, matchReg, uint8(vkErr), 0, debug)  # Test if tag is error
         shouldJumpToNext = c.prog.instructions.len
-        c.prog.emitAsBx(ropJmp, 0, 0, c.makeDebugInfo(e.pos))
+        c.prog.emitAsBx(ropJmp, 0, 0, debug)
 
         if matchCase.pattern.bindName != "":
           # Unwrap the error value
           let unwrappedReg = c.allocator.allocReg()
-          c.prog.emitABC(ropUnwrapResult, unwrappedReg, matchReg, 0, c.makeDebugInfo(e.pos))
+          c.prog.emitABC(ropUnwrapResult, unwrappedReg, matchReg, 0, debug)
           c.allocator.regMap[matchCase.pattern.bindName] = unwrappedReg
 
       of pkWildcard:
@@ -576,10 +578,12 @@ proc compileExpr*(c: var RegCompiler, e: Expr): uint8 =
             log(c.verbose, &"  Warning: Unsupported type for pattern matching: {matchCase.pattern.typePattern.kind}")
             vkNil
 
+        let debug = c.makeDebugInfo(e.pos)
+
         # Test if the kind matches
-        c.prog.emitABC(ropTestTag, matchReg, uint8(expectedKind), 0, c.makeDebugInfo(e.pos))
+        c.prog.emitABC(ropTestTag, matchReg, uint8(expectedKind), 0, debug)
         shouldJumpToNext = c.prog.instructions.len
-        c.prog.emitAsBx(ropJmp, 0, 0, c.makeDebugInfo(e.pos))  # Jump to next case if tag doesn't match
+        c.prog.emitAsBx(ropJmp, 0, 0, debug)  # Jump to next case if tag doesn't match
 
         # Bind the value if there's a binding variable
         if matchCase.pattern.typeBind != "":
@@ -1004,9 +1008,10 @@ proc compileForLoop(c: var RegCompiler, s: Stmt) =
     let idxReg = c.allocator.allocReg()  # Loop index
     let lenReg = c.allocator.allocReg()  # Array length
     let elemReg = c.allocator.allocReg(s.fvar)  # Current element (loop variable)
+    let debug = c.makeDebugInfo(s.pos)
 
     # Initialize index to 0 - has debug info so we stop at the for statement once
-    c.prog.emitAsBx(ropLoadK, idxReg, 0, c.makeDebugInfo(s.pos))
+    c.prog.emitAsBx(ropLoadK, idxReg, 0, debug)
 
     # Get array length (internal operation after init - no debug info)
     c.prog.emitABC(ropLen, lenReg, arrReg, 0)
@@ -1025,7 +1030,7 @@ proc compileForLoop(c: var RegCompiler, s: Stmt) =
     # ropLt with A=0: skip next if (B < C) is true
     # So when idx < len (should continue), skip the exit jump ✓
     # When idx >= len (should exit), execute the exit jump ✓
-    c.prog.emitABC(ropLt, 0, idxReg, lenReg, c.makeDebugInfo(s.pos))  # Skip exit jump when idx < len
+    c.prog.emitABC(ropLt, 0, idxReg, lenReg, debug)  # Skip exit jump when idx < len
     let exitJmp = c.prog.instructions.len
     c.prog.emitAsBx(ropJmp, 0, 0)  # Jump to exit if idx >= len
 
