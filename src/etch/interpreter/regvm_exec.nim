@@ -567,6 +567,60 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
       else:
         setReg(vm, instr.a, makeNil())
 
+    of ropDivI:
+      let reg = getReg(vm, uint8(instr.bx and 0xFF))
+      if isInt(reg):
+        let imm8 = uint8((instr.bx shr 8) and 0xFF)
+        let imm = int64(if imm8 < 128: int(imm8) else: int(imm8) - 256)
+        if imm != 0:
+          setReg(vm, instr.a, makeInt(getInt(reg) div imm))
+        else:
+          setReg(vm, instr.a, makeNil())
+      else:
+        setReg(vm, instr.a, makeNil())
+
+    of ropModI:
+      let reg = getReg(vm, uint8(instr.bx and 0xFF))
+      if isInt(reg):
+        let imm8 = uint8((instr.bx shr 8) and 0xFF)
+        let imm = int64(if imm8 < 128: int(imm8) else: int(imm8) - 256)
+        if imm != 0:
+          setReg(vm, instr.a, makeInt(getInt(reg) mod imm))
+        else:
+          setReg(vm, instr.a, makeNil())
+      else:
+        setReg(vm, instr.a, makeNil())
+
+    # --- Type-Specialized Arithmetic (Zero-overhead integer operations) ---
+    of ropAddInt:
+      # Direct integer addition - no type checking
+      vm.currentFrame.regs[instr.a] = makeInt(vm.currentFrame.regs[instr.b].ival + vm.currentFrame.regs[instr.c].ival)
+
+    of ropSubInt:
+      vm.currentFrame.regs[instr.a] = makeInt(vm.currentFrame.regs[instr.b].ival - vm.currentFrame.regs[instr.c].ival)
+
+    of ropMulInt:
+      vm.currentFrame.regs[instr.a] = makeInt(vm.currentFrame.regs[instr.b].ival * vm.currentFrame.regs[instr.c].ival)
+
+    of ropDivInt:
+      vm.currentFrame.regs[instr.a] = makeInt(vm.currentFrame.regs[instr.b].ival div vm.currentFrame.regs[instr.c].ival)
+
+    of ropModInt:
+      vm.currentFrame.regs[instr.a] = makeInt(vm.currentFrame.regs[instr.b].ival mod vm.currentFrame.regs[instr.c].ival)
+
+    # --- Type-Specialized Float Operations ---
+    of ropAddF:
+      vm.currentFrame.regs[instr.a] = makeFloat(vm.currentFrame.regs[instr.b].fval + vm.currentFrame.regs[instr.c].fval)
+
+    of ropSubF:
+      vm.currentFrame.regs[instr.a] = makeFloat(vm.currentFrame.regs[instr.b].fval - vm.currentFrame.regs[instr.c].fval)
+
+    of ropMulF:
+      vm.currentFrame.regs[instr.a] = makeFloat(vm.currentFrame.regs[instr.b].fval * vm.currentFrame.regs[instr.c].fval)
+
+    of ropDivF:
+      vm.currentFrame.regs[instr.a] = makeFloat(vm.currentFrame.regs[instr.b].fval / vm.currentFrame.regs[instr.c].fval)
+
     of ropUnm:
       let val = getReg(vm, instr.b)
       if isInt(val):
@@ -593,6 +647,16 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
 
     of ropLe:
       if doLe(getReg(vm, instr.b), getReg(vm, instr.c)) != (instr.a != 0):
+        inc pc
+
+    # --- Type-Specialized Comparisons (Zero-overhead integer comparisons) ---
+    of ropLtInt:
+      # Direct integer comparison - no type checking
+      if (vm.currentFrame.regs[instr.b].ival < vm.currentFrame.regs[instr.c].ival) != (instr.a != 0):
+        inc pc
+
+    of ropLeInt:
+      if (vm.currentFrame.regs[instr.b].ival <= vm.currentFrame.regs[instr.c].ival) != (instr.a != 0):
         inc pc
 
     # --- Immediate Comparisons (Optimized) ---
@@ -677,6 +741,22 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
         setReg(vm, instr.a, b)
       else:
         setReg(vm, instr.a, c)
+
+    of ropAndI:
+      let reg = getReg(vm, uint8(instr.bx and 0xFF))
+      let immBool = ((instr.bx shr 8) and 0xFF) != 0
+      if reg.kind == vkBool:
+        setReg(vm, instr.a, makeBool(reg.bval and immBool))
+      else:
+        setReg(vm, instr.a, makeNil())
+
+    of ropOrI:
+      let reg = getReg(vm, uint8(instr.bx and 0xFF))
+      let immBool = ((instr.bx shr 8) and 0xFF) != 0
+      if reg.kind == vkBool:
+        setReg(vm, instr.a, makeBool(reg.bval or immBool))
+      else:
+        setReg(vm, instr.a, makeNil())
 
     # --- Membership operators ---
     of ropIn:

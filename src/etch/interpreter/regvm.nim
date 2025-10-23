@@ -27,6 +27,13 @@ type
     ropAddI,          # R[A] = R[B] + imm (immediate add for common case)
     ropSubI,          # R[A] = R[B] - imm
     ropMulI,          # R[A] = R[B] * imm
+    ropDivI,          # R[A] = R[B] / imm
+    ropModI,          # R[A] = R[B] % imm
+
+    # Type-specialized arithmetic (skip runtime type checks)
+    ropAddInt, ropSubInt, ropMulInt, ropDivInt, ropModInt,  # Integer-only operations
+    ropAddF, ropSubF, ropMulF, ropDivF,                      # Float-only operations
+
     ropUnm,           # R[A] = -R[B]
 
     # Comparisons (if (R[B] op R[C]) != A then skip)
@@ -34,6 +41,9 @@ type
     ropEqI,           # R[B] == imm (immediate comparison)
     ropLtI,           # R[B] < imm
     ropLeI,           # R[B] <= imm
+
+    # Type-specialized comparisons (skip runtime type checks)
+    ropLtInt, ropLeInt,     # Integer-only comparisons
 
     # Store comparison results (R[A] = R[B] op R[C])
     ropEqStore, ropLtStore, ropLeStore,
@@ -43,6 +53,8 @@ type
     ropNot,           # R[A] = not R[B]
     ropAnd,           # R[A] = R[B] and R[C]
     ropOr,            # R[A] = R[B] or R[C]
+    ropAndI,          # R[A] = R[B] and imm (immediate boolean and)
+    ropOrI,           # R[A] = R[B] or imm
 
     # Membership
     ropIn,            # R[A] = R[B] in R[C] (check if element is in array/string)

@@ -32,3 +32,4 @@ task perf, "Run performance benchmarks":
   exec "nim c -d:danger -o:bin/etch src/etch.nim"
   echo "===== Running performance benchmarks ====="
   exec "./bin/etch --perf"
+  # exec "./bin/etch --perf performance/nested_loops.etch"

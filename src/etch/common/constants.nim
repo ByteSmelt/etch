@@ -32,7 +32,7 @@ const
 # Bytecode serialization constants
 const
   BYTECODE_MAGIC* = "ETCH"
-  BYTECODE_VERSION* = 24  # Added libraryPath to CFFIInfo
+  BYTECODE_VERSION* = 26  # Added immediate instructions (ropDivI, ropModI, ropAndI, ropOrI)
 
 
 # Symbolic execution constants
