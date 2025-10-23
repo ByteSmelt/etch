@@ -786,6 +786,13 @@ proc compileExpr*(c: var RegCompiler, e: Expr): uint8 =
     log(c.verbose, "Compiling ekComptime expression (should have been folded)")
     result = c.compileExpr(e.comptimeExpr)
 
+  of ekCompiles:
+    # compiles{...} should have been folded to a boolean during comptime pass
+    # If we reach here, something went wrong - return false as a fallback
+    log(c.verbose, "Warning: ekCompiles reached bytecode compiler (should have been folded)")
+    result = c.allocator.allocReg()
+    c.prog.emitAsBx(ropLoadK, result, 0, c.makeDebugInfo(e.pos))  # Load false
+
 proc compileBinOp(c: var RegCompiler, op: BinOp, dest, left, right: uint8, debug: RegDebugInfo = RegDebugInfo()) =
   case op:
   of boAdd: c.prog.emitABC(ropAdd, dest, left, right, debug)

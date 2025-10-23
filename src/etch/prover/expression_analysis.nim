@@ -1227,6 +1227,10 @@ proc analyzeExpr*(e: Expr; env: Env, ctx: ProverContext): Info =
     # Analyze the compile-time expression
     # Since this is evaluated at compile-time, we analyze it as a normal expression
     return analyzeExpr(e.comptimeExpr, env, ctx)
+  of ekCompiles:
+    # compiles{...} always evaluates to a boolean at compile-time
+    # Return a boolean Info with full range [0, 1]
+    return infoRange(0, 1)
 
 
 proc analyzeFunctionBody*(statements: seq[Stmt], env: Env, ctx: ProverContext) =

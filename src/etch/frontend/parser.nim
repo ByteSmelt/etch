@@ -240,6 +240,10 @@ proc parseBuiltinKeywordExpr(p: Parser; t: Token): Expr =
     discard p.expect(tkSymbol, ")")
     return Expr(kind: ekComptime, comptimeExpr: e, pos: p.posOf(t))
 
+  of "compiles":
+    let stmts = p.parseBlock()
+    return Expr(kind: ekCompiles, compilesBlock: stmts, compilesEnv: initTable[string, EtchType](), pos: p.posOf(t))
+
   of "some":
     discard p.expect(tkSymbol, "(")
     let e = p.parseExpr()

@@ -219,6 +219,10 @@ proc parseAndTypecheck*(options: CompilerOptions): (Program, string, Table[strin
 
     for s in f.body: typecheckStmt(prog, f, sc, s, subst)
 
+  # Second fold pass for compiles{...} expressions now that type environment is available
+  logCompiler(options.verbose, "Folding compiles expressions with type environment")
+  foldCompilesExprs(prog, prog)
+
   # Evaluate global variables with full expression support
   logCompiler(options.verbose, "Evaluating global variables")
   let evaluatedGlobals = evaluateGlobalVariables(prog)

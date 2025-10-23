@@ -54,7 +54,7 @@ type
     ekBool, ekChar, ekInt, ekFloat, ekString, ekVar, ekBin, ekUn,
     ekCall, ekNewRef, ekDeref, ekArray, ekIndex, ekSlice, ekArrayLen, ekCast, ekNil,
     ekOptionSome, ekOptionNone, ekResultOk, ekResultErr, ekMatch,
-    ekObjectLiteral, ekFieldAccess, ekNew, ekIf, ekComptime
+    ekObjectLiteral, ekFieldAccess, ekNew, ekIf, ekComptime, ekCompiles
 
   Expr* = ref object
     pos*: Pos
@@ -130,6 +130,9 @@ type
       ifElse*: seq[Stmt]                              # else body
     of ekComptime:
       comptimeExpr*: Expr                             # expression to evaluate at compile-time
+    of ekCompiles:
+      compilesBlock*: seq[Stmt]                       # statements to check if they compile
+      compilesEnv*: Table[string, EtchType]           # captured type environment from surrounding scope
 
   StmtKind* = enum
     skVar, skAssign, skFieldAssign, skIf, skWhile, skFor, skBreak, skExpr, skReturn, skComptime, skTypeDecl, skImport, skDiscard, skDefer
@@ -293,6 +296,7 @@ proc `$`*(t: ExprKind): string =
   of ekNew: "new expression"
   of ekIf: "if expression"
   of ekComptime: "compile-time expression"
+  of ekCompiles: "compiles check"
 
 
 proc `$`*(bop: BinOp): string =

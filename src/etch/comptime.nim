@@ -6,6 +6,7 @@ import common/[types]
 import prover/[function_evaluation, types]
 import frontend/ast
 import interpreter/[regvm_compiler, regvm_exec, regvm]
+import typechecker/[statements, types as tc_types]
 
 
 proc hasImpureExpr(e: Expr): bool
@@ -185,6 +186,47 @@ proc foldExpr(prog: Program, e: var Expr) =
     elif e.comptimeExpr.kind in [ekInt, ekFloat, ekString, ekBool]:
       # Already a constant, just use it
       e = e.comptimeExpr
+  of ekCompiles:
+    # Only evaluate if the type environment has been captured
+    # This will be empty on the first fold pass (before typechecking)
+    # and populated on the second pass (after typechecking)
+    if e.compilesEnv.len == 0:
+      # Skip for now - will be evaluated in second fold pass after typechecking
+      discard
+    else:
+      # Try to compile the block and return true/false based on success
+      var compiles = true
+      try:
+        # Create an isolated scope with captured outer scope types
+        # This allows the compiles block to reference outer variables
+        var isolatedScope = tc_types.Scope(
+          types: e.compilesEnv,  # Use captured type environment
+          flags: initTable[string, VarFlag](),
+          userTypes: initTable[string, EtchType](),
+          prog: prog
+        )
+
+        # Create a dummy function declaration for typechecking
+        var dummyFd = FunDecl(
+          name: "__compiles_check__",
+          typarams: @[],
+          params: @[],
+          ret: tVoid(),
+          body: e.compilesBlock,
+          isExported: false,
+          isCFFI: false
+        )
+
+        # Try to typecheck each statement in the block
+        var subst = initTable[string, EtchType]()
+        for stmt in e.compilesBlock:
+          typecheckStmt(prog, dummyFd, isolatedScope, stmt, subst)
+      except Exception as ex:
+        # If any exception occurs during typechecking, the code doesn't compile
+        compiles = false
+
+      # Replace the compiles expression with a boolean literal
+      e = Expr(kind: ekBool, bval: compiles, typ: tBool(), pos: e.pos)
   else: discard
 
 
@@ -359,6 +401,80 @@ proc foldComptime*(prog: Program, root: var Program) =
   for i in 0..<root.globals.len:
     var g = root.globals[i]; foldStmt(prog, g); root.globals[i] = g
 
-  for _, f in pairs(root.funInstances):
+  for fname, f in pairs(root.funInstances):
     for i in 0..<f.body.len:
       var s = f.body[i]; foldStmt(prog, s); f.body[i] = s
+
+# Helper to only process ekCompiles expressions (skip comptime blocks)
+proc foldCompilesInExpr(prog: Program, e: var Expr) =
+  case e.kind
+  of ekCompiles:
+    # Process this if environment is populated
+    if e.compilesEnv.len > 0:
+      var compiles = true
+      try:
+        var isolatedScope = tc_types.Scope(
+          types: e.compilesEnv,
+          flags: initTable[string, VarFlag](),
+          userTypes: initTable[string, EtchType](),
+          prog: prog
+        )
+        var dummyFd = FunDecl(
+          name: "__compiles_check__",
+          typarams: @[],
+          params: @[],
+          ret: tVoid(),
+          body: e.compilesBlock,
+          isExported: false,
+          isCFFI: false
+        )
+        var subst = initTable[string, EtchType]()
+        for stmt in e.compilesBlock:
+          typecheckStmt(prog, dummyFd, isolatedScope, stmt, subst)
+      except Exception:
+        compiles = false
+      e = Expr(kind: ekBool, bval: compiles, typ: tBool(), pos: e.pos)
+  of ekBin:
+    foldCompilesInExpr(prog, e.lhs)
+    foldCompilesInExpr(prog, e.rhs)
+  of ekUn:
+    foldCompilesInExpr(prog, e.ue)
+  of ekIf:
+    foldCompilesInExpr(prog, e.ifCond)
+  else:
+    discard  # Don't recurse further for other expression types
+
+proc foldCompilesInStmt(prog: Program, s: var Stmt) =
+  case s.kind
+  of skVar:
+    if s.vinit.isSome:
+      var x = s.vinit.get
+      foldCompilesInExpr(prog, x)
+      s.vinit = some(x)
+  of skAssign:
+    foldCompilesInExpr(prog, s.aval)
+  of skExpr:
+    foldCompilesInExpr(prog, s.sexpr)
+  of skIf:
+    foldCompilesInExpr(prog, s.cond)
+    for i in 0..<s.thenBody.len:
+      foldCompilesInStmt(prog, s.thenBody[i])
+    for i in 0..<s.elseBody.len:
+      foldCompilesInStmt(prog, s.elseBody[i])
+  of skWhile:
+    foldCompilesInExpr(prog, s.wcond)
+    for i in 0..<s.wbody.len:
+      foldCompilesInStmt(prog, s.wbody[i])
+  # Skip skComptime - don't reprocess comptime blocks!
+  else:
+    discard
+
+# Second pass specifically for compiles{...} expressions after typechecking
+# This is needed because compiles needs the type environment which is only available after typechecking
+proc foldCompilesExprs*(prog: Program, root: var Program) =
+  for i in 0..<root.globals.len:
+    foldCompilesInStmt(prog, root.globals[i])
+
+  for fname, f in pairs(root.funInstances):
+    for i in 0..<f.body.len:
+      foldCompilesInStmt(prog, f.body[i])
