@@ -38,4 +38,10 @@ const
 # Symbolic execution constants
 const
   MAX_LOOP_ITERATIONS* = 1_000_000
-  MAX_RECURSION_DEPTH* = 1000
+  MAX_RECURSION_DEPTH* = 1_000
+
+
+# Replay constants
+const
+  REPLAY_VERSION* = 1  # Version of replay format
+  DEFAULT_SNAPSHOT_INTERVAL* = 1_000  # Take snapshot every N instructions

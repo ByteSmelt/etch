@@ -3,7 +3,7 @@
 
 import std/[tables, macros, math, strutils, times]
 import ../common/[constants, cffi, values, logging]
-import regvm, regvm_debugger, regvm_profiler
+import regvm, regvm_debugger, regvm_profiler, regvm_replay
 
 # Global table to store values injected during comptime execution
 var comptimeInjections*: Table[string, V] = initTable[string, V]()
@@ -29,11 +29,24 @@ proc etch_srand(vm: RegisterVM, seed: uint64) {.inline.} =
 
 proc etch_rand(vm: RegisterVM): uint64 {.inline.} =
   # Xorshift64* algorithm
+  let oldState = vm.rngState
   var x = vm.rngState
   x = x xor (x shr 12)
   x = x xor (x shl 25)
   x = x xor (x shr 27)
   vm.rngState = x
+
+  # Replay engine hook - record RNG state change
+  if vm.replayEngine != nil:
+    let engine = cast[ReplayEngine](vm.replayEngine)
+    if engine.isRecording:
+      engine.recordDelta(ExecutionDelta(
+        instructionIndex: vm.currentFrame.pc,
+        kind: dkRNGChange,
+        oldRNG: oldState,
+        newRNG: x
+      ))
+
   result = x * 0x2545F4914F6CDD1D'u64  # Multiplication constant for better distribution
 
 
@@ -49,7 +62,9 @@ proc newRegisterVM*(prog: RegBytecodeProgram): RegisterVM =
     cffiRegistry: cast[pointer](globalCFFIRegistry),  # Use global C FFI registry
     rngState: 1'u64,  # Initialize RNG with default seed
     profiler: nil,  # No profiler by default - zero cost
-    isProfiling: false  # Not profiling by default
+    isProfiling: false,  # Not profiling by default
+    replayEngine: nil,  # No replay engine by default - zero cost
+    isReplaying: false  # Not replaying by default
   )
   result.currentFrame = addr result.frames[0]
 
@@ -65,7 +80,9 @@ proc newRegisterVMWithDebugger*(prog: RegBytecodeProgram, debugger: RegEtchDebug
     cffiRegistry: cast[pointer](globalCFFIRegistry),  # Use global C FFI registry
     rngState: 1'u64,  # Initialize RNG with default seed
     profiler: nil,  # No profiler by default - zero cost
-    isProfiling: false  # Not profiling by default
+    isProfiling: false,  # Not profiling by default
+    replayEngine: nil,  # No replay engine by default - zero cost
+    isReplaying: false  # Not replaying by default
   )
   result.currentFrame = addr result.frames[0]
   # Attach the debugger to this VM
@@ -86,7 +103,9 @@ proc newRegisterVMWithProfiler*(prog: RegBytecodeProgram): RegisterVM =
     cffiRegistry: cast[pointer](globalCFFIRegistry),
     rngState: 1'u64,
     profiler: cast[pointer](profiler),
-    isProfiling: true
+    isProfiling: true,
+    replayEngine: nil,  # No replay engine by default - zero cost
+    isReplaying: false  # Not replaying by default
   )
   result.currentFrame = addr result.frames[0]
 
@@ -466,6 +485,15 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
     let instr = instructions[pc]
     vm.currentFrame.pc = pc  # Update frame PC for debugger
 
+    # Replay engine hook - periodic snapshots
+    if vm.replayEngine != nil:
+      let engine = cast[ReplayEngine](vm.replayEngine)
+      if engine.isRecording:
+        engine.currentInstruction = pc
+        # Take periodic snapshots for fast seeking
+        if pc mod engine.snapshotInterval == 0:
+          engine.takeSnapshot(pc)
+
     # Profiler hook - before instruction
     if vm.profiler != nil:
       let profiler = cast[RegVMProfiler](vm.profiler)
@@ -548,6 +576,19 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
     of ropSetGlobal:
       if instr.opType == 1 and int(instr.bx) < vm.constants.len:
         let name = vm.constants[instr.bx].sval
+        # Record delta for replay
+        if vm.replayEngine != nil:
+          let engine = cast[ReplayEngine](vm.replayEngine)
+          if engine.isRecording:
+            let oldValue = if vm.globals.hasKey(name): vm.globals[name] else: makeNil()
+            let newValue = getReg(vm, instr.a)
+            engine.recordDelta(ExecutionDelta(
+              instructionIndex: pc,
+              kind: dkGlobalWrite,
+              globalName: name,
+              oldGlobal: oldValue,
+              newGlobal: newValue
+            ))
         vm.globals[name] = getReg(vm, instr.a)
 
     # --- Arithmetic Operations ---
@@ -1180,6 +1221,16 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
         vm.frames.add(newFrame)
         vm.currentFrame = addr vm.frames[^1]
 
+        # Replay engine hook - record frame push
+        if vm.replayEngine != nil:
+          let engine = cast[ReplayEngine](vm.replayEngine)
+          if engine.isRecording:
+            engine.recordDelta(ExecutionDelta(
+              instructionIndex: pc,
+              kind: dkFramePush,
+              pushedFrame: newFrame
+            ))
+
         # Jump to function
         pc = funcInfo.startPos
         continue
@@ -1412,7 +1463,18 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
       # Pop frame
       let returnAddr = vm.currentFrame.returnAddr
       let resultReg = vm.currentFrame.baseReg
+      let poppedFrame = vm.frames[^1]  # Save for replay
       discard vm.frames.pop()
+
+      # Replay engine hook - record frame pop
+      if vm.replayEngine != nil:
+        let engine = cast[ReplayEngine](vm.replayEngine)
+        if engine.isRecording:
+          engine.recordDelta(ExecutionDelta(
+            instructionIndex: pc,
+            kind: dkFramePop,
+            poppedFrame: poppedFrame
+          ))
 
       # Restore previous frame
       if vm.frames.len > 0:
@@ -1550,3 +1612,66 @@ proc runRegProgram*(prog: RegBytecodeProgram, verbose: bool = false): int =
 proc runRegProgramWithProfiler*(prog: RegBytecodeProgram, verbose: bool = false): int =
   let vm = newRegisterVMWithProfiler(prog)
   return vm.execute(verbose)
+
+
+# ===== Replay API =====
+
+# Enable replay recording on a VM
+proc enableReplayRecording*(vm: RegisterVM, snapshotInterval: int = DEFAULT_SNAPSHOT_INTERVAL) =
+  let engine = newReplayEngine(vm, snapshotInterval)
+  vm.replayEngine = cast[pointer](engine)
+  GC_ref(engine)  # Keep engine alive
+  engine.startRecording()
+
+
+# Stop replay recording
+proc stopReplayRecording*(vm: RegisterVM) =
+  if vm.replayEngine != nil:
+    let engine = cast[ReplayEngine](vm.replayEngine)
+    engine.stopRecording()
+
+
+# Seek to a specific instruction index
+proc seekToInstruction*(vm: RegisterVM, instrIdx: int) =
+  if vm.replayEngine != nil:
+    let engine = cast[ReplayEngine](vm.replayEngine)
+    engine.seekTo(instrIdx)
+
+
+# Seek to a specific time (in seconds from start)
+proc seekToTime*(vm: RegisterVM, targetTime: float) =
+  if vm.replayEngine != nil:
+    let engine = cast[ReplayEngine](vm.replayEngine)
+    engine.seekToTime(targetTime)
+
+
+# Get current replay progress (0.0 to 1.0)
+proc getReplayProgress*(vm: RegisterVM): float =
+  if vm.replayEngine != nil:
+    let engine = cast[ReplayEngine](vm.replayEngine)
+    return engine.getProgress()
+  return 0.0
+
+
+# Get total duration of recorded execution
+proc getReplayDuration*(vm: RegisterVM): float =
+  if vm.replayEngine != nil:
+    let engine = cast[ReplayEngine](vm.replayEngine)
+    return engine.getTotalDuration()
+  return 0.0
+
+
+# Get replay statistics
+proc getReplayStats*(vm: RegisterVM): tuple[snapshots: int, deltas: int,
+                                            instructions: int, duration: float] =
+  if vm.replayEngine != nil:
+    let engine = cast[ReplayEngine](vm.replayEngine)
+    return engine.getStats()
+  return (0, 0, 0, 0.0)
+
+
+# Print replay statistics
+proc printReplayStats*(vm: RegisterVM) =
+  if vm.replayEngine != nil:
+    let engine = cast[ReplayEngine](vm.replayEngine)
+    engine.printStats()

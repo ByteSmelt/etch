@@ -1,7 +1,7 @@
 # regvm_serialize.nim
 # Register VM bytecode serialization and deserialization
 
-import std/[tables, streams, strutils]
+import std/[tables, streams, strutils, os]
 import ../common/constants
 import regvm, regvm_lifetime
 
@@ -452,8 +452,6 @@ proc deserializeFromBinary*(data: string): RegBytecodeProgram =
 
     let libPathLen = stream.readUint32()
     cffi.libraryPath = stream.readStr(int(libPathLen))
-    when defined(debugSerialization):
-      echo "Deserialized CFFI libraryPath: ", cffi.libraryPath
 
     let symLen = stream.readUint32()
     cffi.symbol = stream.readStr(int(symLen))
@@ -559,6 +557,62 @@ proc saveRegBytecode*(prog: RegBytecodeProgram, filename: string,
 proc loadRegBytecode*(filename: string): RegBytecodeProgram =
   let binaryData = readFile(filename)
   deserializeFromBinary(binaryData)
+
+
+type
+  BytecodeHeader* = object
+    valid*: bool
+    version*: uint32
+    sourceHash*: string
+    compilerVersion*: string
+    verbose*: bool
+    debug*: bool
+    optimizeLevel*: int
+
+
+proc readBytecodeHeader*(filename: string): BytecodeHeader =
+  ## Read just the header of a bytecode file for cache validation
+  ## Returns valid=false if file doesn't exist or has invalid format
+  result.valid = false
+
+  if not fileExists(filename):
+    return
+
+  try:
+    let data = readFile(filename)
+    if data.len < 73:  # Minimum header size: 4 (magic) + 1 (vm type) + 4 (version) + 32 (source hash) + 32 (compiler version) + 1 (flags) = 74
+      return
+
+    var stream = newStringStream(data)
+
+    # Check magic header
+    let magic = stream.readStr(4)
+    if magic != BYTECODE_MAGIC:
+      return
+
+    # Check VM type
+    let vmTypeValue = stream.readUint8()
+    if vmTypeValue != uint8(vmRegister):
+      return
+
+    # Read version
+    result.version = stream.readUint32()
+
+    # Read source hash (32 bytes, trim null padding)
+    result.sourceHash = stream.readStr(32).strip(chars = {'\0'})
+
+    # Read compiler version (32 bytes, trim null padding)
+    result.compilerVersion = stream.readStr(32).strip(chars = {'\0'})
+
+    # Read compiler flags
+    let flagBits = stream.readUint8()
+    result.verbose = (flagBits and 1) != 0
+    result.debug = (flagBits and 2) != 0
+    result.optimizeLevel = int(flagBits shr 4)
+
+    result.valid = true
+  except:
+    result.valid = false
 
 
 # Debug string representation for opcodes

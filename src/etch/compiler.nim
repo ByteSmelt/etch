@@ -23,21 +23,58 @@ proc getBytecodeFileName*(sourceFile: string): string =
 
 proc hashSourceAndFlags*(source: string, options: CompilerOptions): string =
   ## Generate a hash of the source code + compiler options for cache validation
-  let sourceHash = hashes.hash(source)
-  $sourceHash
+  ## Includes: source, BYTECODE_VERSION, and optimization level
+  let optimizeLevel = if options.debug: 1 else: 2
+  var hashInput = source & $BYTECODE_VERSION & $optimizeLevel
+  let combinedHash = hashes.hash(hashInput)
+  $combinedHash
 
-proc shouldRecompile*(sourceFile, bytecodeFile: string, options: CompilerOptions): bool =
-  ## Check if source file is newer than bytecode or if hash/flags don't match
+proc shouldRecompileBytecode*(sourceFile, bytecodeFile: string, source: string, options: CompilerOptions): bool =
+  ## Check if bytecode needs recompilation
+  ## Validates: file existence, modification time, and source hash (which includes version and flags)
+  if options.force:
+    logCompiler(options.verbose, "  -> Force recompilation requested")
+    return true
+
   if not fileExists(bytecodeFile):
+    logCompiler(options.verbose, "  -> Bytecode file does not exist")
     return true
 
   # Check modification times
   let sourceTime = getLastModificationTime(sourceFile)
   let bytecodeTime = getLastModificationTime(bytecodeFile)
   if sourceTime > bytecodeTime:
+    logCompiler(options.verbose, "  -> Source file is newer than bytecode")
+    return true
+
+  # Read and validate bytecode header
+  let header = readBytecodeHeader(bytecodeFile)
+  if not header.valid:
+    logCompiler(options.verbose, "  -> Bytecode header is invalid")
+    return true
+
+  # Compare hash (includes source, BYTECODE_VERSION, and optimization level)
+  let currentHash = hashSourceAndFlags(source, options)
+  if header.sourceHash != currentHash:
+    logCompiler(options.verbose, "  -> Hash mismatch (stored: " & header.sourceHash & ", current: " & currentHash & ")")
     return true
 
   # Bytecode is up to date
+  logCompiler(options.verbose, "  -> Bytecode is up to date")
+  return false
+
+
+proc shouldRecompileC*(sourceFile, cFile, exeFile: string): bool =
+  ## Check if C backend output needs recompilation
+  ## Only checks file existence and modification times
+  if not fileExists(cFile) or not fileExists(exeFile):
+    return true
+
+  let sourceTime = getLastModificationTime(sourceFile)
+  let exeTime = getLastModificationTime(exeFile)
+  if sourceTime > exeTime:
+    return true
+
   return false
 
 proc ensureMainInst(prog: Program) =
@@ -298,12 +335,17 @@ proc runCachedBytecode*(bytecodeFile: string, verbose: bool = false, profile: bo
   except Exception as e:
     return CompilerResult(success: false, error: "Failed to run cached bytecode: " & e.msg)
 
-proc saveBytecodeToCache*(regProg: RegBytecodeProgram, bytecodeFile: string) =
+proc saveBytecodeToCache*(regProg: RegBytecodeProgram, bytecodeFile: string, sourceHash: string, sourceFile: string, options: CompilerOptions) =
   try:
     let bytecodeDir = bytecodeFile.splitFile.dir
     if not dirExists(bytecodeDir):
       createDir(bytecodeDir)
-    saveRegBytecode(regProg, bytecodeFile)
+
+    # Prepare compiler flags
+    let optimizeLevel = if options.debug: 1 else: 2
+    let flags = RegCompilerFlags(verbose: options.verbose, debug: options.debug, optimizeLevel: optimizeLevel)
+
+    saveRegBytecode(regProg, bytecodeFile, sourceHash, PROGRAM_VERSION, sourceFile, flags)
     echo "Cached bytecode to: ", bytecodeFile
   except Exception as e:
     echo "Warning: Failed to cache bytecode: ", e.msg
@@ -349,7 +391,7 @@ proc compileAndRun*(options: CompilerOptions): CompilerResult =
     # Save bytecode to cache
     let bytecodeFile = getBytecodeFileName(options.sourceFile)
     logCompiler(options.verbose, "Saving bytecode cache to: " & bytecodeFile)
-    saveBytecodeToCache(regProg, bytecodeFile)
+    saveBytecodeToCache(regProg, bytecodeFile, srcHash, options.sourceFile, options)
 
     # Check if we should run the VM
     var exitCode = 0
@@ -380,16 +422,20 @@ proc tryRunCachedOrCompile*(options: CompilerOptions): CompilerResult =
   logCompiler(options.verbose, "Checking for cached bytecode at: " & bytecodeFile)
 
   # Check if we can use cached bytecode
-  if options.runVM and not shouldRecompile(options.sourceFile, bytecodeFile, options):
-    logCompiler(options.verbose, "Using cached bytecode")
-    let cachedResult = runCachedBytecode(bytecodeFile, options.verbose, options.profile)
-    if cachedResult.success:
-      logCompiler(options.verbose, "Cached bytecode execution successful")
-      return cachedResult
+  if options.runVM:
+    # Read source to compute hash for validation
+    let src = if options.sourceString.isSome:
+      options.sourceString.get()
     else:
-      logCompiler(options.verbose, "Cached bytecode execution failed: " & cachedResult.error)
-      echo cachedResult.error
-      echo "Recompiling..."
+      try:
+        readFile(options.sourceFile)
+      except IOError:
+        # If we can't read the file, fall through to compilation which will handle the error
+        ""
+
+    if src != "" and not shouldRecompileBytecode(options.sourceFile, bytecodeFile, src, options):
+      logCompiler(options.verbose, "Using cached bytecode")
+      return runCachedBytecode(bytecodeFile, options.verbose, options.profile)
 
   # Compile from source
   logCompiler(options.verbose, "Compiling from source")

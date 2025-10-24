@@ -4,25 +4,28 @@
 import std/[os, strutils, osproc, tables, times, strformat, sequtils]
 import ./etch/[compiler, tester]
 import ./etch/common/[constants, types, cffi, logging]
-import ./etch/interpreter/[regvm, regvm_dump, regvm_debugserver]
+import ./etch/interpreter/[regvm, regvm_dump, regvm_debugserver, regvm_exec, regvm_replay]
 import ./etch/backend/c/[generator]
 
 
 proc usage() =
   echo "Etch - minimal language toolchain"
   echo "Usage:"
-  echo "  etch [--run [BACKEND]] [--verbose] [--release] [--profile] [--gen BACKEND] file.etch"
+  echo "  etch [--run [BACKEND]] [--verbose] [--release] [--profile] [--force] [--gen BACKEND] file.etch"
   echo "  etch --test [DIR|FILE]"
   echo "  etch --test-c [DIR|FILE]"
   echo "  etch --perf [DIR]"
+  echo "  etch --replay-demo FILE"
   echo "Options:"
   echo "  --run [BACKEND]      Execute the program (default: bytecode VM, optional: c)"
   echo "  --verbose            Enable verbose debug output"
   echo "  --release            Optimize and skip debug information in bytecode"
   echo "  --profile            Enable VM profiling (reports instruction timing and hotspots)"
+  echo "  --force              Force recompilation, bypassing bytecode cache"
   echo "  --gen BACKEND        Generate code for specified backend (c)"
   echo "  --debug-server       Start debug server for VSCode integration"
   echo "  --dump-bytecode      Dump bytecode instructions with debug info"
+  echo "  --replay-demo FILE   Demonstrate replay/scrubbing functionality (record and seek)"
   echo "  --test [DIR|FILE]    Run tests in directory (default: tests/) with bytecode VM"
   echo "  --test-c [DIR|FILE]  Run tests in directory (default: tests/) with C backend"
   echo "                       Tests need .pass (expected output) or .fail (expected failure)"
@@ -36,13 +39,14 @@ proc validateFile(path: string) =
     quit 1
 
 
-proc makeCompilerOptions(sourceFile: string, runVM: bool, verbose: bool, debug: bool, profile: bool = false): CompilerOptions =
+proc makeCompilerOptions(sourceFile: string, runVM: bool, verbose: bool, debug: bool, profile: bool = false, force: bool = false): CompilerOptions =
   CompilerOptions(
     sourceFile: sourceFile,
     runVM: runVM,
     verbose: verbose,
     debug: debug,
-    profile: profile
+    profile: profile,
+    force: force
   )
 
 
@@ -316,6 +320,7 @@ when isMainModule:
   var verbose = false
   var debug = true
   var profile = false
+  var force = false
   var mode = ""
   var modeArg = ""
   var runVm = false
@@ -333,6 +338,8 @@ when isMainModule:
       debug = false
     elif a == "--profile":
       profile = true
+    elif a == "--force":
+      force = true
     elif a == "--run":
       runVm = true
       # Check if there's an optional backend argument (not a file path)
@@ -371,6 +378,11 @@ when isMainModule:
         inc i
     elif a == "--dump-bytecode":
       mode = "dump-bytecode"
+      if i + 1 <= paramCount():
+        modeArg = paramStr(i + 1)
+        inc i
+    elif a == "--replay-demo":
+      mode = "replay-demo"
       if i + 1 <= paramCount():
         modeArg = paramStr(i + 1)
         inc i
@@ -417,6 +429,76 @@ when isMainModule:
     let options = makeCompilerOptions(modeArg, runVM = false, verbose, debug)
     let bytecodeProgram = compileToRegBytecode(options)
     dumpBytecodeProgram(bytecodeProgram, modeArg)
+    quit 0
+
+  if mode == "replay-demo":
+    if modeArg == "":
+      echo "Error: --replay-demo requires a file argument"
+      quit 1
+
+    validateFile(modeArg)
+    echo "==== Replay Demo for: ", modeArg, " ===="
+    echo ""
+
+    # Compile the program
+    let options = makeCompilerOptions(modeArg, runVM = false, verbose, debug)
+    let bytecodeProgram = compileToRegBytecode(options)
+
+    # Create VM and enable replay recording
+    let vm = newRegisterVM(bytecodeProgram)
+    vm.enableReplayRecording(snapshotInterval = 100)  # Snapshot every 100 instructions
+
+    echo "Recording execution..."
+    let exitCode = vm.execute(verbose = false)
+
+    # Stop recording
+    vm.stopReplayRecording()
+
+    echo "Execution completed with exit code: ", exitCode
+    echo ""
+
+    # Print replay statistics
+    vm.printReplayStats()
+    echo ""
+
+    # Get stats for demonstration
+    let stats = vm.getReplayStats()
+    if stats.instructions > 0:
+      echo "==== Demonstrating Scrubbing ===="
+      echo ""
+
+      # Seek to 25% of execution
+      let quarter = stats.instructions div 4
+      echo "Seeking to 25% (instruction ", quarter, ")..."
+      vm.seekToInstruction(quarter)
+      echo "Current position: ", vm.getReplayProgress() * 100.0, "%"
+      echo ""
+
+      # Seek to 50%
+      let half = stats.instructions div 2
+      echo "Seeking to 50% (instruction ", half, ")..."
+      vm.seekToInstruction(half)
+      echo "Current position: ", vm.getReplayProgress() * 100.0, "%"
+      echo ""
+
+      # Seek to 75%
+      let threeQuarters = (stats.instructions * 3) div 4
+      echo "Seeking to 75% (instruction ", threeQuarters, ")..."
+      vm.seekToInstruction(threeQuarters)
+      echo "Current position: ", vm.getReplayProgress() * 100.0, "%"
+      echo ""
+
+      # Seek back to start
+      echo "Seeking back to start (instruction 0)..."
+      vm.seekToInstruction(0)
+      echo "Current position: ", vm.getReplayProgress() * 100.0, "%"
+      echo ""
+
+      echo "==== Replay Demo Complete ===="
+      echo ""
+      echo "You can now scrub through the execution like a video!"
+      echo "Memory usage: ~", (stats.deltas * 50 + stats.snapshots * 1024) div 1024, " KB"
+
     quit 0
 
   if files.len != 1: usage()
@@ -468,7 +550,7 @@ when isMainModule:
     quit exitCode
 
   # Normal VM execution or compilation without running
-  let options = makeCompilerOptions(sourceFile, runVm, verbose, debug, profile)
+  let options = makeCompilerOptions(sourceFile, runVm, verbose, debug, profile, force)
   let compilerResult = tryRunCachedOrCompile(options)
 
   if not compilerResult.success:

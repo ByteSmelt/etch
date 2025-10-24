@@ -152,6 +152,7 @@ proc tryEvaluatePureFunction*(call: Expr, argInfos: seq[Info], fn: FunDecl, prog
   # Create parameter environment with constant argument values
   var paramEnv: Table[string, int64] = initTable[string, int64]()
   var uninitializedVars: seq[string] = @[]  # Track uninitialized variables
+  var recursionDepth = 0  # Track recursion depth to prevent infinite evaluation
 
   for i, arg in argInfos:
     if i < fn.params.len and arg.known:
@@ -179,12 +180,19 @@ proc tryEvaluatePureFunction*(call: Expr, argInfos: seq[Info], fn: FunDecl, prog
 
   proc evalCallExpr(expr: Expr): Option[int64] =
     if prog != nil and expr.fname == fn.name:
+      # Check recursion depth to prevent infinite evaluation
+      recursionDepth += 1
+      if recursionDepth > MAX_RECURSION_DEPTH:
+        recursionDepth -= 1
+        return none(int64)  # Too deep, cannot evaluate
+
       var recursiveArgs: seq[int64] = @[]
       for arg in expr.args:
         let argResult = evalExpr(arg)
         if argResult.isSome:
           recursiveArgs.add(argResult.get)
         else:
+          recursionDepth -= 1
           return none(int64)
 
       var newParamEnv: Table[string, int64] = initTable[string, int64]()
@@ -199,9 +207,11 @@ proc tryEvaluatePureFunction*(call: Expr, argInfos: seq[Info], fn: FunDecl, prog
         let res = evalStmt(stmt)
         if res.isSome:
           paramEnv = oldParamEnv
+          recursionDepth -= 1
           return res
 
       paramEnv = oldParamEnv
+      recursionDepth -= 1
       return none(int64)
     else:
       return none(int64)
@@ -287,6 +297,10 @@ proc tryEvaluatePureFunction*(call: Expr, argInfos: seq[Info], fn: FunDecl, prog
     for stmt in fn.body:
       let res = evalStmt(stmt)
       if stmt.kind == skReturn:
+        return res
+      elif res.isSome:
+        # Any statement that produced a value must have hit a return
+        # (could be if/while/for/block containing a return) - stop here
         return res
       elif not res.isSome:
         return none(int64)

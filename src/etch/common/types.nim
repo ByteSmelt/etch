@@ -12,6 +12,7 @@ type
     verbose*: bool
     debug*: bool  ## Include debug info; if false, compile in release mode with optimizations
     profile*: bool  ## Enable VM profiling
+    force*: bool  ## Force recompilation, bypassing cache
 
   Pos* = object
     line*, col*: int

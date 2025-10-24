@@ -529,7 +529,7 @@ proc analyzeUserDefinedCall*(e: Expr, env: Env, ctx: ProverContext): Info =
     logProver(ctx.options.verbose, &"Contract-based analysis complete for {e.fname}, return: [{returnInfo.minv}..{returnInfo.maxv}]")
     return returnInfo
 
-  # Check for recursion depth limit with old behavior
+  # Check for recursion depth limit BEFORE any analysis
   if e.fname in ctx.callStack:
     logProver(ctx.options.verbose, &"Recursive call detected for {e.fname}, using conservative analysis")
     return Info(known: false, minv: IMin, maxv: IMax, nonZero: false, initialized: true)
@@ -538,7 +538,17 @@ proc analyzeUserDefinedCall*(e: Expr, env: Env, ctx: ProverContext): Info =
     logProver(ctx.options.verbose, &"Maximum recursion depth reached, using conservative analysis for {e.fname}")
     return Info(known: false, minv: IMin, maxv: IMax, nonZero: false, initialized: true)
 
+  # Add function to call stack BEFORE any analysis (including compile-time evaluation)
+  # This prevents infinite recursion during constant folding
+  var newCtx = ProverContext(
+    fnContext: ctx.fnContext,
+    options: ctx.options,
+    prog: ctx.prog,
+    callStack: ctx.callStack & @[e.fname]
+  )
+
   # Check if all arguments are compile-time constants for potential constant folding
+  # Do this AFTER adding to callStack to prevent infinite recursion
   var allArgsConstant = true
   for argInfo in argInfos:
     if not argInfo.known:
@@ -547,19 +557,11 @@ proc analyzeUserDefinedCall*(e: Expr, env: Env, ctx: ProverContext): Info =
 
   # If all arguments are constants, try to evaluate simple pure functions at compile time
   if allArgsConstant:
-    logProver(ctx.options.verbose, "All arguments are constants - attempting compile-time evaluation")
+    logProver(newCtx.options.verbose, "All arguments are constants - attempting compile-time evaluation")
     let evalResult = tryEvaluatePureFunction(e, argInfos, fn, ctx.prog)
     if evalResult.isSome:
-      logProver(ctx.options.verbose, &"Function evaluated at compile-time to: {evalResult.get}")
+      logProver(newCtx.options.verbose, &"Function evaluated at compile-time to: {evalResult.get}")
       return infoConst(evalResult.get)
-
-  # Add function to call stack before comprehensive analysis
-  var newCtx = ProverContext(
-    fnContext: ctx.fnContext,
-    options: ctx.options,
-    prog: ctx.prog,
-    callStack: ctx.callStack & @[e.fname]
-  )
 
   # Create function call environment with parameter mappings
   # Start with global environment but override with parameter mappings

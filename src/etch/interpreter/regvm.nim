@@ -149,6 +149,8 @@ type
     rngState*: uint64                # RNG state for cross-platform deterministic random
     profiler*: pointer               # Optional profiler (nil for production)
     isProfiling*: bool               # True when profiling is enabled
+    replayEngine*: pointer           # Optional replay engine (nil when not recording/replaying)
+    isReplaying*: bool               # True when in replay mode (read-only execution)
 
   FunctionInfo* = object
     name*: string
