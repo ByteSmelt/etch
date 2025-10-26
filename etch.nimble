@@ -30,6 +30,7 @@ task test, "Run all tests":
   exec "nim c -r tests/test_for_loop_debug.nim"
   exec "nim c -r tests/test_normal_var_debug.nim"
   exec "nim c -r tests/test_setvariable.nim"
+  exec "nim c -r tests/test_setvar_array.nim"
 
 task perf, "Run performance benchmarks":
   echo "===== Building etch binary in release mode ====="

@@ -37,13 +37,11 @@ proc formatRegisterValue(val: V): string =
   elif val.isArray():
     if val.aval.len == 0:
       return "[]"
-    elif val.aval.len <= 3:
+    else:
       var items: seq[string] = @[]
       for item in val.aval:
         items.add(formatRegisterValue(item))
       return "[" & items.join(", ") & "]"
-    else:
-      return "[" & formatRegisterValue(val.aval[0]) & ", ... (" & $val.aval.len & " items)]"
   elif val.isTable():
     if val.tval.len == 0:
       return "{}"
@@ -888,6 +886,118 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
           "body": {
             "value": "\"" & strValue & "\"",  # Return WITH quotes for display
             "type": "string",
+            "variablesReference": 0
+          }
+        }
+
+      of "array":
+        # Array syntax: [elem1, elem2, elem3]
+        # Support int, float, string, and bool arrays
+        if value.len < 2 or value[0] != '[' or value[^1] != ']':
+          return %*{
+            "success": false,
+            "message": "Array value must be in brackets. Example: [1, 2, 3] or [\"a\", \"b\"]"
+          }
+
+        # Parse array elements
+        let content = value[1..^2].strip()
+        if content.len == 0:
+          # Empty array
+          let newValue = makeArray(@[])
+
+          # Update both storage location and register
+          if isGlobal:
+            server.vm.globals[name] = newValue
+          else:
+            server.vm.currentFrame.regs[foundReg] = newValue
+            updateConsecutiveMoves(server, foundReg, newValue, currentPC)
+
+          return %*{
+            "success": true,
+            "body": {
+              "value": "[]",
+              "type": "array",
+              "variablesReference": 0
+            }
+          }
+
+        # Split by comma, but handle quoted strings properly
+        var elements: seq[string] = @[]
+        var current = ""
+        var inString = false
+        var i = 0
+        while i < content.len:
+          let c = content[i]
+          if c == '"':
+            inString = not inString
+            current.add(c)
+          elif c == ',' and not inString:
+            elements.add(current.strip())
+            current = ""
+          else:
+            current.add(c)
+          inc i
+        if current.len > 0:
+          elements.add(current.strip())
+
+        # Parse elements based on first element's type
+        var arrayElements: seq[V] = @[]
+        for elem in elements:
+          if elem.len == 0:
+            return %*{
+              "success": false,
+              "message": "Invalid array element (empty)"
+            }
+
+          # Determine element type
+          if elem[0] == '"':
+            # String element
+            if elem.len < 2 or elem[^1] != '"':
+              return %*{
+                "success": false,
+                "message": "String array element must be quoted: " & elem
+              }
+            let strVal = elem[1..^2]
+            arrayElements.add(makeString(strVal))
+          elif elem == "true":
+            arrayElements.add(makeBool(true))
+          elif elem == "false":
+            arrayElements.add(makeBool(false))
+          elif '.' in elem:
+            # Float
+            try:
+              let floatVal = parseFloat(elem)
+              arrayElements.add(makeFloat(floatVal))
+            except ValueError:
+              return %*{
+                "success": false,
+                "message": "Invalid float in array: " & elem
+              }
+          else:
+            # Int
+            try:
+              let intVal = parseInt(elem)
+              arrayElements.add(makeInt(intVal))
+            except ValueError:
+              return %*{
+                "success": false,
+                "message": "Invalid integer in array: " & elem
+              }
+
+        let newValue = makeArray(arrayElements)
+
+        # Update both storage location and register
+        if isGlobal:
+          server.vm.globals[name] = newValue
+        else:
+          server.vm.currentFrame.regs[foundReg] = newValue
+          updateConsecutiveMoves(server, foundReg, newValue, currentPC)
+
+        return %*{
+          "success": true,
+          "body": {
+            "value": formatRegisterValue(newValue),
+            "type": "array",
             "variablesReference": 0
           }
         }
