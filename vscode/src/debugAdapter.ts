@@ -49,9 +49,10 @@ class EtchDebugAdapter extends DebugSession {
     private pendingRequests: Array<{command: string, args: any, response?: any}> = [];
 
     // Pending responses waiting for Etch server replies
-    private pendingStackTraceResponse: DebugProtocol.StackTraceResponse | undefined;
-    private pendingVariablesResponse: DebugProtocol.VariablesResponse | undefined;
-    private pendingScopesResponse: DebugProtocol.ScopesResponse | undefined;
+    // Use Maps to handle multiple concurrent requests (e.g., Locals and Globals requested simultaneously)
+    private pendingStackTraceResponses: Map<number, DebugProtocol.StackTraceResponse> = new Map();
+    private pendingVariablesResponses: Map<number, DebugProtocol.VariablesResponse> = new Map();
+    private pendingScopesResponses: Map<number, DebugProtocol.ScopesResponse> = new Map();
     private pendingCustomResponses: Map<string, any> = new Map();
 
     constructor() {
@@ -110,7 +111,7 @@ class EtchDebugAdapter extends DebugSession {
             log(`Using custom debug executable: ${executablePath} ${program}`);
         } else {
             // Use default Etch compiler debug server
-            executablePath = path.join(workspacePath, 'etch');
+            executablePath = path.join(workspacePath, 'bin', 'etch');
             executableArgs = ['--debug-server', program];
             log(`Using Etch compiler debug server: ${executablePath} --debug-server ${program}`);
         }
@@ -274,47 +275,58 @@ class EtchDebugAdapter extends DebugSession {
 
         switch (message.command) {
             case 'stackTrace':
-                if (this.pendingStackTraceResponse && message.body) {
-                    // Convert Etch's stack frames to VS Code format
-                    const stackFrames = message.body.stackFrames?.map((frame: any, index: number) => {
-                        const source = new Source(frame.source.name, frame.source.path);
-                        return new StackFrame(frame.id, frame.name, source, frame.line, frame.column);
-                    }) || [];
+                if (message.request_seq !== undefined) {
+                    const response = this.pendingStackTraceResponses.get(message.request_seq);
+                    if (response && message.body) {
+                        // Convert Etch's stack frames to VS Code format
+                        const stackFrames = message.body.stackFrames?.map((frame: any, index: number) => {
+                            const source = new Source(frame.source.name, frame.source.path);
+                            return new StackFrame(frame.id, frame.name, source, frame.line, frame.column);
+                        }) || [];
 
-                    this.pendingStackTraceResponse.body = {
-                        stackFrames: stackFrames,
-                        totalFrames: message.body.totalFrames || stackFrames.length
-                    };
+                        response.body = {
+                            stackFrames: stackFrames,
+                            totalFrames: message.body.totalFrames || stackFrames.length
+                        };
 
-                    log(`Forwarding ${stackFrames.length} stack frames to VS Code`);
-                    this.sendResponse(this.pendingStackTraceResponse);
-                    this.pendingStackTraceResponse = undefined;
+                        log(`Forwarding ${stackFrames.length} stack frames to VS Code`);
+                        this.sendResponse(response);
+                        this.pendingStackTraceResponses.delete(message.request_seq);
+                    }
                 }
                 break;
 
             case 'variables':
-                if (this.pendingVariablesResponse && message.body) {
-                    // Forward variables directly
-                    this.pendingVariablesResponse.body = {
-                        variables: message.body.variables || []
-                    };
+                if (message.request_seq !== undefined) {
+                    const response = this.pendingVariablesResponses.get(message.request_seq);
+                    if (response && message.body) {
+                        // Forward variables directly
+                        response.body = {
+                            variables: message.body.variables || []
+                        };
 
-                    log(`Forwarding ${message.body.variables?.length || 0} variables to VS Code`);
-                    this.sendResponse(this.pendingVariablesResponse);
-                    this.pendingVariablesResponse = undefined;
+                        log(`Forwarding ${message.body.variables?.length || 0} variables to VS Code (seq=${message.request_seq})`);
+                        this.sendResponse(response);
+                        this.pendingVariablesResponses.delete(message.request_seq);
+                    } else if (!response) {
+                        log(`ERROR: No pending response found for variables seq=${message.request_seq}, pending keys: ${Array.from(this.pendingVariablesResponses.keys())}`);
+                    }
                 }
                 break;
 
             case 'scopes':
-                if (this.pendingScopesResponse && message.body) {
-                    // Forward scopes directly
-                    this.pendingScopesResponse.body = {
-                        scopes: message.body.scopes || []
-                    };
+                if (message.request_seq !== undefined) {
+                    const response = this.pendingScopesResponses.get(message.request_seq);
+                    if (response && message.body) {
+                        // Forward scopes directly
+                        response.body = {
+                            scopes: message.body.scopes || []
+                        };
 
-                    log(`Forwarding ${message.body.scopes?.length || 0} scopes to VS Code`);
-                    this.sendResponse(this.pendingScopesResponse);
-                    this.pendingScopesResponse = undefined;
+                        log(`Forwarding ${message.body.scopes?.length || 0} scopes to VS Code`);
+                        this.sendResponse(response);
+                        this.pendingScopesResponses.delete(message.request_seq);
+                    }
                 }
                 break;
 
@@ -429,31 +441,34 @@ class EtchDebugAdapter extends DebugSession {
     protected stackTraceRequest(response: DebugProtocol.StackTraceResponse, args: DebugProtocol.StackTraceArguments): void {
         log(`Stack trace request for thread ${args.threadId}`);
 
-        // Store the response to send back when we get Etch's response
-        this.pendingStackTraceResponse = response;
-
-        // Forward request to Etch debug server
+        // Capture sequence number BEFORE sendToEtch (which does post-increment)
+        const seq = this.nextSeq;
+        this.pendingStackTraceResponses.set(seq, response);
         this.sendToEtch('stackTrace', { threadId: args.threadId });
+
+        log(`Stored stackTrace response with seq=${seq}`);
     }
 
     protected scopesRequest(response: DebugProtocol.ScopesResponse, args: DebugProtocol.ScopesArguments): void {
         log(`Scopes request for frame ${args.frameId}`);
 
-        // Store the response to send back when we get Etch's response
-        this.pendingScopesResponse = response;
-
-        // Forward request to Etch debug server
+        // Capture sequence number BEFORE sendToEtch (which does post-increment)
+        const seq = this.nextSeq;
+        this.pendingScopesResponses.set(seq, response);
         this.sendToEtch('scopes', { frameId: args.frameId });
+
+        log(`Stored scopes response with seq=${seq}`);
     }
 
     protected variablesRequest(response: DebugProtocol.VariablesResponse, args: DebugProtocol.VariablesArguments): void {
         log(`Variables request for variablesReference ${args.variablesReference}`);
 
-        // Store the response to send back when we get Etch's response
-        this.pendingVariablesResponse = response;
-
-        // Forward request to Etch debug server
+        // Capture sequence number BEFORE sendToEtch (which does post-increment)
+        const seq = this.nextSeq;
+        this.pendingVariablesResponses.set(seq, response);
         this.sendToEtch('variables', { variablesReference: args.variablesReference });
+
+        log(`Stored variables response with seq=${seq}, ref=${args.variablesReference}`);
     }
 
     protected threadsRequest(response: DebugProtocol.ThreadsResponse): void {
@@ -512,9 +527,10 @@ class RemoteEtchDebugAdapter extends DebugSession {
     private connecting = false;
 
     // Pending responses waiting for Etch server replies
-    private pendingStackTraceResponse: DebugProtocol.StackTraceResponse | undefined;
-    private pendingVariablesResponse: DebugProtocol.VariablesResponse | undefined;
-    private pendingScopesResponse: DebugProtocol.ScopesResponse | undefined;
+    // Use Maps to handle multiple concurrent requests (e.g., Locals and Globals requested simultaneously)
+    private pendingStackTraceResponses: Map<number, DebugProtocol.StackTraceResponse> = new Map();
+    private pendingVariablesResponses: Map<number, DebugProtocol.VariablesResponse> = new Map();
+    private pendingScopesResponses: Map<number, DebugProtocol.ScopesResponse> = new Map();
     private pendingCustomResponses: Map<string, any> = new Map();
 
     constructor() {
@@ -735,44 +751,55 @@ class RemoteEtchDebugAdapter extends DebugSession {
 
         switch (message.command) {
             case 'stackTrace':
-                if (this.pendingStackTraceResponse && message.body) {
-                    const stackFrames = message.body.stackFrames?.map((frame: any, index: number) => {
-                        const source = new Source(frame.source.name, frame.source.path);
-                        return new StackFrame(frame.id, frame.name, source, frame.line, frame.column);
-                    }) || [];
+                if (message.request_seq !== undefined) {
+                    const response = this.pendingStackTraceResponses.get(message.request_seq);
+                    if (response && message.body) {
+                        const stackFrames = message.body.stackFrames?.map((frame: any, index: number) => {
+                            const source = new Source(frame.source.name, frame.source.path);
+                            return new StackFrame(frame.id, frame.name, source, frame.line, frame.column);
+                        }) || [];
 
-                    this.pendingStackTraceResponse.body = {
-                        stackFrames: stackFrames,
-                        totalFrames: message.body.totalFrames || stackFrames.length
-                    };
+                        response.body = {
+                            stackFrames: stackFrames,
+                            totalFrames: message.body.totalFrames || stackFrames.length
+                        };
 
-                    log(`Remote: Forwarding ${stackFrames.length} stack frames to VS Code`);
-                    this.sendResponse(this.pendingStackTraceResponse);
-                    this.pendingStackTraceResponse = undefined;
+                        log(`Remote: Forwarding ${stackFrames.length} stack frames to VS Code`);
+                        this.sendResponse(response);
+                        this.pendingStackTraceResponses.delete(message.request_seq);
+                    }
                 }
                 break;
 
             case 'variables':
-                if (this.pendingVariablesResponse && message.body) {
-                    this.pendingVariablesResponse.body = {
-                        variables: message.body.variables || []
-                    };
+                if (message.request_seq !== undefined) {
+                    const response = this.pendingVariablesResponses.get(message.request_seq);
+                    if (response && message.body) {
+                        response.body = {
+                            variables: message.body.variables || []
+                        };
 
-                    log(`Remote: Forwarding ${message.body.variables?.length || 0} variables to VS Code`);
-                    this.sendResponse(this.pendingVariablesResponse);
-                    this.pendingVariablesResponse = undefined;
+                        log(`Remote: Forwarding ${message.body.variables?.length || 0} variables to VS Code (seq=${message.request_seq})`);
+                        this.sendResponse(response);
+                        this.pendingVariablesResponses.delete(message.request_seq);
+                    } else if (!response) {
+                        log(`Remote: ERROR: No pending response found for variables seq=${message.request_seq}, pending keys: ${Array.from(this.pendingVariablesResponses.keys())}`);
+                    }
                 }
                 break;
 
             case 'scopes':
-                if (this.pendingScopesResponse && message.body) {
-                    this.pendingScopesResponse.body = {
-                        scopes: message.body.scopes || []
-                    };
+                if (message.request_seq !== undefined) {
+                    const response = this.pendingScopesResponses.get(message.request_seq);
+                    if (response && message.body) {
+                        response.body = {
+                            scopes: message.body.scopes || []
+                        };
 
-                    log(`Remote: Forwarding ${message.body.scopes?.length || 0} scopes to VS Code`);
-                    this.sendResponse(this.pendingScopesResponse);
-                    this.pendingScopesResponse = undefined;
+                        log(`Remote: Forwarding ${message.body.scopes?.length || 0} scopes to VS Code`);
+                        this.sendResponse(response);
+                        this.pendingScopesResponses.delete(message.request_seq);
+                    }
                 }
                 break;
 
@@ -913,20 +940,26 @@ class RemoteEtchDebugAdapter extends DebugSession {
 
     protected stackTraceRequest(response: DebugProtocol.StackTraceResponse, args: DebugProtocol.StackTraceArguments): void {
         log(`Remote: Stack trace request for thread ${args.threadId}`);
-        this.pendingStackTraceResponse = response;
+        const seq = this.nextSeq;
+        this.pendingStackTraceResponses.set(seq, response);
         this.sendToEtch('stackTrace', { threadId: args.threadId });
+        log(`Remote: Stored stackTrace response with seq=${seq}`);
     }
 
     protected scopesRequest(response: DebugProtocol.ScopesResponse, args: DebugProtocol.ScopesArguments): void {
         log(`Remote: Scopes request for frame ${args.frameId}`);
-        this.pendingScopesResponse = response;
+        const seq = this.nextSeq;
+        this.pendingScopesResponses.set(seq, response);
         this.sendToEtch('scopes', { frameId: args.frameId });
+        log(`Remote: Stored scopes response with seq=${seq}`);
     }
 
     protected variablesRequest(response: DebugProtocol.VariablesResponse, args: DebugProtocol.VariablesArguments): void {
         log(`Remote: Variables request for variablesReference ${args.variablesReference}`);
-        this.pendingVariablesResponse = response;
+        const seq = this.nextSeq;
+        this.pendingVariablesResponses.set(seq, response);
         this.sendToEtch('variables', { variablesReference: args.variablesReference });
+        log(`Remote: Stored variables response with seq=${seq}, ref=${args.variablesReference}`);
     }
 
     protected threadsRequest(response: DebugProtocol.ThreadsResponse): void {

@@ -80,13 +80,20 @@ proc getValueType(val: V): string =
     return "unknown"
 
 type
+  ScopeType = enum
+    stLocals, stGlobals, stRegisters
+
+  ScopeReference = object
+    frameId: int
+    scopeType: ScopeType
+
   RegDebugServer* = ref object
     vm*: RegisterVM
     debugger*: RegEtchDebugger
     running*: bool
     sourceFile*: string  # Source file being debugged
-    # Store variable references for expandable variables
-    variableRefs*: Table[int, string]  # variablesReference -> variable name
+    # Store variable references for scopes
+    scopeRefs*: Table[int, ScopeReference]  # variablesReference -> scope info
     nextVarRef*: int
     # Variable tracking
     currentFunctionName*: string  # Current function for lifetime data lookup
@@ -117,8 +124,8 @@ proc newRegDebugServer*(program: RegBytecodeProgram, sourceFile: string): RegDeb
     debugger: debuggerInstance,
     running: false,
     sourceFile: sourceFile,
-    variableRefs: initTable[int, string](),
-    nextVarRef: 2  # Start at 2, since 1 is reserved for local scope
+    scopeRefs: initTable[int, ScopeReference](),
+    nextVarRef: 1  # Start at 1 and increment for each scope
   )
 
   # Set up debug event handler to communicate with VSCode
@@ -518,6 +525,9 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
     }
 
   of "scopes":
+    # Get frameId from request
+    let frameId = request["arguments"]["frameId"].getInt()
+
     # Update current function context for variable tracking
     if server.debugger.stackFrames.len > 0:
       let topFrame = server.debugger.stackFrames[^1]
@@ -534,24 +544,46 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
         else:
           server.lifetimeData = nil
 
-    # Return scopes for the current frame
+    # Clear old scope references to prevent stale data
+    # This is critical because we use incrementing IDs, and old references should be invalid
+    server.scopeRefs.clear()
+
+    # Use unique incrementing IDs for scopes to force VSCode to refresh variables
+    # VSCode caches variables based on variablesReference, so we need new IDs on each step
+    let localsRef = server.nextVarRef
+    inc server.nextVarRef
+    let globalsRef = server.nextVarRef
+    inc server.nextVarRef
+    let registersRef = server.nextVarRef
+    inc server.nextVarRef
+
+    # Update the scopeRefs table with current frame information
+    server.scopeRefs[localsRef] = ScopeReference(frameId: frameId, scopeType: stLocals)
+    server.scopeRefs[globalsRef] = ScopeReference(frameId: frameId, scopeType: stGlobals)
+    server.scopeRefs[registersRef] = ScopeReference(frameId: frameId, scopeType: stRegisters)
+
+    stderr.writeLine("DEBUG scopes: Created new refs - locals=" & $localsRef &
+                     " globals=" & $globalsRef & " registers=" & $registersRef)
+    stderr.flushFile()
+
+    # Return scopes for the current frame with unique IDs
     return %*{
       "success": true,
       "body": {
         "scopes": [
           %*{
             "name": "Local Variables",
-            "variablesReference": 1,
+            "variablesReference": localsRef,
             "expensive": false
           },
           %*{
             "name": "Globals",
-            "variablesReference": 2,
+            "variablesReference": globalsRef,
             "expensive": false
           },
           %*{
             "name": "Registers (Debug)",
-            "variablesReference": 3,
+            "variablesReference": registersRef,
             "expensive": false
           }
         ]
@@ -559,8 +591,28 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
     }
 
   of "variables":
+    stderr.writeLine("DEBUG variables: START handling variables request")
+    stderr.flushFile()
+
     let reference = request["arguments"]["variablesReference"].getInt()
     var variables: seq[JsonNode] = @[]
+
+    stderr.writeLine("DEBUG variables: variablesReference=" & $reference)
+    stderr.flushFile()
+
+    # Look up the scope reference to determine which scope to return
+    if not server.scopeRefs.hasKey(reference):
+      stderr.writeLine("DEBUG variables: Invalid variablesReference=" & $reference)
+      stderr.writeLine("DEBUG variables: Valid references are: " & $server.scopeRefs.keys().toSeq())
+      stderr.flushFile()
+      return %*{
+        "success": false,
+        "message": "Invalid variablesReference: " & $reference & ". This reference is stale. Call 'scopes' first to get fresh references."
+      }
+
+    let scopeRef = server.scopeRefs[reference]
+    stderr.writeLine("DEBUG variables: scopeType=" & $scopeRef.scopeType)
+    stderr.flushFile()
 
     # Update current function context for variable tracking if needed
     if server.debugger.stackFrames.len > 0:
@@ -578,10 +630,35 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
         else:
           server.lifetimeData = nil
 
-    if reference == 1:
+    if scopeRef.scopeType == stLocals:
       # Local Variables - show only defined variables using lifetime data
+      stderr.writeLine("DEBUG variables: Processing locals")
+      stderr.flushFile()
       if server.vm.currentFrame != nil:
-        let currentPC = server.vm.currentFrame.pc
+        # IMPORTANT: currentPC points to the NEXT instruction to execute.
+        # When the debugger breaks, it breaks BEFORE executing that instruction.
+        #
+        # For SCOPE checks (startPC/endPC), we use the raw PC because the variable
+        # enters scope at that instruction (even if not yet executed).
+        #
+        # For DEFINED checks (defPC), we need to check if the defining instruction
+        # has already executed, which means checking rawPC - 1.
+        let rawPC = server.vm.currentFrame.pc
+
+        # Check if we're at the start of a function
+        var atFunctionStart = false
+        if server.vm.program.functions.hasKey(server.currentFunctionName):
+          let funcInfo = server.vm.program.functions[server.currentFunctionName]
+          if rawPC == funcInfo.startPos:
+            atFunctionStart = true
+
+        # For checking if variable is defined: use rawPC-1 (last executed instruction)
+        # But at function start, use rawPC (no previous instruction in this function)
+        let defCheckPC = if atFunctionStart: rawPC else: max(rawPC - 1, 0)
+
+        stderr.writeLine("DEBUG variables: rawPC=" & $rawPC & " defCheckPC=" & $defCheckPC &
+                       " atFunctionStart=" & $atFunctionStart & " currentFunction=" & server.currentFunctionName)
+        stderr.flushFile()
 
         # Build a list of variables to show using lifetime data
         var varsToShow: seq[tuple[name: string, reg: uint8]] = @[]
@@ -589,12 +666,24 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
         # Use lifetime data to filter variables by scope
         if server.lifetimeData != nil and cast[int](server.lifetimeData) != 0:
           let lifetimeData = server.lifetimeData[]
+          stderr.writeLine("DEBUG variables: lifetimeData has " & $lifetimeData.ranges.len & " ranges")
+          stderr.flushFile()
           for lifetime in lifetimeData.ranges:
-            # Check if variable is in scope and defined at this PC
-            if lifetime.startPC <= currentPC and
-               (lifetime.endPC == -1 or lifetime.endPC >= currentPC) and
-               lifetime.defPC != -1 and lifetime.defPC <= currentPC:
+            stderr.writeLine("DEBUG variables:   var=" & lifetime.varName & " reg=" & $lifetime.register &
+                           " startPC=" & $lifetime.startPC & " endPC=" & $lifetime.endPC &
+                           " defPC=" & $lifetime.defPC)
+            stderr.flushFile()
+            # Check if variable is in scope (use raw PC)
+            # Show the variable if it's in scope, even if not yet defined
+            # We'll mark it as <uninitialized> later if defPC hasn't been reached
+            if lifetime.startPC <= rawPC and
+               (lifetime.endPC == -1 or lifetime.endPC >= rawPC):
               varsToShow.add((lifetime.varName, lifetime.register))
+              stderr.writeLine("DEBUG variables:     -> ADDED to varsToShow")
+              stderr.flushFile()
+        else:
+          stderr.writeLine("DEBUG variables: lifetimeData is nil")
+          stderr.flushFile()
 
         # Sort variables alphabetically
         varsToShow.sort(proc(a, b: tuple[name: string, reg: uint8]): int = cmp(a.name, b.name))
@@ -603,8 +692,8 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
         for (varName, regIndex) in varsToShow:
           let reg = server.vm.currentFrame.regs[regIndex]
 
-          # Check if this variable's definition PC is the current PC
-          # If so, the instruction hasn't executed yet, so the value is stale
+          # Check if this variable has been defined yet
+          # A variable is uninitialized if its defPC hasn't been reached
           var isStale = false
           if server.lifetimeData != nil and cast[int](server.lifetimeData) != 0:
             try:
@@ -616,9 +705,12 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
               let lifetimeData = lifetimeDataPtr[]  # Dereference the pointer
 
               for lifetime in lifetimeData.ranges:
-                if lifetime.varName == varName and lifetime.defPC == currentPC:
-                  # We're at the definition point but haven't executed yet
-                  isStale = true
+                if lifetime.varName == varName:
+                  # Variable is stale if:
+                  # 1. defPC is -1 (never defined, shouldn't happen)
+                  # 2. defPC > defCheckPC (definition hasn't executed yet)
+                  if lifetime.defPC == -1 or lifetime.defPC > defCheckPC:
+                    isStale = true
                   break
             except Exception:
               discard  # Ignore errors, isStale remains false
@@ -640,9 +732,13 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
             varEntry["evaluateName"] = %varName
 
           variables.add(varEntry)
-    elif reference == 2:
+    elif scopeRef.scopeType == stGlobals:
       # Global variables
+      stderr.writeLine("DEBUG variables: Processing globals, vm.globals has " & $server.vm.globals.len & " entries")
+      stderr.flushFile()
       for name, value in server.vm.globals:
+        stderr.writeLine("DEBUG variables:   global " & name & " = " & formatRegisterValue(value))
+        stderr.flushFile()
         variables.add(%*{
           "name": name,
           "value": formatRegisterValue(value),
@@ -650,10 +746,10 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
           "variablesReference": 0,
           "evaluateName": name
         })
-    elif reference == 3:
+    elif scopeRef.scopeType == stRegisters:
       # Registers (Debug) - show raw registers for VM debugging
       if server.vm.currentFrame != nil:
-        let currentPC = server.vm.currentFrame.pc
+        let rawPC = server.vm.currentFrame.pc
         for i in 0'u8..15'u8:  # Show first 16 registers
           let reg = server.vm.currentFrame.regs[i]
           if not reg.isNil():
@@ -663,8 +759,8 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
               let lifetimeData = server.lifetimeData[]
               for lifetime in lifetimeData.ranges:
                 if lifetime.register == i and
-                   lifetime.startPC <= currentPC and
-                   (lifetime.endPC == -1 or lifetime.endPC >= currentPC):
+                   lifetime.startPC <= rawPC and
+                   (lifetime.endPC == -1 or lifetime.endPC >= rawPC):
                   varInfo = " (" & lifetime.varName & ")"
                   break
             variables.add(%*{
@@ -674,12 +770,20 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
               "variablesReference": 0
             })
 
-    return %*{
+    stderr.writeLine("DEBUG variables: Returning " & $variables.len & " variables")
+    stderr.flushFile()
+
+    let varResponse = %*{
       "success": true,
       "body": {
         "variables": variables
       }
     }
+
+    stderr.writeLine("DEBUG variables: Response JSON: " & $varResponse)
+    stderr.flushFile()
+
+    return varResponse
 
   of "setVariable":
     # Handle variable modification during debugging
@@ -688,11 +792,20 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
     let name = args["name"].getStr()
     let value = args["value"].getStr()
 
-    # Currently only support setting local variables (variablesReference == 1)
-    if variablesReference != 1:
+    # Look up the scope reference
+    if not server.scopeRefs.hasKey(variablesReference):
       return %*{
         "success": false,
-        "message": "Can only set local variables"
+        "message": "Invalid variablesReference: " & $variablesReference
+      }
+
+    let scopeRef = server.scopeRefs[variablesReference]
+
+    # Currently only support setting local variables and globals
+    if scopeRef.scopeType == stRegisters:
+      return %*{
+        "success": false,
+        "message": "Cannot set register values directly"
       }
 
     # Find the variable in the current frame
@@ -1009,40 +1122,59 @@ proc runRegDebugServer*(program: RegBytecodeProgram, sourceFile: string) =
 
   # Main message loop
   while serverAlive:
+    var request: JsonNode
+    var requestCommand = ""
+    var requestSeq = -1
+
     try:
       let input = stdin.readLine()
       if input.len == 0:
         break
 
-      let request = parseJson(input)
+      request = parseJson(input)
+
+      # Extract command and seq for error reporting
+      if request.hasKey("command"):
+        requestCommand = request["command"].getStr()
+      if request.hasKey("seq"):
+        requestSeq = request["seq"].getInt()
+
       let response = server.handleDebugRequest(request)
 
       # Add request ID to response
-      if request.hasKey("seq"):
-        response["request_seq"] = request["seq"]
+      if requestSeq >= 0:
+        response["request_seq"] = %requestSeq
       response["type"] = %"response"
-      response["command"] = request["command"]
+      response["command"] = %requestCommand
 
       echo $response
       stdout.flushFile()
 
       # Check if we should exit after disconnect
-      if request["command"].getStr() == "disconnect":
+      if requestCommand == "disconnect":
         serverAlive = false
 
     except EOFError:
       break
     except:
       let error = getCurrentExceptionMsg()
+      let trace = getStackTrace()
       stderr.writeLine("DEBUG: Debug server error: " & error)
+      stderr.writeLine("DEBUG: Stack trace: " & trace)
       stderr.flushFile()
 
-      # Send error response
-      let errorResponse = %*{
+      # Send error response with command if available
+      var errorResponse = %*{
         "type": "response",
         "success": false,
         "message": error
       }
+
+      if requestCommand != "":
+        errorResponse["command"] = %requestCommand
+      if requestSeq >= 0:
+        errorResponse["request_seq"] = %requestSeq
+
       echo $errorResponse
       stdout.flushFile()
 

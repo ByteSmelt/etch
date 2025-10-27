@@ -81,8 +81,16 @@ suite "Register VM Debugger - Variables Display":
     discard server.handleDebugRequest(%*{"seq": 4, "type": "request", "command": "next", "arguments": {"threadId": 1}})
     discard server.handleDebugRequest(%*{"seq": 5, "type": "request", "command": "next", "arguments": {"threadId": 1}})
 
-    # Get local variables (reference 1 is always Local Variables from scopes)
-    let varsResp = server.handleDebugRequest(%*{"seq": 6, "type": "request", "command": "variables", "arguments": {"variablesReference": 1}})
+    # Get scopes first to retrieve the variablesReference for locals
+    let scopesResp = server.handleDebugRequest(%*{"seq": 6, "type": "request", "command": "scopes", "arguments": {"frameId": 0}})
+    let scopes = scopesResp["body"]["scopes"].getElems()
+    check scopes.len >= 2
+
+    # Get the variablesReference for Local Variables (first scope)
+    let localsRef = scopes[0]["variablesReference"].getInt()
+
+    # Now get local variables using the proper reference
+    let varsResp = server.handleDebugRequest(%*{"seq": 7, "type": "request", "command": "variables", "arguments": {"variablesReference": localsRef}})
     let variables = varsResp["body"]["variables"].getElems()
 
     check variables.len > 0
