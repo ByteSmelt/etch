@@ -42,6 +42,7 @@ type
     userCallDepth*: int     # Depth of user-defined function calls only
     stepCallDepth*: int     # User call depth when step was initiated
     callSiteLine*: int      # Line where we made the function call (to skip on return)
+    justStepped*: bool      # True when we just started stepping (skip first breakpoint)
 
     # State
     paused*: bool
@@ -65,6 +66,7 @@ proc newRegEtchDebugger*(): RegEtchDebugger =
     userCallDepth: 0,
     stepCallDepth: 0,
     callSiteLine: -1,
+    justStepped: false,
     paused: false,
     lastFile: "",
     lastLine: 0,
@@ -146,10 +148,12 @@ proc updateStackFrameRegisters*(debugger: RegEtchDebugger, registers: seq[tuple[
 proc step*(debugger: RegEtchDebugger, mode: StepMode) =
   debugger.stepMode = mode
   debugger.stepCallDepth = debugger.userCallDepth
+  debugger.justStepped = true  # Skip breakpoint at current location
   debugger.paused = false
 
 proc continueExecution*(debugger: RegEtchDebugger) =
   debugger.stepMode = smContinue
+  debugger.justStepped = false  # Don't skip breakpoints on continue
   debugger.paused = false
 
 proc pause*(debugger: RegEtchDebugger) =
@@ -157,8 +161,14 @@ proc pause*(debugger: RegEtchDebugger) =
 
 proc shouldBreak*(debugger: RegEtchDebugger, pc: int, file: string, line: int): bool =
   debugger.currentPC = pc
-  if debugger.hasBreakpoint(file, line):
+
+  # Skip breakpoint check if we just started stepping (to avoid hitting the same breakpoint)
+  if not debugger.justStepped and debugger.hasBreakpoint(file, line):
     return true
+
+  # Clear the justStepped flag after first instruction
+  if debugger.justStepped:
+    debugger.justStepped = false
 
   # Check if we should break BEFORE updating lastPC
   var shouldBreakNow = false

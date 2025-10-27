@@ -245,6 +245,10 @@ fn main() {
 - **[Compile-Time Evaluation](comptime.md)** - Metaprogramming, file embedding, code injection
 - **[Operator Overloading](operator-overloading.md)** - Custom operators for types
 
+### Development Tools
+- **[Debugging](debugging.md)** - Direct, remote, and compound debugging modes
+- **[C API](c-api.md)** - Embedding Etch in C/C++ applications
+
 ## Example Programs
 
 Etch comes with comprehensive examples in the `examples/` directory:

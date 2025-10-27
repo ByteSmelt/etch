@@ -117,6 +117,36 @@
                 "default": true
               }
             }
+          },
+          "attach": {
+            "required": [],
+            "properties": {
+              "host": {
+                "type": "string",
+                "description": "Host to connect to for remote debugging.",
+                "default": "127.0.0.1"
+              },
+              "port": {
+                "type": "number",
+                "description": "Port to connect to for remote debugging.",
+                "default": 9823
+              },
+              "timeout": {
+                "type": "number",
+                "description": "Connection timeout in milliseconds.",
+                "default": 30000
+              },
+              "stopOnEntry": {
+                "type": "boolean",
+                "description": "Automatically stop after attach.",
+                "default": true
+              },
+              "trace": {
+                "type": "boolean",
+                "description": "Enable logging of the Debug Adapter Protocol.",
+                "default": true
+              }
+            }
           }
         },
         "initialConfigurations": [
@@ -149,6 +179,19 @@
               "name": "Debug C Binary with Etch",
               "program": "^\"\\${workspaceFolder}/script.etch\"",
               "debugExecutable": "^\"\\${workspaceFolder}/my_app\"",
+              "stopOnEntry": true
+            }
+          },
+          {
+            "label": "Etch Debug: Attach to Remote",
+            "description": "Attach to an Etch VM running with ETCH_DEBUG_PORT environment variable.",
+            "body": {
+              "type": "etch",
+              "request": "attach",
+              "name": "Attach to Etch Remote Debugger",
+              "host": "127.0.0.1",
+              "port": 9823,
+              "timeout": 30000,
               "stopOnEntry": true
             }
           }

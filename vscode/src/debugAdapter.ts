@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as net from 'net';
 import { spawn, ChildProcess } from 'child_process';
 import {
     DebugSession, InitializedEvent, TerminatedEvent, StoppedEvent, OutputEvent,
@@ -27,7 +28,13 @@ export class EtchDebugAdapterProvider implements vscode.DebugAdapterDescriptorFa
         log(`Session ID: ${session.id}, Type: ${session.type}, Name: ${session.name}`);
         log(`Session configuration: ${JSON.stringify(session.configuration, null, 2)}`);
 
-        // Return an inline debug adapter - VS Code will create the debug session in-process
+        // Check if this is an attach request (remote debugging)
+        if (session.configuration.request === 'attach') {
+            log('Creating remote attach debug adapter');
+            return new vscode.DebugAdapterInlineImplementation(new RemoteEtchDebugAdapter());
+        }
+
+        // Return an inline debug adapter for launch requests
         return new vscode.DebugAdapterInlineImplementation(new EtchDebugAdapter());
     }
 }
@@ -484,6 +491,475 @@ class EtchDebugAdapter extends DebugSession {
         if (this.etchProcess) {
             this.etchProcess.kill();
             this.etchProcess = undefined;
+        }
+        super.shutdown();
+    }
+}
+
+// Remote Debug Adapter - connects to TCP server instead of spawning process
+class RemoteEtchDebugAdapter extends DebugSession {
+    private static THREAD_ID = 1;
+    private socket: net.Socket | undefined;
+    private nextSeq = 1;
+    private currentFile: string = '';
+    private currentLine: number = 0;
+    private initialized = false;
+    private pendingRequests: Array<{command: string, args: any, response?: any}> = [];
+
+    // Connection state tracking
+    private connectionTimer: NodeJS.Timeout | undefined;
+    private retryTimer: NodeJS.Timeout | undefined;
+    private connecting = false;
+
+    // Pending responses waiting for Etch server replies
+    private pendingStackTraceResponse: DebugProtocol.StackTraceResponse | undefined;
+    private pendingVariablesResponse: DebugProtocol.VariablesResponse | undefined;
+    private pendingScopesResponse: DebugProtocol.ScopesResponse | undefined;
+    private pendingCustomResponses: Map<string, any> = new Map();
+
+    constructor() {
+        super();
+        log('RemoteEtchDebugAdapter created');
+        this.setDebuggerLinesStartAt1(true);
+        this.setDebuggerColumnsStartAt1(true);
+    }
+
+    protected initializeRequest(response: DebugProtocol.InitializeResponse, args: DebugProtocol.InitializeRequestArguments): void {
+        log('Remote: Handling initialize request');
+
+        response.body = response.body || {};
+        response.body.supportsConfigurationDoneRequest = true;
+        response.body.supportsBreakpointLocationsRequest = false;
+        response.body.supportsStepBack = false;
+        response.body.supportsRestartFrame = false;
+        response.body.supportsTerminateRequest = true;
+        response.body.supportsSetVariable = true;
+
+        this.sendResponse(response);
+        this.sendEvent(new InitializedEvent());
+        log('Remote: Sent initialize response and initialized event');
+    }
+
+    protected attachRequest(response: DebugProtocol.AttachResponse, args: DebugProtocol.AttachRequestArguments): void {
+        log('Remote: Handling attach request');
+        log(`Remote: Attach args: ${JSON.stringify(args, null, 2)}`);
+
+        const attachArgs = args as any;
+        const host = attachArgs.host || '127.0.0.1';
+        const port = attachArgs.port || 9823;
+        const timeout = attachArgs.timeout || 30000;  // 30 second default timeout
+
+        log(`Remote: Connecting to ${host}:${port} (timeout: ${timeout}ms)`);
+
+        // Simple retry loop with clean connection handling
+        let connected = false;
+        const retryInterval = 500;  // Try every 500ms
+        const maxRetries = Math.floor(timeout / retryInterval);
+        let retryCount = 0;
+        let buffer = '';
+
+        const attemptConnection = () => {
+            // Check if we should stop (max retries or explicitly cancelled)
+            if (retryCount >= maxRetries) {
+                log(`Remote: Max retries (${maxRetries}) exceeded`);
+                this.sendErrorResponse(response, 2002,
+                    `Failed to connect after ${retryCount} attempts. ` +
+                    `Make sure the C++ application is running with ETCH_DEBUG_PORT=${port}`);
+                return;
+            }
+
+            // Check if cancelled (only if we were connecting)
+            if (retryCount > 0 && this.connecting === false) {
+                log(`Remote: Connection cancelled after ${retryCount} attempts`);
+                this.sendErrorResponse(response, 2002, `Connection cancelled`);
+                return;
+            }
+
+            retryCount++;
+            this.connecting = true;
+            log(`Remote: Connection attempt ${retryCount}/${maxRetries}`);
+
+            // Create fresh socket for each attempt
+            if (this.socket) {
+                this.socket.removeAllListeners();
+                try { this.socket.destroy(); } catch (e) { /* ignore */ }
+            }
+
+            this.socket = new net.Socket();
+
+            // Success handler
+            this.socket.once('connect', () => {
+                this.connecting = false;
+                connected = true;
+
+                if (this.connectionTimer) {
+                    clearTimeout(this.connectionTimer);
+                    this.connectionTimer = undefined;
+                }
+
+                log(`Remote: Connected to Etch debug server at ${host}:${port}`);
+                this.sendResponse(response);
+
+                // Set up data handler for established connection
+                this.socket!.on('data', (data) => {
+                    const dataStr = data.toString();
+                    log(`Remote: Raw data received (${dataStr.length} bytes): ${dataStr.substring(0, 200)}...`);
+
+                    buffer += dataStr;
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+
+                    log(`Remote: Processing ${lines.length} complete lines`);
+
+                    for (const line of lines) {
+                        if (line.trim()) {
+                            try {
+                                const message = JSON.parse(line.trim());
+                                log(`Remote: Received from Etch: ${JSON.stringify(message, null, 2)}`);
+                                this.handleEtchMessage(message);
+                            } catch (e) {
+                                log(`Remote: Failed to parse JSON: ${line.trim()}: ${e}`);
+                            }
+                        }
+                    }
+                });
+
+                // Handle disconnection after successful connection
+                this.socket!.once('close', () => {
+                    log('Remote: Connection closed');
+                    if (this.initialized) {
+                        this.sendEvent(new TerminatedEvent());
+                    }
+                });
+
+                // Send initialization sequence
+                setTimeout(() => {
+                    this.sendToEtch('initialize', {});
+                    setTimeout(() => {
+                        const stopOnEntry = attachArgs.stopOnEntry || false;
+                        log(`Remote: Sending launch with stopOnEntry: ${stopOnEntry}`);
+                        this.sendToEtch('launch', {
+                            program: attachArgs.program || '<embedded>',
+                            stopOnEntry: stopOnEntry
+                        });
+                        this.initialized = true;
+                        this.processPendingRequests();
+                    }, 100);
+                }, 100);
+            });
+
+            // Error handler - retry on ECONNREFUSED
+            this.socket.once('error', (error) => {
+                if (error.message.includes('ECONNREFUSED')) {
+                    log(`Remote: Connection refused (attempt ${retryCount}/${maxRetries}), retrying in ${retryInterval}ms...`);
+                    this.retryTimer = setTimeout(attemptConnection, retryInterval);
+                } else {
+                    // Other error - don't retry
+                    log(`Remote: Connection error: ${error.message}`);
+                    this.connecting = false;
+                    if (!this.initialized) {
+                        this.sendErrorResponse(response, 2002, `Failed to connect: ${error.message}`);
+                    }
+                }
+            });
+
+            // Attempt connection
+            this.socket.connect(port, host);
+        };
+
+        // Start retry loop
+        attemptConnection();
+    }
+
+    private processPendingRequests(): void {
+        log(`Remote: Processing ${this.pendingRequests.length} pending requests`);
+
+        const requests = this.pendingRequests;
+        this.pendingRequests = [];
+
+        for (const req of requests) {
+            this.sendToEtch(req.command, req.args);
+
+            if (req.response) {
+                if (req.command === 'setBreakpoints') {
+                    req.response.body = {
+                        breakpoints: req.args.lines.map((line: number) => ({ verified: true, line: line }))
+                    };
+                }
+                this.sendResponse(req.response);
+            }
+        }
+    }
+
+    private handleEtchMessage(message: any): void {
+        if (message.type === 'event') {
+            log(`Remote: Forwarding event to VSCode: ${message.event}`);
+
+            switch (message.event) {
+                case 'stopped':
+                    if (message.body.file) {
+                        this.currentFile = message.body.file;
+                    }
+                    if (message.body.line) {
+                        this.currentLine = message.body.line;
+                    }
+
+                    this.sendEvent(new StoppedEvent(
+                        message.body.reason || 'pause',
+                        message.body.threadId || RemoteEtchDebugAdapter.THREAD_ID
+                    ));
+                    break;
+
+                case 'terminated':
+                    this.sendEvent(new TerminatedEvent());
+                    break;
+
+                case 'output':
+                    this.sendEvent(new OutputEvent(message.body.output, message.body.category));
+                    break;
+
+                default:
+                    log(`Remote: Unhandled event type: ${message.event}`);
+            }
+        } else if (message.type === 'response') {
+            log(`Remote: Received response from Etch: ${JSON.stringify(message)}`);
+            this.handleEtchResponse(message);
+        }
+    }
+
+    private handleEtchResponse(message: any): void {
+        if (!message.command) {
+            log('Remote: Warning: Received response without command field');
+            return;
+        }
+
+        switch (message.command) {
+            case 'stackTrace':
+                if (this.pendingStackTraceResponse && message.body) {
+                    const stackFrames = message.body.stackFrames?.map((frame: any, index: number) => {
+                        const source = new Source(frame.source.name, frame.source.path);
+                        return new StackFrame(frame.id, frame.name, source, frame.line, frame.column);
+                    }) || [];
+
+                    this.pendingStackTraceResponse.body = {
+                        stackFrames: stackFrames,
+                        totalFrames: message.body.totalFrames || stackFrames.length
+                    };
+
+                    log(`Remote: Forwarding ${stackFrames.length} stack frames to VS Code`);
+                    this.sendResponse(this.pendingStackTraceResponse);
+                    this.pendingStackTraceResponse = undefined;
+                }
+                break;
+
+            case 'variables':
+                if (this.pendingVariablesResponse && message.body) {
+                    this.pendingVariablesResponse.body = {
+                        variables: message.body.variables || []
+                    };
+
+                    log(`Remote: Forwarding ${message.body.variables?.length || 0} variables to VS Code`);
+                    this.sendResponse(this.pendingVariablesResponse);
+                    this.pendingVariablesResponse = undefined;
+                }
+                break;
+
+            case 'scopes':
+                if (this.pendingScopesResponse && message.body) {
+                    this.pendingScopesResponse.body = {
+                        scopes: message.body.scopes || []
+                    };
+
+                    log(`Remote: Forwarding ${message.body.scopes?.length || 0} scopes to VS Code`);
+                    this.sendResponse(this.pendingScopesResponse);
+                    this.pendingScopesResponse = undefined;
+                }
+                break;
+
+            case 'setVariable':
+                const setVarResponse = this.pendingCustomResponses.get('setVariable');
+                if (setVarResponse && message.body) {
+                    setVarResponse.body = {
+                        value: message.body.value,
+                        type: message.body.type,
+                        variablesReference: message.body.variablesReference || 0
+                    };
+
+                    log(`Remote: Variable set successfully: ${message.body.value}`);
+                    this.sendResponse(setVarResponse);
+                    this.pendingCustomResponses.delete('setVariable');
+                } else if (setVarResponse && !message.success) {
+                    this.sendErrorResponse(setVarResponse, 3001, message.message || 'Failed to set variable');
+                    this.pendingCustomResponses.delete('setVariable');
+                }
+                break;
+
+            default:
+                log(`Remote: Unhandled response command: ${message.command}`);
+                break;
+        }
+    }
+
+    private sendToEtch(command: string, args?: any): void {
+        if (!this.socket) {
+            log(`Remote: ERROR: Cannot send ${command} - socket not connected`);
+            return;
+        }
+
+        const request = {
+            seq: this.nextSeq++,
+            type: 'request',
+            command: command,
+            arguments: args || {}
+        };
+
+        const message = JSON.stringify(request) + '\n';
+        log(`Remote: Sending to Etch: ${message.trim()}`);
+        this.socket.write(message);
+    }
+
+    protected disconnectRequest(response: DebugProtocol.DisconnectResponse, args: DebugProtocol.DisconnectArguments): void {
+        log('Remote: Handling disconnect request');
+
+        // Cancel any pending connection timers
+        if (this.connectionTimer) {
+            clearTimeout(this.connectionTimer);
+            this.connectionTimer = undefined;
+            log('Remote: Cancelled connection timeout timer');
+        }
+
+        if (this.retryTimer) {
+            clearTimeout(this.retryTimer);
+            this.retryTimer = undefined;
+            log('Remote: Cancelled retry timer');
+        }
+
+        this.connecting = false;
+
+        // Send disconnect if we're connected
+        if (this.socket && this.initialized) {
+            this.sendToEtch('disconnect');
+            setTimeout(() => {
+                this.socket?.destroy();
+                this.socket = undefined;
+                log('Remote: Socket destroyed after disconnect');
+            }, 100);
+        } else if (this.socket) {
+            // Just destroy the socket if we're still connecting
+            this.socket.destroy();
+            this.socket = undefined;
+            log('Remote: Socket destroyed (was still connecting)');
+        }
+
+        this.sendResponse(response);
+    }
+
+    // Forward all debug protocol methods to Etch server (similar to EtchDebugAdapter)
+    protected setBreakPointsRequest(response: DebugProtocol.SetBreakpointsResponse, args: DebugProtocol.SetBreakpointsArguments): void {
+        log('Remote: Setting breakpoints');
+
+        if (!this.initialized) {
+            this.pendingRequests.push({
+                command: 'setBreakpoints',
+                args: {
+                    path: args.source.path,
+                    lines: args.breakpoints?.map(bp => bp.line) || []
+                },
+                response: response
+            });
+            return;
+        }
+
+        this.sendToEtch('setBreakpoints', {
+            path: args.source.path,
+            lines: args.breakpoints?.map(bp => bp.line) || []
+        });
+
+        response.body = {
+            breakpoints: args.breakpoints?.map(bp => ({ verified: true, line: bp.line })) || []
+        };
+        this.sendResponse(response);
+    }
+
+    protected continueRequest(response: DebugProtocol.ContinueResponse, args: DebugProtocol.ContinueArguments): void {
+        log('Remote: Continue request');
+        this.sendToEtch('continue');
+        this.sendResponse(response);
+    }
+
+    protected nextRequest(response: DebugProtocol.NextResponse, args: DebugProtocol.NextArguments): void {
+        log('Remote: Next (step over) request');
+        this.sendToEtch('next');
+        this.sendResponse(response);
+    }
+
+    protected stepInRequest(response: DebugProtocol.StepInResponse, args: DebugProtocol.StepInArguments): void {
+        log('Remote: Step in request');
+        this.sendToEtch('stepIn');
+        this.sendResponse(response);
+    }
+
+    protected stepOutRequest(response: DebugProtocol.StepOutResponse, args: DebugProtocol.StepOutArguments): void {
+        log('Remote: Step out request');
+        this.sendToEtch('stepOut');
+        this.sendResponse(response);
+    }
+
+    protected pauseRequest(response: DebugProtocol.PauseResponse, args: DebugProtocol.PauseArguments): void {
+        log('Remote: Pause request');
+        this.sendToEtch('pause');
+        this.sendResponse(response);
+    }
+
+    protected stackTraceRequest(response: DebugProtocol.StackTraceResponse, args: DebugProtocol.StackTraceArguments): void {
+        log(`Remote: Stack trace request for thread ${args.threadId}`);
+        this.pendingStackTraceResponse = response;
+        this.sendToEtch('stackTrace', { threadId: args.threadId });
+    }
+
+    protected scopesRequest(response: DebugProtocol.ScopesResponse, args: DebugProtocol.ScopesArguments): void {
+        log(`Remote: Scopes request for frame ${args.frameId}`);
+        this.pendingScopesResponse = response;
+        this.sendToEtch('scopes', { frameId: args.frameId });
+    }
+
+    protected variablesRequest(response: DebugProtocol.VariablesResponse, args: DebugProtocol.VariablesArguments): void {
+        log(`Remote: Variables request for variablesReference ${args.variablesReference}`);
+        this.pendingVariablesResponse = response;
+        this.sendToEtch('variables', { variablesReference: args.variablesReference });
+    }
+
+    protected threadsRequest(response: DebugProtocol.ThreadsResponse): void {
+        log('Remote: Threads request');
+        response.body = {
+            threads: [
+                new Thread(RemoteEtchDebugAdapter.THREAD_ID, "main")
+            ]
+        };
+        this.sendResponse(response);
+    }
+
+    protected configurationDoneRequest(response: DebugProtocol.ConfigurationDoneResponse, args: DebugProtocol.ConfigurationDoneArguments): void {
+        log('Remote: Configuration done request');
+        this.sendToEtch('configurationDone');
+        this.sendResponse(response);
+    }
+
+    protected setVariableRequest(response: DebugProtocol.SetVariableResponse, args: DebugProtocol.SetVariableArguments): void {
+        log(`Remote: Set variable request: ${args.name} = ${args.value}`);
+        this.pendingCustomResponses.set('setVariable', response);
+        this.sendToEtch('setVariable', {
+            variablesReference: args.variablesReference,
+            name: args.name,
+            value: args.value
+        });
+    }
+
+    public shutdown(): void {
+        log('Remote: Debug adapter shutdown called');
+        if (this.socket) {
+            this.socket.destroy();
+            this.socket = undefined;
         }
         super.shutdown();
     }

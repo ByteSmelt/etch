@@ -133,25 +133,29 @@ proc newRegDebugServer*(program: RegBytecodeProgram, sourceFile: string): RegDeb
 
   # Set up output callback to capture program output and send to VSCode Debug Console
   vmInstance.outputCallback = proc(output: string) =
-    let outputEvent = %*{
-      "type": "event",
-      "event": "output",
-      "body": {
-        "category": "stdout",
-        "output": output
-      }
+    let outputBody = %*{
+      "category": "stdout",
+      "output": output
     }
-    echo $outputEvent
-    stdout.flushFile()
+    debuggerInstance.sendDebugEvent("output", outputBody)
 
 proc executeUntilBreak(server: RegDebugServer, maxInstructions: int = 10000): bool =
   ## Execute VM until next break or completion
 
+  stderr.writeLine("DEBUG: executeUntilBreak - starting, paused=" & $server.debugger.paused)
+  stderr.flushFile()
+
   # Unpause the debugger before executing
   server.debugger.paused = false
 
+  stderr.writeLine("DEBUG: executeUntilBreak - calling execute()")
+  stderr.flushFile()
+
   # Call the main execute loop - it will return when paused or completed
   let exitCode = execute(server.vm, verbose = false)
+
+  stderr.writeLine("DEBUG: executeUntilBreak - execute returned exitCode=" & $exitCode & ", paused=" & $server.debugger.paused)
+  stderr.flushFile()
 
   if exitCode == -1:
     # Paused for debugging
@@ -278,17 +282,12 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
       server.running = true
 
       # Send stopped event to indicate we're paused at entry
-      let stoppedEvent = %*{
-        "type": "event",
-        "event": "stopped",
-        "body": {
-          "reason": "entry",
-          "threadId": 1,
-          "allThreadsStopped": true
-        }
+      let stoppedEventBody = %*{
+        "reason": "entry",
+        "threadId": 1,
+        "allThreadsStopped": true
       }
-      echo $stoppedEvent
-      stdout.flushFile()
+      server.debugger.sendDebugEvent("stopped", stoppedEventBody)
     else:
       server.running = true
 
@@ -339,26 +338,14 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
     if not stillRunning:
       # Program terminated
       server.running = false
-      let terminatedEvent = %*{
-        "type": "event",
-        "event": "terminated",
-        "body": {}
-      }
-      echo $terminatedEvent
-      stdout.flushFile()
+      server.debugger.sendDebugEvent("terminated", %*{})
     elif server.debugger.paused:
       # Hit a breakpoint
-      let stoppedEvent = %*{
-        "type": "event",
-        "event": "stopped",
-        "body": {
-          "reason": "breakpoint",
-          "threadId": 1,
-          "allThreadsStopped": true
-        }
-      }
-      echo $stoppedEvent
-      stdout.flushFile()
+      server.debugger.sendDebugEvent("stopped", %*{
+        "reason": "breakpoint",
+        "threadId": 1,
+        "allThreadsStopped": true
+      })
 
     return %*{"success": true}
 
@@ -381,29 +368,29 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
     # Execute until we step
     let stillRunning = executeUntilBreak(server)
 
+    stderr.writeLine("DEBUG: next - after executeUntilBreak, stillRunning=" & $stillRunning &
+                     " paused=" & $server.debugger.paused &
+                     " running=" & $server.running)
+    stderr.flushFile()
+
     if not stillRunning:
       # Program terminated
       server.running = false
-      let terminatedEvent = %*{
-        "type": "event",
-        "event": "terminated",
-        "body": {}
-      }
-      echo $terminatedEvent
-      stdout.flushFile()
+      stderr.writeLine("DEBUG: next - sending terminated event")
+      stderr.flushFile()
+      server.debugger.sendDebugEvent("terminated", %*{})
     elif server.debugger.paused:
       # Stopped at next line
-      let stoppedEvent = %*{
-        "type": "event",
-        "event": "stopped",
-        "body": {
-          "reason": "step",
-          "threadId": 1,
-          "allThreadsStopped": true
-        }
-      }
-      echo $stoppedEvent
-      stdout.flushFile()
+      stderr.writeLine("DEBUG: next - sending stopped event")
+      stderr.flushFile()
+      server.debugger.sendDebugEvent("stopped", %*{
+        "reason": "step",
+        "threadId": 1,
+        "allThreadsStopped": true
+      })
+    else:
+      stderr.writeLine("DEBUG: next - WARNING: stillRunning but not paused!")
+      stderr.flushFile()
 
     return %*{"success": true}
 
@@ -417,26 +404,14 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
     if not stillRunning:
       # Program terminated
       server.running = false
-      let terminatedEvent = %*{
-        "type": "event",
-        "event": "terminated",
-        "body": {}
-      }
-      echo $terminatedEvent
-      stdout.flushFile()
+      server.debugger.sendDebugEvent("terminated", %*{})
     elif server.debugger.paused:
       # Stopped at next line
-      let stoppedEvent = %*{
-        "type": "event",
-        "event": "stopped",
-        "body": {
-          "reason": "step",
-          "threadId": 1,
-          "allThreadsStopped": true
-        }
-      }
-      echo $stoppedEvent
-      stdout.flushFile()
+      server.debugger.sendDebugEvent("stopped", %*{
+        "reason": "step",
+        "threadId": 1,
+        "allThreadsStopped": true
+      })
 
     return %*{"success": true}
 
@@ -450,26 +425,14 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
     if not stillRunning:
       # Program terminated
       server.running = false
-      let terminatedEvent = %*{
-        "type": "event",
-        "event": "terminated",
-        "body": {}
-      }
-      echo $terminatedEvent
-      stdout.flushFile()
+      server.debugger.sendDebugEvent("terminated", %*{})
     elif server.debugger.paused:
       # Stopped after return
-      let stoppedEvent = %*{
-        "type": "event",
-        "event": "stopped",
-        "body": {
-          "reason": "step",
-          "threadId": 1,
-          "allThreadsStopped": true
-        }
-      }
-      echo $stoppedEvent
-      stdout.flushFile()
+      server.debugger.sendDebugEvent("stopped", %*{
+        "reason": "step",
+        "threadId": 1,
+        "allThreadsStopped": true
+      })
 
     return %*{"success": true}
 

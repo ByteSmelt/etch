@@ -2,10 +2,10 @@
 # C FFI interface for using Etch as an embedded scripting engine
 # This module provides a clean C API that can be linked into C/C++ applications
 
-import std/[tables, os, options, json]
+import std/[tables, os, options, json, strutils]
 import ./[compiler]
 import ./common/[types]
-import ./interpreter/[regvm, regvm_exec, regvm_debugserver]
+import ./interpreter/[regvm, regvm_exec, regvm_debugserver, regvm_debugserver_remote]
 
 # C-compatible types
 type
@@ -185,6 +185,13 @@ proc etch_compile_file*(ctx: EtchContext, path: cstring): cint {.exportc, cdecl,
 
 proc etch_execute*(ctx: EtchContext): cint {.exportc, cdecl, dynlib.} =
   ## Execute the compiled program (runs main function if it exists)
+  ##
+  ## Automatic Remote Debugging:
+  ## If debug mode is enabled and ETCH_DEBUG_PORT environment variable is set,
+  ## automatically starts a TCP debug server and waits for connection.
+  ##
+  ## Example: ETCH_DEBUG_PORT=9823 ./my_app
+  ##
   ## Returns: 0 on success, non-zero on error
   if ctx == nil:
     return -1
@@ -194,12 +201,70 @@ proc etch_execute*(ctx: EtchContext): cint {.exportc, cdecl, dynlib.} =
       ctx.lastError = "No program compiled"
       return 1
 
+    # Check if remote debugging should be enabled
+    let debugPortEnv = getEnv("ETCH_DEBUG_PORT")
+    let debugTimeoutEnv = getEnv("ETCH_DEBUG_TIMEOUT", "5000")  # Default 5 second timeout
+
+    if ctx.options.debug and debugPortEnv.len > 0:
+      # Remote debugging requested - start TCP debug server
+      try:
+        let port = parseInt(debugPortEnv)
+        let timeoutMs = parseInt(debugTimeoutEnv)
+
+        stderr.writeLine("DEBUG: Starting remote debug server on port " & $port)
+        stderr.writeLine("DEBUG: Waiting " & $timeoutMs & "ms for debugger connection...")
+        stderr.flushFile()
+
+        # Create remote debug server
+        let remoteServer = newRegRemoteDebugServer(ctx.program, ctx.options.sourceFile, port)
+
+        # Start listening
+        if not remoteServer.startListening():
+          stderr.writeLine("WARNING: Failed to start debug server, continuing without debugger")
+          stderr.flushFile()
+          # Continue execution without debugger
+          let exitCode = ctx.vm.execute(ctx.options.verbose)
+          ctx.lastError = ""
+          return cint(exitCode)
+
+        # Wait for connection with timeout
+        if remoteServer.acceptConnection(timeoutMs):
+          stderr.writeLine("DEBUG: Debugger connected! Starting debug session")
+          stderr.flushFile()
+
+          # Run the debug message loop
+          # This handles all debug protocol communication
+          discard remoteServer.runMessageLoop()
+
+          # Clean up
+          remoteServer.close()
+          ctx.lastError = ""
+          return 0
+        else:
+          stderr.writeLine("WARNING: No debugger connected within timeout, continuing execution")
+          stderr.flushFile()
+          remoteServer.close()
+
+          # Continue execution without debugger
+          let exitCode = ctx.vm.execute(ctx.options.verbose)
+          ctx.lastError = ""
+          return cint(exitCode)
+
+      except ValueError as e:
+        stderr.writeLine("WARNING: Invalid ETCH_DEBUG_PORT value: " & e.msg)
+        stderr.writeLine("WARNING: Continuing execution without remote debugger")
+        stderr.flushFile()
+        # Fall through to normal execution
+
+    # Normal execution (no remote debugging)
     let exitCode = ctx.vm.execute(ctx.options.verbose)
     ctx.lastError = ""
     return cint(exitCode)
 
   except Exception as e:
     ctx.lastError = "Execution error: " & e.msg
+    stderr.writeLine("ERROR: " & e.msg)
+    stderr.flushFile()
     return 1
 
 proc etch_call_function*(ctx: EtchContext, name: cstring,

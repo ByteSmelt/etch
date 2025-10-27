@@ -68,6 +68,7 @@ class EtchConfigurationProvider implements vscode.DebugConfigurationProvider {
     ): vscode.ProviderResult<vscode.DebugConfiguration> {
         log('resolveDebugConfiguration called');
         log(`Folder: ${folder ? folder.uri.fsPath : 'undefined'}`);
+        log(`Config type: ${config.type}, request: ${config.request}, name: ${config.name}`);
         log(`Initial config: ${JSON.stringify(config, null, 2)}`);
 
         // if launch.json is missing or empty
@@ -86,14 +87,36 @@ class EtchConfigurationProvider implements vscode.DebugConfigurationProvider {
             }
         }
 
+        // Check request type explicitly
+        log(`Checking request type: '${config.request}' (type: ${typeof config.request})`);
+
+        // For attach requests, we don't need a program
+        if (config.request === 'attach') {
+            log('✓ Attach request detected - skipping program validation');
+            // Set defaults for remote debugging
+            if (!config.host) {
+                config.host = '127.0.0.1';
+                log('Set default host: 127.0.0.1');
+            }
+            if (!config.port) {
+                config.port = 9823;
+                log('Set default port: 9823');
+            }
+            log(`✓ Attach config validated: host=${config.host}, port=${config.port}`);
+            return config;
+        }
+
+        // For launch requests, we need a program
+        log('Not an attach request, checking for program field');
         if (!config.program) {
-            log('No program specified in configuration, showing error message');
+            log('ERROR: No program specified for launch request');
             return vscode.window.showInformationMessage("Cannot find a program to debug").then(_ => {
                 log('User acknowledged missing program error, aborting launch');
                 return undefined;	// abort launch
             });
         }
 
+        log(`✓ Launch config validated: program=${config.program}`);
         log(`Final resolved config: ${JSON.stringify(config, null, 2)}`);
         return config;
     }

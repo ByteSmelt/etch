@@ -185,8 +185,15 @@ using HostFunction = std::function<Value(const std::vector<Value>&)>;
  */
 class Context {
 public:
-    // Constructor
+    // Default constructor
     Context() : ctx_(etch_context_new()) {
+        if (!ctx_) {
+            throw Exception("Failed to create Etch context");
+        }
+    }
+
+    // Constructor with options
+    Context(bool verbose, bool debug) : ctx_(etch_context_new_with_options(verbose ? 1 : 0, debug ? 1 : 0)) {
         if (!ctx_) {
             throw Exception("Failed to create Etch context");
         }

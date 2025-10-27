@@ -71,6 +71,21 @@ Welcome to the Etch programming language documentation!
    - Use cases and best practices
    - When to use UFCS instead
 
+### Development Tools
+
+10. **[debugging.md](debugging.md)** - Debugging Etch programs
+   - Direct debugging mode (standalone scripts)
+   - Remote debugging mode (embedded in C/C++ apps)
+   - Compound debugging (C++ + Etch simultaneously)
+   - Breakpoints, stepping, and variable inspection
+   - VSCode integration and DAP support
+
+11. **[c-api.md](c-api.md)** - C/C++ API
+   - Embedding Etch in C/C++ applications
+   - Compiling and executing scripts
+   - Context management
+   - Error handling
+
 ## Learning Path
 
 ### For Beginners
@@ -94,9 +109,10 @@ Welcome to the Etch programming language documentation!
 2. Master [compile-time evaluation](comptime.md) for metaprogramming
 3. Learn [operator overloading](operator-overloading.md) for custom types
 4. Explore [C FFI](modules.md#c-ffi-foreign-function-interface) for system programming
-5. C API [C API](c-api.md) for embeddings
-6. Study advanced [pattern matching](control-flow.md#pattern-matching) techniques
-7. Explore [higher-order functions](functions.md#higher-order-functions)
+5. Learn [C API](c-api.md) for embedding Etch in C/C++ applications
+6. Master [debugging](debugging.md) with compound C++ + Etch debugging
+7. Study advanced [pattern matching](control-flow.md#pattern-matching) techniques
+8. Explore [higher-order functions](functions.md#higher-order-functions)
 
 ## Quick Reference
 
