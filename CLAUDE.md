@@ -1,7 +1,7 @@
 # Etch Language Implementation
 
 ## Directives
-- **Never change directory when executing commands, stay in the project root (where this file lives)**
+- **Never change directory with `cd` when executing commands, stay in the project root (where this file lives)**
 - **Never commit or stash code using git, use it only to inspect previous commits or changed files only**
 - **Never ever think about giving up, like "we should do Y but because it's too much, for now we do X" and you end up shortcutting to tech debt and fake implementations**
 - **When you create new tests in examples (both passing and failing) add the corresponding validation files .pass and .fail**
