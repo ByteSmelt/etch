@@ -37,7 +37,6 @@ proc hasEvent(responses: seq[JsonNode], event: string): bool =
 
 suite "Register VM Debugger Integration":
   # Ensure etch binary is built before running tests
-  discard ensureEtchBinary()
   let etchExe = findEtchExecutable()
 
   setup:

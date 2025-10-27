@@ -3,7 +3,6 @@ import test_utils
 
 suite "While Loop Debugging":
   # Ensure etch binary is built before running tests
-  discard ensureEtchBinary()
   let etchExe = findEtchExecutable()
 
   test "Stepping alternates between while statement and body":

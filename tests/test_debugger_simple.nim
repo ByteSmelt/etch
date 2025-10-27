@@ -6,7 +6,6 @@ import test_utils
 
 suite "Register VM Debugger - Basic":
   # Ensure etch binary is built before running tests
-  discard ensureEtchBinary()
   let etchExe = findEtchExecutable()
 
   test "Debug server starts and responds to initialize":

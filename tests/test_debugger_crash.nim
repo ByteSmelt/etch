@@ -13,7 +13,6 @@ proc parseJsonLines(output: string): seq[JsonNode] =
         discard
 
 suite "Debugger Crash Tests":
-  discard ensureEtchBinary()
   let etchExe = findEtchExecutable()
 
   test "Variables request should not crash":

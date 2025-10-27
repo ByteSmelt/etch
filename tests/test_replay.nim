@@ -6,7 +6,6 @@ import test_utils
 
 suite "Register VM Replay - Basic Recording and Playback":
   # Ensure etch binary is built before running tests
-  discard ensureEtchBinary()
   let etchExe = findEtchExecutable()
   let tempDir = getTestTempDir()
 

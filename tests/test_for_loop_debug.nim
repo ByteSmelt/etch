@@ -5,7 +5,6 @@ import std/[unittest, os, strutils]
 import test_utils
 
 suite "For Loop Variable Debugging":
-  discard ensureEtchBinary()
   let etchExe = findEtchExecutable()
 
   test "Numeric for loop variable appears in local variables":

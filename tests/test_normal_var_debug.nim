@@ -5,7 +5,6 @@ import std/[unittest, os, strutils]
 import test_utils
 
 suite "Normal Variable Debugging":
-  discard ensureEtchBinary()
   let etchExe = findEtchExecutable()
 
   test "Normal var variable appears in local variables":

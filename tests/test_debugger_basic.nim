@@ -5,7 +5,6 @@ import std/[unittest, os, strutils]
 import test_utils
 
 suite "Register VM Debugger - Basic Sanity":
-  discard ensureEtchBinary()
   let etchExe = findEtchExecutable()
 
   test "Debug server responds to initialize":

@@ -2,7 +2,6 @@ import std/[unittest, os, strutils]
 import test_utils
 
 suite "Set Array Variable":
-  discard ensureEtchBinary()
   let etchExe = findEtchExecutable()
 
   test "Set integer array":

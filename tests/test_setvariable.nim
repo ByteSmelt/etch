@@ -5,7 +5,6 @@ import std/[unittest, os, strutils]
 import test_utils
 
 suite "Set Variable Debugging":
-  discard ensureEtchBinary()
   let etchExe = findEtchExecutable()
 
   test "Set integer variable":
