@@ -3,9 +3,9 @@
 # This module provides a clean C API that can be linked into C/C++ applications
 
 import std/[tables, os, options, strutils]
-import ./[compiler]
-import ./common/[types]
+import ./common/[constants, types]
 import ./interpreter/[regvm, regvm_exec, regvm_debugserver, regvm_debugserver_remote]
+import ./[compiler]
 
 # C-compatible types
 type
@@ -567,7 +567,7 @@ proc etch_get_register_count*(ctx: EtchContext): cint {.exportc, cdecl, dynlib.}
   ## Returns: Always returns 256 (max registers), or -1 on error
   if ctx == nil or ctx.vm == nil:
     return -1
-  return 256  # MAX_REGISTERS
+  return MAX_REGISTERS
 
 proc etch_get_register*(ctx: EtchContext, regIndex: cint): EtchValue {.exportc, cdecl, dynlib.} =
   ## Get the value of a register in the current frame
@@ -575,7 +575,7 @@ proc etch_get_register*(ctx: EtchContext, regIndex: cint): EtchValue {.exportc, 
   ## Returns: Register value, or nil on error
   if ctx == nil or ctx.vm == nil or ctx.vm.currentFrame == nil:
     return nil
-  if regIndex < 0 or regIndex >= 256:
+  if regIndex < 0 or regIndex > MAX_REGISTERS:
     return nil
 
   try:

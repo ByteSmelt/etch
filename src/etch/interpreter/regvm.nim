@@ -1,13 +1,8 @@
 # regvm.nim
 # Register-based VM implementation (Lua-inspired architecture)
-# This provides significant performance improvements over stack-based VMs
 
 import std/tables
 
-
-const
-  MAX_REGISTERS* = 255  # Maximum number of registers per function frame (must fit in uint8)
-  MAX_CONSTANTS* = 65536  # Maximum constants per function (16-bit index)
 
 type
   # Register-based opcodes (3-address format like Lua)
@@ -28,6 +23,7 @@ type
     ropAddI,          # R[A] = R[B] + imm (immediate add for common case)
     ropSubI,          # R[A] = R[B] - imm
     ropMulI,          # R[A] = R[B] * imm
+    ropDivI,          # R[A] = R[B] / imm
     ropUnm,           # R[A] = -R[B]
 
     # Comparisons (if (R[B] op R[C]) != A then skip)

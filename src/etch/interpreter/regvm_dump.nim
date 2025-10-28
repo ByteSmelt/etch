@@ -4,13 +4,16 @@
 import std/[strutils, strformat, tables, sequtils, algorithm]
 import regvm
 
+
 proc alignRight*(s: string, width: int, fillChar: char = ' '): string =
   let padding = max(0, width - s.len)
   result = repeat(fillChar, padding) & s
 
+
 proc alignLeft*(s: string, width: int, fillChar: char = ' '): string =
   let padding = max(0, width - s.len)
   result = s & repeat(fillChar, padding)
+
 
 proc formatInstruction*(instr: RegInstruction): string =
   case instr.opType
@@ -127,6 +130,8 @@ proc formatInstruction*(instr: RegInstruction): string =
       result = &"R[{instr.a}] = R[{instr.a}] - {instr.bx}"
     of ropMulI:
       result = &"R[{instr.a}] = R[{instr.a}] * {instr.bx}"
+    of ropDivI:
+      result = &"R[{instr.a}] = R[{instr.a}] / {instr.bx}"
     of ropEqI:
       result = &"if R[{instr.a}] == {instr.bx} then skip"
     of ropLtI:
@@ -158,6 +163,7 @@ proc formatInstruction*(instr: RegInstruction): string =
 
   else:
     result = &"{instr.op} (unknown format)"
+
 
 proc dumpConstants*(prog: RegBytecodeProgram) =
   echo ""
@@ -193,11 +199,13 @@ proc dumpConstants*(prog: RegBytecodeProgram) =
           &"{{table:{constant.tval.len}}}"
       echo &"  K[{i:3}] = {valueStr}"
 
+
 proc dumpGlobals*(prog: RegBytecodeProgram) =
   echo ""
   echo "=== GLOBAL VARIABLES ==="
   # Global tracking not implemented in RegBytecodeProgram yet
   echo "  (global tracking not available)"
+
 
 proc dumpFunctions*(prog: RegBytecodeProgram) =
   echo ""
@@ -215,6 +223,7 @@ proc dumpFunctions*(prog: RegBytecodeProgram) =
       let (name, info) = funcTuple
       echo &"  [{i:3}] {name} @ instruction {info.startPos}"
       echo &"       Params: {info.numParams}, MaxReg: {info.maxRegister}"
+
 
 proc dumpInstructionsSummary*(prog: RegBytecodeProgram) =
   echo ""
@@ -234,6 +243,7 @@ proc dumpInstructionsSummary*(prog: RegBytecodeProgram) =
 
   for (op, count) in sortedOps:
     echo &"  {($op).alignLeft(20)} {count:4} times"
+
 
 proc dumpInstructionsByFunctions*(prog: RegBytecodeProgram, maxInstructions: int = -1) =
   echo ""
@@ -309,6 +319,7 @@ proc dumpInstructionsByFunctions*(prog: RegBytecodeProgram, maxInstructions: int
   if maxInstructions > 0 and totalInstructions > maxInstructions:
     echo &"... ({totalInstructions - maxInstructions} more instructions)"
 
+
 proc dumpControlFlow*(prog: RegBytecodeProgram) =
   echo ""
   echo "=== CONTROL FLOW ANALYSIS ==="
@@ -346,8 +357,9 @@ proc dumpControlFlow*(prog: RegBytecodeProgram) =
     var targets = toSeq(jumpTargets.keys)
     targets.sort()
     for target in targets:
-      let sources = jumpTargets[target]
-      echo &"  Instruction {target:3} <- from {sources.join(\", \")}"
+      let sources = jumpTargets[target].join(", ")
+      echo &"  Instruction {target:3} <- from {sources}"
+
 
 proc dumpRegisterUsage*(prog: RegBytecodeProgram) =
   echo ""
@@ -399,12 +411,19 @@ proc dumpRegisterUsage*(prog: RegBytecodeProgram) =
   for i in 0..<min(10, writeList.len):
     echo &"    R[{writeList[i].reg:3}]: {writeList[i].count:4} writes"
 
-proc dumpBytecodeProgram*(prog: RegBytecodeProgram, sourceFile: string = "",
-                         showConstants: bool = true, showGlobals: bool = true,
-                         showFunctions: bool = true, showSummary: bool = true,
-                         showDetailed: bool = true, showControlFlow: bool = true,
-                         showRegisterUsage: bool = true, maxInstructions: int = -1) =
+
+proc dumpBytecodeProgram*(prog: RegBytecodeProgram,
+                          sourceFile: string = "",
+                          showConstants: bool = true,
+                          showGlobals: bool = true,
+                          showFunctions: bool = true,
+                          showSummary: bool = true,
+                          showDetailed: bool = true,
+                          showControlFlow: bool = true,
+                          showRegisterUsage: bool = true,
+                          maxInstructions: int = -1) =
   let fileName = if sourceFile.len > 0: sourceFile else: "register_vm_bytecode"
+
   echo &"=== REGISTER VM BYTECODE DUMP FOR: {fileName} ==="
   echo &"Instructions: {prog.instructions.len}"
   echo &"Constants: {prog.constants.len}"

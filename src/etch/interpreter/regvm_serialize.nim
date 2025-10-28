@@ -22,6 +22,15 @@ type
   RegInstructionDebug* = object
     debug*: RegDebugInfo
 
+  BytecodeHeader* = object
+    valid*: bool
+    version*: uint32
+    sourceHash*: string
+    compilerVersion*: string
+    verbose*: bool
+    debug*: bool
+    optimizeLevel*: int
+
   RegBytecodeFile* = object
     # File metadata
     sourceHash*: string
@@ -596,17 +605,6 @@ proc loadRegBytecode*(filename: string): RegBytecodeProgram =
   deserializeFromBinary(binaryData)
 
 
-type
-  BytecodeHeader* = object
-    valid*: bool
-    version*: uint32
-    sourceHash*: string
-    compilerVersion*: string
-    verbose*: bool
-    debug*: bool
-    optimizeLevel*: int
-
-
 proc readBytecodeHeader*(filename: string): BytecodeHeader =
   ## Read just the header of a bytecode file for cache validation
   ## Returns valid=false if file doesn't exist or has invalid format
@@ -671,6 +669,7 @@ proc `$`*(op: RegOpCode): string =
   of ropAddI: "ADDI"
   of ropSubI: "SUBI"
   of ropMulI: "MULI"
+  of ropDivI: "DIVI"
   of ropUnm: "UNM"
   of ropEq: "EQ"
   of ropLt: "LT"

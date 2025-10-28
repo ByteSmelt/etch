@@ -10,6 +10,7 @@ import std/[options, tables]
 import regvm
 import regvm_lifetime
 
+
 type
   # Track what value is currently in each register
   RegisterContent = object
@@ -22,11 +23,13 @@ type
   DataflowState = object
     regContents: array[256, RegisterContent]  # State of each register
 
+
 proc initDataflowState(): DataflowState =
   result = DataflowState()
   # All registers start with no known content
   for i in 0..<256:
     result.regContents[i] = RegisterContent(hasValue: false)
+
 
 proc invalidateRegister(state: var DataflowState, reg: uint8, pc: int) =
   ## Mark a register as having unknown/changed contents
@@ -38,6 +41,7 @@ proc invalidateRegister(state: var DataflowState, reg: uint8, pc: int) =
     lastWritePC: pc
   )
 
+
 proc recordMove(state: var DataflowState, dest, src: uint8, pc: int) =
   ## Record that dest now contains a copy of src
   state.regContents[dest] = RegisterContent(
@@ -46,6 +50,7 @@ proc recordMove(state: var DataflowState, dest, src: uint8, pc: int) =
     isFromMove: true,
     lastWritePC: pc
   )
+
 
 proc isMoveRedundant(state: DataflowState, dest, src: uint8): bool =
   ## Check if "Move dest = src" is redundant given current dataflow state
@@ -72,6 +77,7 @@ proc isMoveRedundant(state: DataflowState, dest, src: uint8): bool =
     return false
 
   return true
+
 
 proc optimizeBytecodeWithDataflow*(prog: var RegBytecodeProgram) =
   ## Optimized bytecode pass using dataflow analysis
@@ -113,7 +119,7 @@ proc optimizeBytecodeWithDataflow*(prog: var RegBytecodeProgram) =
            ropCast, ropIn, ropNotIn, ropWrapSome, ropLoadNone, ropWrapOk, ropWrapErr,
            ropUnwrapOption, ropUnwrapResult, ropNewArray, ropNewTable, ropGetField,
            ropSlice, ropEqStore, ropLtStore, ropLeStore, ropNeStore, ropAddI, ropSubI,
-           ropMulI, ropGetIndexI, ropPow:
+           ropMulI, ropDivI, ropGetIndexI, ropPow:
           # These ops write to register A, invalidating its previous contents
           invalidateRegister(state, instr.a, i)
 
@@ -142,6 +148,7 @@ proc optimizeBytecodeWithDataflow*(prog: var RegBytecodeProgram) =
 
     if changed:
       prog.instructions = newInstructions
+
 
 ## Conservative approach with limited lookahead
 ## Tracks recent moves and eliminates redundant ones within a small window
@@ -182,7 +189,7 @@ proc optimizeBytecodeConservative*(prog: var RegBytecodeProgram) =
        ropCast, ropIn, ropNotIn, ropWrapSome, ropLoadNone, ropWrapOk, ropWrapErr,
        ropUnwrapOption, ropUnwrapResult, ropNewArray, ropNewTable, ropGetField,
        ropSlice, ropEqStore, ropLtStore, ropLeStore, ropNeStore, ropAddI, ropSubI,
-       ropMulI, ropGetIndexI, ropPow:
+       ropMulI, ropDivI, ropGetIndexI, ropPow:
       # These write to register A, invalidate any moves from A
       lastMove[instr.a] = (false, 0, i)
       # Also invalidate moves TO any register that used A as source
@@ -216,6 +223,7 @@ proc optimizeBytecodeConservative*(prog: var RegBytecodeProgram) =
       newInstructions.add(instr)
 
   prog.instructions = newInstructions
+
 
 # Export the conservative version for now
 proc optimizeBytecode*(prog: var RegBytecodeProgram) =

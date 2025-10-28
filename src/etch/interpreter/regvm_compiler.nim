@@ -254,6 +254,8 @@ proc compileExpr*(c: var RegCompiler, e: Expr): uint8 =
         c.prog.emitABx(ropSubI, result, uint16(leftReg) or (uint16(imm8) shl 8), c.makeDebugInfo(e.pos))
       of boMul:
         c.prog.emitABx(ropMulI, result, uint16(leftReg) or (uint16(imm8) shl 8), c.makeDebugInfo(e.pos))
+      of boDiv:
+        c.prog.emitABx(ropDivI, result, uint16(leftReg) or (uint16(imm8) shl 8), c.makeDebugInfo(e.pos))
       else:
         # Fall back to regular instruction
         c.compileBinOp(e.bop, result, leftReg, rightReg, c.makeDebugInfo(e.pos))

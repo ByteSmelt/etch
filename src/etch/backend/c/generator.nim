@@ -939,6 +939,16 @@ proc emitInstruction(gen: var CGenerator, instr: RegInstruction, pc: int) =
     let c = instr.c
     gen.emit(&"r[{a}] = etch_div(r[{b}], r[{c}]);  // Div")
 
+  of ropDivI:
+    if instr.opType == 1:
+      let regIdx = instr.bx and 0xFF
+      # Reinterpret unsigned 8-bit value as signed using two's complement
+      let imm8 = uint8((instr.bx shr 8) and 0xFF)
+      let imm = if imm8 < 128: int(imm8) else: int(imm8) - 256
+      gen.emit(&"r[{a}] = etch_div(r[{regIdx}], etch_make_int({imm}));  // MulI")
+    else:
+      gen.emit(&"// TODO: MulI with opType {instr.opType}")
+
   of ropMod:
     let b = instr.b
     let c = instr.c

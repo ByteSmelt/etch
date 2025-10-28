@@ -46,6 +46,7 @@ type
     isDefined*: bool  # Has been assigned
     value*: pointer   # Optional cached value
 
+
 proc newLifetimeTracker*(): LifetimeTracker =
   result = LifetimeTracker(
     ranges: @[],
@@ -56,6 +57,7 @@ proc newLifetimeTracker*(): LifetimeTracker =
     destructorPoints: initTable[int, seq[string]]()
   )
 
+
 proc enterScope*(tracker: var LifetimeTracker, pc: int) =
   ## Enter a new scope (block, function, loop, etc.)
   inc tracker.scopeLevel
@@ -65,6 +67,7 @@ proc enterScope*(tracker: var LifetimeTracker, pc: int) =
   newScope.variables = @[]
   newScope.parentScope = tracker.currentScope
   tracker.currentScope = newScope
+
 
 proc exitScope*(tracker: var LifetimeTracker, pc: int) =
   ## Exit current scope and mark end of lifetime for all variables in scope
@@ -98,6 +101,7 @@ proc exitScope*(tracker: var LifetimeTracker, pc: int) =
   tracker.currentScope = tracker.currentScope.parentScope
   dec tracker.scopeLevel
 
+
 proc declareVariable*(tracker: var LifetimeTracker, name: string, register: uint8, pc: int) =
   ## Declare a new variable (allocates register but not yet defined)
   var lifetime = LifetimeRange(
@@ -119,6 +123,7 @@ proc declareVariable*(tracker: var LifetimeTracker, name: string, register: uint
   if tracker.currentScope != nil:
     tracker.currentScope.variables.add(name)
 
+
 proc defineVariable*(tracker: var LifetimeTracker, name: string, pc: int) =
   ## Mark variable as defined (actually assigned a value)
   if tracker.variableMap.hasKey(name):
@@ -138,6 +143,7 @@ proc defineVariable*(tracker: var LifetimeTracker, name: string, pc: int) =
             break
         break
 
+
 proc useVariable*(tracker: var LifetimeTracker, name: string, pc: int) =
   ## Mark variable as used at this PC
   if tracker.variableMap.hasKey(name):
@@ -155,6 +161,7 @@ proc useVariable*(tracker: var LifetimeTracker, name: string, pc: int) =
             break
         break
 
+
 proc buildPCMap*(tracker: var LifetimeTracker) =
   ## Build PC to variables mapping for efficient lookup during execution
   tracker.pcToVariables.clear()
@@ -165,6 +172,7 @@ proc buildPCMap*(tracker: var LifetimeTracker) =
         tracker.pcToVariables[pc] = @[]
       if lifetime.varName notin tracker.pcToVariables[pc]:
         tracker.pcToVariables[pc].add(lifetime.varName)
+
 
 proc getActiveVariables*(tracker: LifetimeTracker, pc: int): seq[VariableState] =
   ## Get all variables that are in scope at the given PC
@@ -178,6 +186,7 @@ proc getActiveVariables*(tracker: LifetimeTracker, pc: int): seq[VariableState] 
         isDefined: lifetime.defPC != -1 and lifetime.defPC <= pc,
         value: nil
       ))
+
 
 proc getDefinedVariables*(tracker: LifetimeTracker, pc: int): seq[VariableState] =
   ## Get only variables that have been defined (assigned) by the given PC
@@ -193,11 +202,13 @@ proc getDefinedVariables*(tracker: LifetimeTracker, pc: int): seq[VariableState]
           value: nil
         ))
 
+
 proc needsDestructor*(tracker: LifetimeTracker, pc: int): seq[string] =
   ## Get variables that need destructors at this PC
   if tracker.destructorPoints.hasKey(pc):
     return tracker.destructorPoints[pc]
   return @[]
+
 
 proc getVariableRegister*(tracker: LifetimeTracker, name: string, pc: int): int =
   ## Get the register for a variable at a specific PC, or -1 if not in scope
@@ -208,6 +219,7 @@ proc getVariableRegister*(tracker: LifetimeTracker, name: string, pc: int): int 
         return int(lifetime.register)
   return -1
 
+
 proc canReuseRegister*(tracker: LifetimeTracker, register: uint8, pc: int): bool =
   ## Check if a register can be safely reused at this PC
   for lifetime in tracker.ranges:
@@ -216,6 +228,7 @@ proc canReuseRegister*(tracker: LifetimeTracker, register: uint8, pc: int): bool
       if lifetime.startPC <= pc and (lifetime.endPC == -1 or lifetime.endPC >= pc):
         return false
   return true
+
 
 proc optimizeLifetimes*(tracker: var LifetimeTracker) =
   ## Optimize lifetime ranges based on actual usage
@@ -234,6 +247,7 @@ proc optimizeLifetimes*(tracker: var LifetimeTracker) =
       tracker.destructorPoints[earlyDestructPC].add(lifetime.varName)
       # Do NOT update endPC - keep it at scope exit for debugger visibility
 
+
 proc exportFunctionData*(tracker: LifetimeTracker, functionName: string): FunctionLifetimeData =
   ## Export lifetime data for a specific function
   result = FunctionLifetimeData(
@@ -242,6 +256,7 @@ proc exportFunctionData*(tracker: LifetimeTracker, functionName: string): Functi
     pcToVariables: tracker.pcToVariables,
     destructorPoints: tracker.destructorPoints
   )
+
 
 proc dumpLifetimes*(tracker: LifetimeTracker) =
   ## Debug: dump all lifetime ranges

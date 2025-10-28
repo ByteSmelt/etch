@@ -1,17 +1,13 @@
 # regvm_exec.nim
 # Execution engine for register-based VM with aggressive optimizations
 
-import std/[tables, macros, math, strutils, times]
+import std/[tables, macros, math, strutils, strformat, times]
 import ../common/[constants, cffi, values, logging]
-import regvm, regvm_debugger, regvm_profiler, regvm_replay, regvm_lifetime
+import ./[regvm, regvm_debugger, regvm_profiler, regvm_replay, regvm_lifetime]
+
 
 # Global table to store values injected during comptime execution
 var comptimeInjections*: Table[string, V] = initTable[string, V]()
-
-# Cross-platform deterministic PRNG using Xorshift64*
-# This ensures consistent random number generation across Linux, macOS, and Windows
-# Algorithm: https://en.wikipedia.org/wiki/Xorshift
-# Period: 2^64 - 1, excellent statistical properties
 
 
 # Logging helper for VM execution
@@ -20,6 +16,11 @@ macro log(verbose: untyped, msg: untyped): untyped =
     if `verbose`:
       logCompiler(true, `msg`)
 
+
+# Cross-platform deterministic PRNG using Xorshift64*
+# This ensures consistent random number generation across Linux, macOS, and Windows
+# Algorithm: https://en.wikipedia.org/wiki/Xorshift
+# Period: 2^64 - 1, excellent statistical properties
 
 proc etch_srand(vm: RegisterVM, seed: uint64) {.inline.} =
   # Initialize RNG state with seed
@@ -57,15 +58,16 @@ proc newRegisterVM*(prog: RegBytecodeProgram): RegisterVM =
     program: prog,
     constants: prog.constants,
     globals: initTable[string, V](),
-    debugger: nil,  # No debugger by default - zero cost
-    isDebugging: false,  # Not in debug mode
     cffiRegistry: cast[pointer](globalCFFIRegistry),  # Use global C FFI registry
-    rngState: 1'u64,  # Initialize RNG with default seed
-    profiler: nil,  # No profiler by default - zero cost
-    isProfiling: false,  # Not profiling by default
-    replayEngine: nil,  # No replay engine by default - zero cost
-    isReplaying: false  # Not replaying by default
+    rngState: 1'u64,                                  # Initialize RNG with default seed
+    debugger: nil,                                    # No debugger by default - zero cost
+    isDebugging: false,                               # Not in debug mode
+    profiler: nil,                                    # No profiler by default - zero cost
+    isProfiling: false,                               # Not profiling by default
+    replayEngine: nil,                                # No replay engine by default - zero cost
+    isReplaying: false                                # Not replaying by default
   )
+
   result.currentFrame = addr result.frames[0]
 
 
@@ -75,17 +77,18 @@ proc newRegisterVMWithDebugger*(prog: RegBytecodeProgram, debugger: RegEtchDebug
     program: prog,
     constants: prog.constants,
     globals: initTable[string, V](),
-    debugger: cast[pointer](debugger),
-    isDebugging: true,  # Set debug mode flag
     cffiRegistry: cast[pointer](globalCFFIRegistry),  # Use global C FFI registry
-    rngState: 1'u64,  # Initialize RNG with default seed
-    profiler: nil,  # No profiler by default - zero cost
-    isProfiling: false,  # Not profiling by default
-    replayEngine: nil,  # No replay engine by default - zero cost
-    isReplaying: false  # Not replaying by default
+    rngState: 1'u64,                                  # Initialize RNG with default seed
+    debugger: cast[pointer](debugger),                # Set debugger
+    isDebugging: true,                                # Set debug mode flag
+    profiler: nil,                                    # No profiler by default - zero cost
+    isProfiling: false,                               # Not profiling by default
+    replayEngine: nil,                                # No replay engine by default - zero cost
+    isReplaying: false                                # Not replaying by default
   )
+
   result.currentFrame = addr result.frames[0]
-  # Attach the debugger to this VM
+
   if debugger != nil:
     debugger.attachToVM(cast[pointer](result))
 
@@ -93,6 +96,7 @@ proc newRegisterVMWithDebugger*(prog: RegBytecodeProgram, debugger: RegEtchDebug
 proc newRegisterVMWithProfiler*(prog: RegBytecodeProgram): RegisterVM =
   let profiler = newProfiler()
   GC_ref(profiler)  # Keep profiler alive
+
   result = RegisterVM(
     frames: @[RegisterFrame()],
     program: prog,
@@ -119,6 +123,7 @@ template setReg(vm: RegisterVM, idx: uint8, val: sink V) =
 
 template getConst(vm: RegisterVM, idx: uint16): V =
   vm.constants[idx]
+
 
 # Debugger helper functions that need access to V type
 proc formatRegisterValue*(v: V): string =
@@ -167,6 +172,7 @@ proc formatRegisterValue*(v: V): string =
   of vkErr:
     let inner = v.wrapped[]
     result = "error(" & formatRegisterValue(inner) & ")"
+
 
 proc formatValueForPrint*(v: V): string =
   ## Format a value for print output (recursive for nested structures)
@@ -234,15 +240,19 @@ proc formatValueForPrint*(v: V): string =
   else:
     result = "nil"
 
+
 proc captureRegisters*(vm: RegisterVM): seq[tuple[index: uint8, value: string]] =
   ## Capture current register state for debugging
   result = @[]
-  if vm.currentFrame != nil:
-    for i in 0'u8..255'u8:
-      let reg = vm.currentFrame.regs[i]
-      # Only capture non-nil registers to save space
-      if not reg.isNil():
-        result.add((index: i, value: formatRegisterValue(reg)))
+  if vm.currentFrame == nil:
+    return
+
+  for i in 0'u8..255'u8:
+    let reg = vm.currentFrame.regs[i]
+    # Only capture non-nil registers to save space
+    if not reg.isNil():
+      result.add((index: i, value: formatRegisterValue(reg)))
+
 
 proc getValueType*(v: V): string =
   ## Get the type name of a register value for display in debugger
@@ -260,7 +270,7 @@ proc getValueType*(v: V): string =
   of vkString:
     result = "string"
   of vkArray:
-    result = "array[" & $v.aval.len & "]"
+    result = &"array[{v.aval.len}]"
   of vkTable:
     result = "table"
   of vkSome:
@@ -271,6 +281,7 @@ proc getValueType*(v: V): string =
     result = "result"
   of vkErr:
     result = "result"
+
 
 # Optimized arithmetic operations with type specialization
 template doAdd(a, b: V): V =
@@ -363,6 +374,7 @@ template doEq(a, b: V): bool =
   else:
     false
 
+
 # Converter between V type (VM value) and Value type (C FFI value)
 proc toValue(v: V): Value =
   ## Convert VM value to C FFI Value type
@@ -400,6 +412,7 @@ proc fromValue(val: Value): V =
   else:
     result = makeNil()
 
+
 # Handle C FFI function calls
 proc callCFFIFunction(vm: RegisterVM, funcName: string, funcReg: uint8, numArgs: uint8): bool =
   ## Call a C FFI function through the registry
@@ -430,6 +443,7 @@ proc callCFFIFunction(vm: RegisterVM, funcName: string, funcReg: uint8, numArgs:
     setReg(vm, funcReg, makeNil())
     return true  # We handled it, even if it errored
 
+
 # Unified output handling for consistent behavior between debug and normal execution
 proc vmPrint(vm: RegisterVM, output: string, outputBuffer: var string, outputCount: var int) =
   ## Unified print function that handles output consistently
@@ -438,7 +452,6 @@ proc vmPrint(vm: RegisterVM, output: string, outputBuffer: var string, outputCou
     if vm.outputCallback != nil:
       vm.outputCallback(output & "\n")
     else:
-      # Fallback to stderr if no callback (shouldn't happen in normal debug flow)
       stderr.writeLine(output)
       stderr.flushFile()
   else:
@@ -453,7 +466,8 @@ proc vmPrint(vm: RegisterVM, output: string, outputBuffer: var string, outputCou
       # No buffer (debug path in non-debug mode)
       echo output
 
-# Main execution loop - highly optimized with computed goto if available
+
+# Main execution loop - highly optimized with case statements
 proc execute*(vm: RegisterVM, verbose: bool = false): int =
   # When debugging, resume from where we left off; otherwise start from entry point
   var pc = if vm.isDebugging and vm.currentFrame.pc >= 0: vm.currentFrame.pc else: vm.program.entryPoint
@@ -543,8 +557,7 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
 
     inc pc
 
-    # Use computed goto table for maximum performance
-    # (Nim doesn't support computed goto, so we use case)
+    # Use case statements for maximum performance
     case instr.op:
 
     # --- Move and Load Instructions ---
@@ -577,6 +590,25 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
         setReg(vm, i, nilValue)
 
     # --- Global Access ---
+    of ropInitGlobal:
+      # Initialize global only if not already set (used in <global> function)
+      # This allows C API to override compile-time initialization
+      if instr.opType == 1 and int(instr.bx) < vm.constants.len:
+        let name = vm.constants[instr.bx].sval
+        if not vm.globals.hasKey(name):
+          # Only set if not already present
+          if vm.replayEngine != nil:
+            let engine = cast[ReplayEngine](vm.replayEngine)
+            if engine.isRecording:
+              engine.recordDelta(ExecutionDelta(
+                instructionIndex: pc,
+                kind: dkGlobalWrite,
+                globalName: name,
+                oldGlobal: makeNil(),
+                newGlobal: getReg(vm, instr.a)
+              ))
+          vm.globals[name] = getReg(vm, instr.a)
+
     of ropGetGlobal:
       if instr.opType == 1 and int(instr.bx) < vm.constants.len:
         let name = vm.constants[instr.bx].sval
@@ -604,25 +636,6 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
               newGlobal: newValue
             ))
         vm.globals[name] = getReg(vm, instr.a)
-
-    of ropInitGlobal:
-      # Initialize global only if not already set (used in <global> function)
-      # This allows C API to override compile-time initialization
-      if instr.opType == 1 and int(instr.bx) < vm.constants.len:
-        let name = vm.constants[instr.bx].sval
-        if not vm.globals.hasKey(name):
-          # Only set if not already present
-          if vm.replayEngine != nil:
-            let engine = cast[ReplayEngine](vm.replayEngine)
-            if engine.isRecording:
-              engine.recordDelta(ExecutionDelta(
-                instructionIndex: pc,
-                kind: dkGlobalWrite,
-                globalName: name,
-                oldGlobal: makeNil(),
-                newGlobal: getReg(vm, instr.a)
-              ))
-          vm.globals[name] = getReg(vm, instr.a)
 
     # --- Arithmetic Operations ---
     of ropAdd:
@@ -679,6 +692,16 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
       else:
         setReg(vm, instr.a, makeNil())
 
+    of ropDivI:
+      let reg = getReg(vm, uint8(instr.bx and 0xFF))
+      if isInt(reg):
+        # Reinterpret unsigned 8-bit value as signed using two's complement
+        let imm8 = uint8((instr.bx shr 8) and 0xFF)
+        let imm = int64(if imm8 < 128: int(imm8) else: int(imm8) - 256)
+        setReg(vm, instr.a, makeInt(getInt(reg) div imm))
+      else:
+        setReg(vm, instr.a, makeNil())
+
     of ropUnm:
       let val = getReg(vm, instr.b)
       if isInt(val):
@@ -697,7 +720,7 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
       log(verbose, "ropEq: reg" & $instr.b & " kind=" & $b.kind & " reg" & $instr.c & " kind=" & $c.kind &
           " equal=" & $isEqual & " skipIfNot=" & $skipIfNot & " willSkip=" & $(isEqual != skipIfNot))
       if isEqual != skipIfNot:
-        inc pc  # Skip next instruction
+        inc pc
 
     of ropLt:
       if doLt(getReg(vm, instr.b), getReg(vm, instr.c)) != (instr.a != 0):
@@ -710,8 +733,8 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
     # --- Immediate Comparisons (Optimized) ---
     of ropEqI:
       let reg = getReg(vm, uint8(instr.bx and 0xFF))
-      let imm = int64(int8(instr.bx shr 8))
       if isInt(reg):
+        let imm = int64(int8(instr.bx shr 8))
         if (getInt(reg) == imm) != (instr.a != 0):
           inc pc
       else:
@@ -719,8 +742,8 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
 
     of ropLtI:
       let reg = getReg(vm, uint8(instr.bx and 0xFF))
-      let imm = int64(int8(instr.bx shr 8))
       if isInt(reg):
+        let imm = int64(int8(instr.bx shr 8))
         if (getInt(reg) < imm) != (instr.a != 0):
           inc pc
       else:
@@ -728,8 +751,8 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
 
     of ropLeI:
       let reg = getReg(vm, uint8(instr.bx and 0xFF))
-      let imm = int64(int8(instr.bx shr 8))
       if isInt(reg):
+        let imm = int64(int8(instr.bx shr 8))
         if (getInt(reg) <= imm) != (instr.a != 0):
           inc pc
       else:
@@ -924,7 +947,7 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
       log(verbose, "ropTestTag: reg=" & $instr.a & " expected=" & $expectedKind & " actual=" & $actualKind & " match=" & $(actualKind == expectedKind))
       if actualKind == expectedKind:
         log(verbose, "ropTestTag: tags match, skipping next instruction (PC " & $pc & " -> " & $(pc + 1) & ")")
-        inc pc  # Skip next instruction if tags match
+        inc pc
 
     of ropUnwrapOption:
       # Unwrap Option value
@@ -978,47 +1001,6 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
       else:
         setReg(vm, instr.a, makeNil())
 
-    of ropSlice:
-      # R[A] = R[B][R[C]:R[D]] where B is array/string, C is start, D is end
-      # Since we only have 3 operands in ABC format, we need to handle this specially
-      # We'll use a trick: D comes from the next register after C
-      let arr = getReg(vm, instr.b)
-      let startVal = getReg(vm, instr.c)
-      let endVal = getReg(vm, instr.c + 1)  # End index is in the next register
-
-      # Convert indices to integers, handling defaults
-      let startIdx = if startVal.isInt(): startVal.ival else: 0
-
-      if arr.kind == vkString:
-        let endIdx = if endVal.isInt():
-          let val = endVal.ival
-          if val < 0: arr.sval.len else: int(val)  # -1 means "until end"
-        else: arr.sval.len
-        let actualStart = max(0, min(int(startIdx), arr.sval.len))
-        let actualEnd = max(actualStart, min(int(endIdx), arr.sval.len))
-
-        if actualStart >= actualEnd:
-          setReg(vm, instr.a, makeString(""))
-        else:
-          var slicedStr = arr.sval[actualStart..<actualEnd]
-          setReg(vm, instr.a, makeString(ensureMove(slicedStr)))
-      elif arr.kind == vkArray:
-        let endIdx = if endVal.isInt():
-          let val = endVal.ival
-          if val < 0: arr.aval.len else: int(val)  # -1 means "until end"
-        else: arr.aval.len
-        let actualStart = max(0, min(int(startIdx), arr.aval.len))
-        let actualEnd = max(actualStart, min(int(endIdx), arr.aval.len))
-
-        if actualStart >= actualEnd:
-          var emptyArr: seq[V] = @[]
-          setReg(vm, instr.a, makeArray(ensureMove(emptyArr)))
-        else:
-          var slicedArr = arr.aval[actualStart..<actualEnd]
-          setReg(vm, instr.a, makeArray(ensureMove(slicedArr)))
-      else:
-        setReg(vm, instr.a, makeNil())
-
     of ropSetIndex:
       var arr = getReg(vm, instr.a)
       let idx = getReg(vm, instr.b)
@@ -1062,6 +1044,47 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
       else:
         log(verbose, "ropLen: not array/string, setting 0 -> reg" & $instr.a)
         setReg(vm, instr.a, makeInt(0))
+
+    of ropSlice:
+      # R[A] = R[B][R[C]:R[D]] where B is array/string, C is start, D is end
+      # Since we only have 3 operands in ABC format, we need to handle this specially
+      # We'll use a trick: D comes from the next register after C
+      let arr = getReg(vm, instr.b)
+      let startVal = getReg(vm, instr.c)
+      let endVal = getReg(vm, instr.c + 1)  # End index is in the next register
+
+      # Convert indices to integers, handling defaults
+      let startIdx = if startVal.isInt(): startVal.ival else: 0
+
+      if arr.kind == vkString:
+        let endIdx = if endVal.isInt():
+          let val = endVal.ival
+          if val < 0: arr.sval.len else: int(val)  # -1 means "until end"
+        else: arr.sval.len
+        let actualStart = max(0, min(int(startIdx), arr.sval.len))
+        let actualEnd = max(actualStart, min(int(endIdx), arr.sval.len))
+
+        if actualStart >= actualEnd:
+          setReg(vm, instr.a, makeString(""))
+        else:
+          var slicedStr = arr.sval[actualStart..<actualEnd]
+          setReg(vm, instr.a, makeString(ensureMove(slicedStr)))
+      elif arr.kind == vkArray:
+        let endIdx = if endVal.isInt():
+          let val = endVal.ival
+          if val < 0: arr.aval.len else: int(val)  # -1 means "until end"
+        else: arr.aval.len
+        let actualStart = max(0, min(int(startIdx), arr.aval.len))
+        let actualEnd = max(actualStart, min(int(endIdx), arr.aval.len))
+
+        if actualStart >= actualEnd:
+          var emptyArr: seq[V] = @[]
+          setReg(vm, instr.a, makeArray(ensureMove(emptyArr)))
+        else:
+          var slicedArr = arr.aval[actualStart..<actualEnd]
+          setReg(vm, instr.a, makeArray(ensureMove(slicedArr)))
+      else:
+        setReg(vm, instr.a, makeNil())
 
     # --- Objects/Tables ---
     of ropNewTable:
@@ -1136,10 +1159,10 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
 
         if step.ival > 0:
           if newIdx < limit.ival:  # Changed from <= to < for exclusive end
-            pc += int(instr.sbx)  # Continue loop
+            pc += int(instr.sbx)   # Continue loop
         else:
           if newIdx > limit.ival:  # Changed from >= to > for backward loops
-            pc += int(instr.sbx)  # Continue loop
+            pc += int(instr.sbx)   # Continue loop
 
     of ropForPrep:
       # Prepare for loop - adjust initial value and check if loop should run
@@ -1280,7 +1303,6 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
           let seedVal = getReg(vm, resultReg + 1)
           if isInt(seedVal):
             etch_srand(vm, uint64(getInt(seedVal)))
-          setReg(vm, resultReg, makeNil())
 
       of "rand":
         if numArgs == 1:
@@ -1312,7 +1334,6 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
           vmPrint(vm, output, outputBuffer, outputCount)
           if outputBuffer.len >= BUFFER_SIZE or outputCount >= 100:
             flushOutput()
-          setReg(vm, resultReg, makeNil())
 
       of "toString":
         if numArgs == 1:
@@ -1595,6 +1616,7 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
       elif isFloat(b) and isFloat(c) and isFloat(d):
         setReg(vm, instr.a, makeFloat(getFloat(b) * getFloat(c) * getFloat(d)))
       else:
+        # Mixed types or unsupported - fall back to nil
         setReg(vm, instr.a, makeNil())
 
     of ropCmpJmp:
@@ -1645,10 +1667,12 @@ proc execute*(vm: RegisterVM, verbose: bool = false): int =
 
   return 0
 
+
 # Run a register-based program
 proc runRegProgram*(prog: RegBytecodeProgram, verbose: bool = false): int =
   let vm = newRegisterVM(prog)
   return vm.execute(verbose)
+
 
 # Run a register-based program with profiling
 proc runRegProgramWithProfiler*(prog: RegBytecodeProgram, verbose: bool = false): int =

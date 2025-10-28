@@ -3,7 +3,8 @@
 # This allows seeking to any point in execution history with near-instant performance
 
 import std/[tables, times, streams]
-import regvm, ../common/constants
+import ../common/constants
+import regvm
 
 
 type
