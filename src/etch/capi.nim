@@ -2,7 +2,7 @@
 # C FFI interface for using Etch as an embedded scripting engine
 # This module provides a clean C API that can be linked into C/C++ applications
 
-import std/[tables, os, options, json, strutils]
+import std/[tables, os, options, strutils]
 import ./[compiler]
 import ./common/[types]
 import ./interpreter/[regvm, regvm_exec, regvm_debugserver, regvm_debugserver_remote]

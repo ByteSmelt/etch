@@ -277,6 +277,9 @@ proc compileExpr*(c: var RegCompiler, e: Expr): uint8 =
     of uoNot:
       c.prog.emitABC(ropNot, result, operandReg, 0, debug)
 
+    # Free the operand register after use
+    c.allocator.freeReg(operandReg)
+
   of ekCall:
     result = c.compileCall(e)
 
@@ -310,6 +313,10 @@ proc compileExpr*(c: var RegCompiler, e: Expr): uint8 =
     else:
       let idxReg = c.compileExpr(e.indexExpr)
       c.prog.emitABC(ropGetIndex, result, arrReg, idxReg, debug)
+      c.allocator.freeReg(idxReg)
+
+    # Free array register after use
+    c.allocator.freeReg(arrReg)
 
   of ekSlice:
     # Handle array/string slicing: arr[start:end]
