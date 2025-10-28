@@ -20,3 +20,8 @@ macro logVM*(verbose: untyped, msg: untyped): untyped =
   result = quote do:
     if `verbose`:
       echo "[", MODULE_VM, "] ", $`msg`
+
+macro logCLI*(verbose: untyped, msg: untyped): untyped =
+  result = quote do:
+    if `verbose`:
+      echo "[", MODULE_CLI, "] ", $`msg`

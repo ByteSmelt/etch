@@ -1,9 +1,10 @@
 # modules.nim
 # Module loading and resolution for Etch
 
-import std/[tables, os, sets, options]
+import std/[tables, os, sets, options, strformat]
 import frontend/[ast, parser, lexer]
 import common/[types, errors, cffi, library_resolver]
+
 
 type
   ExportKind* = enum
@@ -32,17 +33,19 @@ type
     searchPaths*: seq[string]
     loadedPaths*: HashSet[string]
 
+
 var globalModuleRegistry* = ModuleRegistry(
   modules: initTable[string, ModuleInfo](),
   searchPaths: @[".", "modules", "lib"],
   loadedPaths: initHashSet[string]()
 )
 
+
 proc resolvePath*(registry: ModuleRegistry, importPath: string, fromFile: string): string =
   if isAbsolute(importPath):
     if fileExists(importPath):
       return importPath
-    raise newException(IOError, "Module not found: " & importPath)
+    raise newException(IOError, &"Module not found: {importPath}")
 
   let fromDir = parentDir(fromFile)
   let relativePath = fromDir / importPath
@@ -54,7 +57,8 @@ proc resolvePath*(registry: ModuleRegistry, importPath: string, fromFile: string
     if fileExists(fullPath):
       return fullPath
 
-  raise newException(IOError, "Module not found: " & importPath)
+  raise newException(IOError, &"Module not found: {importPath}")
+
 
 proc extractExports*(program: Program): Table[string, ExportedItem] =
   result = initTable[string, ExportedItem]()
@@ -85,6 +89,7 @@ proc extractExports*(program: Program): Table[string, ExportedItem] =
       typeDecl: typeDecl
     )
 
+
 proc loadModule*(registry: ModuleRegistry, importPath: string, fromFile: string): ModuleInfo =
   let resolvedPath = registry.resolvePath(importPath, fromFile)
 
@@ -92,12 +97,11 @@ proc loadModule*(registry: ModuleRegistry, importPath: string, fromFile: string)
     if resolvedPath in registry.modules:
       return registry.modules[resolvedPath]
     else:
-      raise newException(ValueError, "Circular dependency detected: " & resolvedPath)
+      raise newException(ValueError, &"Circular dependency detected: {resolvedPath}")
 
   registry.loadedPaths.incl(resolvedPath)
 
   let source = readFile(resolvedPath)
-  # Source lines will be lazily loaded on error (file is on disk)
   let tokens = lex(source, resolvedPath)
   let program = parseProgram(tokens, resolvedPath)
 
@@ -111,6 +115,7 @@ proc loadModule*(registry: ModuleRegistry, importPath: string, fromFile: string)
   )
 
   registry.modules[resolvedPath] = result
+
 
 proc processImports*(registry: ModuleRegistry, program: var Program, mainFile: string) =
   var importsToProcess: seq[Stmt] = @[]
@@ -172,7 +177,7 @@ proc processImports*(registry: ModuleRegistry, program: var Program, mainFile: s
                 program.types[importItem.name] = exported.typeDecl
           else:
             raise newParseError(importStmt.pos,
-              "Item '" & importItem.name & "' not found in module " & importStmt.importPath)
+              &"Item '{importItem.name}' not found in module {importStmt.importPath}")
 
     of "cffi":
       let importingDir = if importStmt.pos.filename.len > 0:
@@ -200,7 +205,7 @@ proc processImports*(registry: ModuleRegistry, program: var Program, mainFile: s
 
         if not loaded:
           raise newParseError(importStmt.pos,
-            "Failed to load C library: " & importStmt.importPath)
+            &"Failed to load C library: {importStmt.importPath}")
 
       for importItem in importStmt.importItems:
         if importItem.itemKind == "function":
@@ -240,12 +245,13 @@ proc processImports*(registry: ModuleRegistry, program: var Program, mainFile: s
             program.funs[importItem.name].add(funcDecl)
           except:
             raise newParseError(importStmt.pos,
-              "Failed to load C function '" & symbol & "' from library " & libName)
+              &"Failed to load C function '{symbol}' from library {libName}")
 
     else:
-      raise newParseError(importStmt.pos, "Unknown import kind: " & importStmt.importKind)
+      raise newParseError(importStmt.pos, &"Unknown import kind: {importStmt.importKind}")
 
   program.globals = newGlobals
+
 
 proc addSearchPath*(registry: ModuleRegistry, path: string) =
   if path notin registry.searchPaths:

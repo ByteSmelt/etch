@@ -38,7 +38,7 @@ proc usage() =
 
 proc validateFile(path: string) =
   if not fileExists(path):
-    echo "Error: cannot open: ", path
+    echo &"Error: cannot open: {path}"
     quit 1
 
 
@@ -63,10 +63,10 @@ proc populateCFFIInfo(regProg: var RegBytecodeProgram, verbose: bool) =
     # Get the actual library path from the registry
     let libraryPath = if cffiFunc.library in globalCFFIRegistry.libraries:
       let path = globalCFFIRegistry.libraries[cffiFunc.library].path
-      logCompiler(verbose, "CFFI function " & funcName & " uses library " & cffiFunc.library & " at path: " & path)
+      logCompiler(verbose, &"CFFI function {funcName} uses library {cffiFunc.library} at path: {path}")
       path
     else:
-      logCompiler(verbose, "CFFI function " & funcName & " library " & cffiFunc.library & " NOT in registry!")
+      logCompiler(verbose, &"CFFI function {funcName} library {cffiFunc.library} NOT in registry!")
       ""
 
     regProg.cffiInfo[funcName] = regvm.CFFIInfo(
@@ -83,10 +83,9 @@ proc compileToRegBytecode(options: CompilerOptions): RegBytecodeProgram =
   try:
     let (prog, sourceHash, evaluatedGlobals) = parseAndTypecheck(options)
     result = compileProgramWithGlobals(prog, sourceHash, evaluatedGlobals, options.sourceFile, options)
-    # Populate CFFI info from the global registry
     populateCFFIInfo(result, options.verbose)
   except OverflowDefect as e:
-    echo "Internal compiler error: ", e.msg
+    echo &"Internal compiler error: {e.msg}"
     quit 1
   except Exception as e:
     echo e.msg
@@ -94,25 +93,26 @@ proc compileToRegBytecode(options: CompilerOptions): RegBytecodeProgram =
 
 
 proc generateCCodeToFile(bytecode: RegBytecodeProgram, sourceFile: string): string =
-  let cCode = generateCCode(bytecode)
   let (dir, name, _) = splitFile(sourceFile)
   let outputFile = joinPath(dir, name & ".c")
+  let cCode = generateCCode(bytecode)
   writeFile(outputFile, cCode)
+
   return outputFile
 
 
 proc compileAndRunCBackend(bytecode: RegBytecodeProgram, sourceFile: string, verbose: bool, debug: bool): int =
   let (dir, name, _) = splitFile(sourceFile)
+
   let etchDir = joinPath(dir, BYTECODE_CACHE_DIR)
   createDir(etchDir)
+
   let cFile = joinPath(etchDir, name & ".c")
   let exeFile = joinPath(etchDir, name & "_c")
-
   let cCode = generateCCode(bytecode)
   writeFile(cFile, cCode)
 
-  if verbose:
-    echo "Generated C code: ", cFile
+  logCLI(verbose, &"Generated C code: {cFile}")
 
   # Collect unique library directories from CFFI info
   var libDirs: seq[string] = @[]
@@ -121,9 +121,9 @@ proc compileAndRunCBackend(bytecode: RegBytecodeProgram, sourceFile: string, ver
     let libName = cffiInfo.library
 
     if verbose:
-      echo "CFFI Function: ", funcName
-      echo "  Library: ", libName
-      echo "  Library Path: ", cffiInfo.libraryPath
+      echo &"CFFI Function: {funcName}"
+      echo &"  Library: {libName}"
+      echo &"  Library Path: {cffiInfo.libraryPath}"
 
     # Skip standard system libraries (they don't need -L or -rpath)
     if libName in ["c", "cmath", "math", "m", "pthread", "dl"]:
@@ -133,14 +133,14 @@ proc compileAndRunCBackend(bytecode: RegBytecodeProgram, sourceFile: string, ver
     if cffiInfo.libraryPath != "":
       let libDir = parentDir(cffiInfo.libraryPath)
       if verbose:
-        echo "  Library Dir: ", libDir
+        echo &"  Library Dir: {libDir}"
       if libDir != "" and libDir notin libDirs:
         libDirs.add(libDir)
 
   if verbose and libDirs.len > 0:
     echo "Library directories found:"
     for libDir in libDirs:
-      echo "  ", libDir
+      echo &"  {libDir}"
 
   # Build compilation command as seq[string]
   var compileArgs: seq[string] = @[]
@@ -187,9 +187,7 @@ proc compileAndRunCBackend(bytecode: RegBytecodeProgram, sourceFile: string, ver
 
   # Build shell command with proper quoting
   let compileCmd = compileArgs.map(quoteShell).join(" ") & " 2>&1"
-
-  if verbose:
-    echo "Compiling: ", compileCmd
+  logCLI(verbose, &"Compiling: {compileCmd}")
 
   let (compileOutput, compileExitCode) = execCmdEx(compileCmd)
   if compileExitCode != 0:
@@ -197,8 +195,7 @@ proc compileAndRunCBackend(bytecode: RegBytecodeProgram, sourceFile: string, ver
     echo compileOutput
     quit 1
 
-  if verbose:
-    echo "Running: ", exeFile
+  logCLI(verbose, &"Running: {exeFile}")
 
   var (runOutput, runExitCode) = execCmdEx(exeFile)
   runOutput.stripLineEnd
@@ -212,49 +209,50 @@ proc runPerformanceBenchmarks(perfPath: string = "performance"): int =
   var perfDir: string
   var benchmarks: seq[string] = @[]
   var singleFile = false
+  var resultFile = "performance_report.md"
 
   # Check if path is a file or directory
   if fileExists(perfPath):
     # Single file mode
     singleFile = true
     let (dir, name, ext) = splitFile(perfPath)
-    if ext != ".etch":
-      echo "Error: ", perfPath, " must be a .etch file"
+    if ext != SOURCE_FILE_EXTENSION:
+      echo &"Error: {perfPath} must be a {SOURCE_FILE_EXTENSION} file"
       return 1
     perfDir = if dir == "": "." else: dir
     benchmarks.add(name)
-    echo "Running single benchmark: ", name
+    echo &"Running single benchmark: {name}"
   elif dirExists(perfPath):
     # Directory mode
     perfDir = perfPath
 
     # Discover all .etch files that have corresponding .py files
-    for file in walkFiles(perfDir / "*.etch"):
+    for file in walkFiles(perfDir / &"*{SOURCE_FILE_EXTENSION}"):
       let (_, name, _) = splitFile(file)
       let pyFile = perfDir / name & ".py"
       if fileExists(pyFile):
         benchmarks.add(name)
   else:
-    echo "Error: ", perfPath, " not found (not a file or directory)"
+    echo &"Error: {perfPath} not found (not a file or directory)"
     return 1
 
-  echo "Directory: ", perfDir
-  echo "Generating markdown report: performance_report.md"
+  echo &"Directory: {perfDir}"
+  echo &"Generating markdown report: {resultFile}"
   echo ""
 
   if benchmarks.len == 0:
     echo "No performance tests found!"
     return 1
 
-  echo "Found ", benchmarks.len, " benchmarks:"
+  echo &"Found {benchmarks.len} benchmarks:"
   for benchmark in benchmarks:
-    echo "  - ", benchmark
+    echo &"  - {benchmark}"
   echo ""
 
   # Create report header
   var report = "# Etch Performance Benchmarks\n\n"
-  report.add("**Generated**: " & $now() & "\n\n")
-  report.add("**Directory**: `" & perfDir & "`\n\n")
+  report.add(&"**Generated**: {now()}\n\n")
+  report.add(&"**Directory**: {perfDir}\n\n")
   report.add("**Baseline**: C Backend (first result when available, otherwise VM)\n\n")
   report.add("## Detailed Results\n\n")
 
@@ -262,9 +260,9 @@ proc runPerformanceBenchmarks(perfPath: string = "performance"): int =
   var failCount = 0
 
   for benchmark in benchmarks:
-    echo "----- Benchmarking: ", benchmark, " -----"
+    echo &"----- Benchmarking: {benchmark} -----"
 
-    let etchFile = perfDir / benchmark & ".etch"
+    let etchFile = perfDir / benchmark & SOURCE_FILE_EXTENSION
     let pyFile = perfDir / benchmark & ".py"
     let etchDir = perfDir / BYTECODE_CACHE_DIR
     let cExecutable = etchDir / benchmark & "_c"
@@ -299,7 +297,7 @@ proc runPerformanceBenchmarks(perfPath: string = "performance"): int =
     # Append results to report if available
     if fileExists(mdOutput):
       let mdContent = readFile(mdOutput)
-      report.add("### " & benchmark & "\n\n" & mdContent & "\n\n")
+      report.add(&"### {benchmark}\n\n{mdContent}\n\n")
       successCount.inc()
       echo "  ✓ Results added to report"
     else:
@@ -307,14 +305,14 @@ proc runPerformanceBenchmarks(perfPath: string = "performance"): int =
       echo "  ✗ Benchmark failed"
 
   # Write report
-  writeFile("performance_report.md", report)
+  writeFile(resultFile, report)
 
   echo ""
   echo "===== Benchmark complete ====="
-  echo "Success: ", successCount, "/", benchmarks.len
+  echo &"Success: {successCount}/{benchmarks.len}"
   if failCount > 0:
-    echo "Failed:  ", failCount
-  echo "Report saved to: performance_report.md"
+    echo &"Failed:  {failCount}"
+  echo &"Report saved to: {resultFile}"
 
   return if failCount > 0: 1 else: 0
 
@@ -457,22 +455,22 @@ when isMainModule:
     let replayFile = if modeArg.endsWith(".replay"): modeArg else: modeArg & ".replay"
 
     if not fileExists(replayFile):
-      echo "Error: Replay file not found: ", replayFile
+      echo &"Error: Replay file not found: {replayFile}"
       quit 1
 
-    echo "Loading replay from: ", replayFile
+    echo &"Loading replay from: {replayFile}"
 
     # Load replay data (includes source file path)
     let replayData = loadFromFile(replayFile)
     let sourceFile = replayData.sourceFile
 
     if not fileExists(sourceFile):
-      echo "Error: Source file not found: ", sourceFile
-      echo "Note: The replay was recorded from '", sourceFile, "' which is no longer available"
+      echo &"Error: Source file not found: {sourceFile}"
+      echo &"Note: The replay was recorded from '{sourceFile}' which is no longer available"
       quit 1
 
-    echo "Source file: ", sourceFile
-    echo "Loaded ", replayData.totalStatements, " statements (", replayData.snapshots.len, " snapshots)"
+    echo &"Source file: {sourceFile}"
+    echo &"Loaded {replayData.totalStatements} statements ({replayData.snapshots.len} snapshots)"
     echo ""
 
     # Compile source to get bytecode
@@ -481,8 +479,7 @@ when isMainModule:
     let vm = newRegisterVM(bytecodeProgram)
 
     # Restore replay engine from loaded data
-    let engine = restoreReplayEngine(vm, replayData.totalStatements,
-                                     replayData.snapshotInterval, replayData.snapshots)
+    let engine = restoreReplayEngine(vm, replayData.totalStatements, replayData.snapshotInterval, replayData.snapshots)
     vm.replayEngine = cast[pointer](engine)
     GC_ref(engine)
 
@@ -503,11 +500,11 @@ when isMainModule:
         try:
           let stmt = parseInt(trimmed)
           if stmt < 0 or stmt >= replayData.totalStatements:
-            echo "Warning: Statement ", stmt, " out of range (0..", replayData.totalStatements - 1, ")"
+            echo &"Warning: Statement {stmt} out of range (0..{replayData.totalStatements - 1})"
           else:
             steps.add(stmt)
         except ValueError:
-          echo "Error: Invalid step value: ", trimmed
+          echo &"Error: Invalid step value: {trimmed}"
           quit 1
 
     if steps.len == 0:
@@ -515,12 +512,12 @@ when isMainModule:
       quit 1
 
     echo ""
-    echo "==== Stepping through ", steps.len, " statements ===="
+    echo &"==== Stepping through {steps.len} statements ===="
     echo ""
 
     # Step through each statement
     for i, stmt in steps:
-      echo "[", i + 1, "/", steps.len, "] Seeking to statement ", stmt, " / ", replayData.totalStatements - 1, "..."
+      echo &"[{i + 1}/{steps.len}] Seeking to statement {stmt} / {replayData.totalStatements - 1}..."
       vm.seekToStatement(stmt)
       vm.printVMState()
       echo ""
@@ -541,9 +538,9 @@ when isMainModule:
     case backend
     of "c":
       let outputFile = generateCCodeToFile(bytecodeProgram, sourceFile)
-      echo "Generated C code: ", outputFile
+      echo &"Generated C code: {outputFile}"
     else:
-      echo "Error: Unknown backend '", backend, "'. Available backends: c"
+      echo &"Error: Unknown backend '{backend}'. Available backends: c"
       quit 1
 
     quit 0
@@ -563,8 +560,7 @@ when isMainModule:
       let exeTime = getLastModificationTime(exeFile)
       if not (sourceTime > exeTime):
         needsRecompile = false
-        if verbose:
-          echo "Using cached C executable: ", exeFile
+        logCLI(verbose, &"Using cached C executable: {exeFile}")
 
         let (runOutput, runExitCode) = execCmdEx(exeFile)
         echo runOutput
@@ -581,10 +577,8 @@ when isMainModule:
     validateFile(sourceFile)
     let replayFile = recordFile & ".replay"
 
-    if verbose:
-      echo "Recording execution of: ", sourceFile
-      echo "Output will be saved to: ", replayFile
-      echo ""
+    logCLI(verbose, &"Recording execution of: {sourceFile}")
+    logCLI(verbose, &"Output will be saved to: {replayFile}\n")
 
     # Compile and run the program with recording enabled
     let options = makeCompilerOptions(sourceFile, runVM = false, verbose, debug, profile, force)
@@ -602,10 +596,9 @@ when isMainModule:
         engine.saveToFile(replayFile, sourceFile)
         if verbose:
           let stats = engine.getStats()
-          echo ""
-          echo "Saved ", stats.statements, " statements (", stats.snapshots, " snapshots) to ", replayFile
+          logCLI(verbose, &"\nSaved {stats.statements} statements ({stats.snapshots} snapshots) to {replayFile}")
       except Exception as e:
-        echo "Error saving replay: ", e.msg
+        echo &"Error saving replay: {e.msg}"
         quit 1
 
     quit exitCode
