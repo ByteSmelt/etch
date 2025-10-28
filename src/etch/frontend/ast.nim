@@ -243,6 +243,17 @@ proc tObject*(name: string, fields: seq[ObjectField]): EtchType = EtchType(kind:
 proc tUnion*(types: seq[EtchType]): EtchType = EtchType(kind: tkUnion, unionTypes: types)
 
 
+proc etchTypeFromString*(valueName: string): EtchType =
+  result = case valueName
+    of "tkBool": tBool()
+    of "tkChar": tChar()
+    of "tkInt": tInt()
+    of "tkFloat": tFloat()
+    of "tkString": tString()
+    of "tkVoid": tVoid()
+    else: tVoid()
+
+
 proc `$`*(t: EtchType): string =
   case t.kind
   of tkVoid: "void"
