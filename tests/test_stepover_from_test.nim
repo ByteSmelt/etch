@@ -19,7 +19,7 @@ suite "Register VM Debugger - Step Over From Test":
       "seq": 2,
       "type": "request",
       "command": "launch",
-      "arguments": {"stopOnEntry": true, "program": "examples/fn_order.etch"}
+      "arguments": {"stopAtEntry": true, "program": "examples/fn_order.etch"}
     })
 
     # Get to main

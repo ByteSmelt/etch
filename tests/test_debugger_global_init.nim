@@ -27,7 +27,7 @@ suite "Global Initialization Debugging":
       "type": "request",
       "command": "launch",
       "arguments": {
-        "stopOnEntry": true,
+        "stopAtEntry": true,
         "program": "examples/fn_order.etch"
       }
     }
@@ -68,7 +68,7 @@ suite "Global Initialization Debugging":
       "type": "request",
       "command": "launch",
       "arguments": {
-        "stopOnEntry": true,
+        "stopAtEntry": true,
         "program": "examples/fn_order.etch"
       }
     }

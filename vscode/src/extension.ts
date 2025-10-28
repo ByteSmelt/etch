@@ -81,7 +81,7 @@ class EtchConfigurationProvider implements vscode.DebugConfigurationProvider {
                 config.name = 'Launch';
                 config.request = 'launch';
                 config.program = '${file}';
-                config.stopOnEntry = true;
+                config.stopAtEntry = true;
             } else {
                 log(`No suitable active editor found. Editor: ${editor ? 'present' : 'none'}, Language: ${editor ? editor.document.languageId : 'N/A'}`);
             }

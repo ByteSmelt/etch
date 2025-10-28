@@ -66,7 +66,7 @@ Add to `.vscode/launch.json`:
       "request": "launch",
       "name": "Debug Etch Program",
       "program": "${workspaceFolder}/main.etch",
-      "stopOnEntry": true
+      "stopAtEntry": true
     }
   ]
 }

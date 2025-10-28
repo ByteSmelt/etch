@@ -19,7 +19,7 @@ suite "Register VM Debugger - Comprehensive Stepping":
       "seq": 2,
       "type": "request",
       "command": "launch",
-      "arguments": {"stopOnEntry": true, "program": "examples/fn_order.etch"}
+      "arguments": {"stopAtEntry": true, "program": "examples/fn_order.etch"}
     })
 
     # Check initial position
@@ -56,7 +56,7 @@ suite "Register VM Debugger - Comprehensive Stepping":
       "seq": 2,
       "type": "request",
       "command": "launch",
-      "arguments": {"stopOnEntry": true, "program": "examples/fn_order.etch"}
+      "arguments": {"stopAtEntry": true, "program": "examples/fn_order.etch"}
     })
 
     # Step to main

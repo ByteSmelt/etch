@@ -19,7 +19,7 @@ suite "Register VM Debugger - Variables Display":
       "seq": 2,
       "type": "request",
       "command": "launch",
-      "arguments": {"stopOnEntry": true, "program": "examples/float_test.etch"}
+      "arguments": {"stopAtEntry": true, "program": "examples/float_test.etch"}
     })
 
     # Step to main and then to first variable declaration
@@ -47,7 +47,7 @@ suite "Register VM Debugger - Variables Display":
       "seq": 2,
       "type": "request",
       "command": "launch",
-      "arguments": {"stopOnEntry": true, "program": "examples/float_test.etch"}
+      "arguments": {"stopAtEntry": true, "program": "examples/float_test.etch"}
     })
 
     # Step to main
@@ -76,7 +76,7 @@ suite "Register VM Debugger - Variables Display":
       "seq": 2,
       "type": "request",
       "command": "launch",
-      "arguments": {"stopOnEntry": true, "program": "examples/float_test.etch"}
+      "arguments": {"stopAtEntry": true, "program": "examples/float_test.etch"}
     })
 
     # Step through to first variable declaration

@@ -175,11 +175,11 @@ class EtchDebugAdapter extends DebugSession {
 
                 // Send launch request to Etch debug server
                 setTimeout(() => {
-                    const stopOnEntry = launchArgs.stopOnEntry || false;
-                    log(`Sending launch with stopOnEntry: ${stopOnEntry}`);
+                    const stopAtEntry = launchArgs.stopAtEntry || false;
+                    log(`Sending launch with stopAtEntry: ${stopAtEntry}`);
                     this.sendToEtch('launch', {
                         program: program,
-                        stopOnEntry: stopOnEntry
+                        stopAtEntry: stopAtEntry
                     });
 
                     // After launch, mark as initialized and process pending requests
@@ -652,11 +652,11 @@ class RemoteEtchDebugAdapter extends DebugSession {
                 setTimeout(() => {
                     this.sendToEtch('initialize', {});
                     setTimeout(() => {
-                        const stopOnEntry = attachArgs.stopOnEntry || false;
-                        log(`Remote: Sending launch with stopOnEntry: ${stopOnEntry}`);
+                        const stopAtEntry = attachArgs.stopAtEntry || false;
+                        log(`Remote: Sending launch with stopAtEntry: ${stopAtEntry}`);
                         this.sendToEtch('launch', {
                             program: attachArgs.program || '<embedded>',
-                            stopOnEntry: stopOnEntry
+                            stopAtEntry: stopAtEntry
                         });
                         this.initialized = true;
                         this.processPendingRequests();

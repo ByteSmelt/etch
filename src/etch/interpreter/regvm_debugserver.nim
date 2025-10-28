@@ -219,9 +219,9 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
     }
 
   of "launch":
-    # Handle launch request - start the program in paused state if stopOnEntry
+    # Handle launch request - start the program in paused state if stopAtEntry
     let args = request["arguments"]
-    let stopOnEntry = args{"stopOnEntry"}.getBool(false)
+    let stopAtEntry = args{"stopAtEntry"}.getBool(false)
 
     # Initialize VM state at entry point
     server.vm.currentFrame.pc = server.vm.program.entryPoint
@@ -247,21 +247,21 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
           startLine = 1
 
     # Set initial debugger position based on first instruction
-    # NOTE: Only set lastFile/lastLine if NOT stopOnEntry, because when stopOnEntry=true
+    # NOTE: Only set lastFile/lastLine if NOT stopAtEntry, because when stopAtEntry=true
     # we want shouldBreak() to detect the first line as "new" and trigger a break
     if server.vm.program.instructions.len > server.vm.program.entryPoint:
       let firstInstr = server.vm.program.instructions[server.vm.program.entryPoint]
       if firstInstr.debug.line > 0:
         startLine = firstInstr.debug.line
-        if not stopOnEntry:
+        if not stopAtEntry:
           server.debugger.lastFile = firstInstr.debug.sourceFile
           server.debugger.lastLine = firstInstr.debug.line
       else:
-        if not stopOnEntry:
+        if not stopAtEntry:
           server.debugger.lastFile = server.sourceFile
           server.debugger.lastLine = startLine
     else:
-      if not stopOnEntry:
+      if not stopAtEntry:
         server.debugger.lastFile = server.sourceFile
         server.debugger.lastLine = startLine
 
@@ -283,7 +283,7 @@ proc handleDebugRequest*(server: RegDebugServer, request: JsonNode): JsonNode =
     else:
       server.lifetimeData = nil
 
-    if stopOnEntry:
+    if stopAtEntry:
       # Pause at entry point
       server.debugger.pause()
       server.running = true

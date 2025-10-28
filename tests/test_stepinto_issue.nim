@@ -16,12 +16,12 @@ suite "Register VM Debugger - Step Into Issue":
     # Initialize
     discard server.handleDebugRequest(%*{"seq": 1, "type": "request", "command": "initialize", "arguments": {}})
 
-    # Launch with stopOnEntry
+    # Launch with stopAtEntry
     discard server.handleDebugRequest(%*{
       "seq": 2,
       "type": "request",
       "command": "launch",
-      "arguments": {"stopOnEntry": true, "program": "examples/fn_order.etch"}
+      "arguments": {"stopAtEntry": true, "program": "examples/fn_order.etch"}
     })
 
     # Step to main
@@ -50,7 +50,7 @@ suite "Register VM Debugger - Step Into Issue":
       "seq": 2,
       "type": "request",
       "command": "launch",
-      "arguments": {"stopOnEntry": true, "program": "examples/fn_order.etch"}
+      "arguments": {"stopAtEntry": true, "program": "examples/fn_order.etch"}
     })
 
     # Step to main and step into test

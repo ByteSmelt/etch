@@ -29,12 +29,12 @@ suite "Register VM Debugger - Function Order Stepping":
     let initResp = server.handleDebugRequest(%*{"seq": 1, "type": "request", "command": "initialize", "arguments": {}})
     check initResp["success"].getBool() == true
 
-    # Launch with stopOnEntry
+    # Launch with stopAtEntry
     let launchResp = server.handleDebugRequest(%*{
       "seq": 2,
       "type": "request",
       "command": "launch",
-      "arguments": {"stopOnEntry": true, "program": "examples/fn_order.etch"}
+      "arguments": {"stopAtEntry": true, "program": "examples/fn_order.etch"}
     })
     check launchResp["success"].getBool() == true
 
@@ -52,7 +52,7 @@ suite "Register VM Debugger - Function Order Stepping":
       "seq": 2,
       "type": "request",
       "command": "launch",
-      "arguments": {"stopOnEntry": true, "program": "examples/fn_order.etch"}
+      "arguments": {"stopAtEntry": true, "program": "examples/fn_order.etch"}
     })
 
     # Get initial stack trace
@@ -76,7 +76,7 @@ suite "Register VM Debugger - Function Order Stepping":
       "seq": 2,
       "type": "request",
       "command": "launch",
-      "arguments": {"stopOnEntry": true, "program": "examples/fn_order.etch"}
+      "arguments": {"stopAtEntry": true, "program": "examples/fn_order.etch"}
     })
 
     # Step over to next line

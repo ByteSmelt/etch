@@ -9,7 +9,7 @@
             "request": "launch",
             "name": "Launch Etch VM Program",
             "program": "${file}",
-            "stopOnEntry": true
+            "stopAtEntry": true
         },
         {
             "type": "etch",
@@ -18,7 +18,18 @@
             "host": "127.0.0.1",
             "timeout": 30000,
             "port": 9823,
-            "stopOnEntry": true
+            "stopAtEntry": true
+        },
+        {
+            "type": "cppdbg",
+            "request": "launch",
+            "name": "Debug Etch Generated C",
+            "program": "${file}",
+            "cwd": "${workspaceFolder}",
+            "externalConsole": false,
+            "MIMode": "lldb",
+            "stopAtEntry": false,
+            "preLaunchTask": "",
         },
         {
             "type": "cppdbg",

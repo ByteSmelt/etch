@@ -106,7 +106,7 @@
                 "description": "Optional: Path to custom debug executable (C binary embedding Etch). If not specified, uses the Etch compiler.",
                 "default": ""
               },
-              "stopOnEntry": {
+              "stopAtEntry": {
                 "type": "boolean",
                 "description": "Automatically stop after launch.",
                 "default": true
@@ -136,7 +136,7 @@
                 "description": "Connection timeout in milliseconds.",
                 "default": 30000
               },
-              "stopOnEntry": {
+              "stopAtEntry": {
                 "type": "boolean",
                 "description": "Automatically stop after attach.",
                 "default": true
@@ -155,7 +155,7 @@
             "request": "launch",
             "name": "Launch Etch Program",
             "program": "${workspaceFolder}/${command:AskForProgramName}",
-            "stopOnEntry": true
+            "stopAtEntry": true
           }
         ],
         "configurationSnippets": [
@@ -167,7 +167,7 @@
               "request": "launch",
               "name": "Launch Etch Program",
               "program": "^\"\\${workspaceFolder}/\\${command:AskForProgramName}\"",
-              "stopOnEntry": true
+              "stopAtEntry": true
             }
           },
           {
@@ -179,7 +179,7 @@
               "name": "Debug C Binary with Etch",
               "program": "^\"\\${workspaceFolder}/script.etch\"",
               "debugExecutable": "^\"\\${workspaceFolder}/my_app\"",
-              "stopOnEntry": true
+              "stopAtEntry": true
             }
           },
           {
@@ -192,7 +192,7 @@
               "host": "127.0.0.1",
               "port": 9823,
               "timeout": 30000,
-              "stopOnEntry": true
+              "stopAtEntry": true
             }
           }
         ]

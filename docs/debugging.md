@@ -42,7 +42,7 @@ Add to your `.vscode/launch.json`:
   "request": "launch",
   "name": "Launch Etch VM Program",
   "program": "${file}",
-  "stopOnEntry": true
+  "stopAtEntry": true
 }
 ```
 
@@ -81,7 +81,7 @@ Add to your `.vscode/launch.json`:
   "host": "127.0.0.1",
   "port": 9823,
   "timeout": 30000,
-  "stopOnEntry": true
+  "stopAtEntry": true
 }
 ```
 
@@ -103,7 +103,7 @@ Run your C/C++ application with the environment variables set. The Etch VM will:
 
 #### 4. Attach Debugger
 
-In VSCode, select **"Attach to Etch Remote Debugger"** and press **F5**. The debugger will connect and pause at the entry point if `stopOnEntry: true`.
+In VSCode, select **"Attach to Etch Remote Debugger"** and press **F5**. The debugger will connect and pause at the entry point if `stopAtEntry: true`.
 
 ### C++ Example
 
@@ -163,7 +163,7 @@ Add a compound configuration to `.vscode/launch.json`:
       "host": "127.0.0.1",
       "port": 9823,
       "timeout": 30000,
-      "stopOnEntry": true
+      "stopAtEntry": true
     },
     {
       "type": "cppdbg",

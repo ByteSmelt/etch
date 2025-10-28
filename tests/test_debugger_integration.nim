@@ -80,7 +80,7 @@ fn main() -> void {
     defer: removeFile(testProg)
 
     let inputCommands = """{"seq":1,"type":"request","command":"initialize","arguments":{}}""" & "\n" &
-                        """{"seq":2,"type":"request","command":"launch","arguments":{"program":"$1","stopOnEntry":true}}""".format(testProg) & "\n" &
+                        """{"seq":2,"type":"request","command":"launch","arguments":{"program":"$1","stopAtEntry":true}}""".format(testProg) & "\n" &
                         """{"seq":3,"type":"request","command":"disconnect","arguments":{}}""" & "\n"
 
     let (output, _) = runDebugServerWithInput(etchExe, testProg, inputCommands, timeoutSecs = 2)
@@ -107,7 +107,7 @@ fn main() -> void {
     defer: removeFile(testProg)
 
     let inputCommands = """{"seq":1,"type":"request","command":"initialize","arguments":{}}""" & "\n" &
-                        """{"seq":2,"type":"request","command":"launch","arguments":{"program":"$1","stopOnEntry":true}}""".format(testProg) & "\n" &
+                        """{"seq":2,"type":"request","command":"launch","arguments":{"program":"$1","stopAtEntry":true}}""".format(testProg) & "\n" &
                         """{"seq":3,"type":"request","command":"stackTrace","arguments":{"threadId":1}}""" & "\n" &
                         """{"seq":4,"type":"request","command":"disconnect","arguments":{}}""" & "\n"
 
@@ -143,7 +143,7 @@ fn main() -> void {
     # We need to parse scopes responses to get the correct references
     # For this test, we'll use a simpler approach: just check that responses have the expected structure
     let inputCommands = """{"seq":1,"type":"request","command":"initialize","arguments":{}}""" & "\n" &
-                        """{"seq":2,"type":"request","command":"launch","arguments":{"program":"$1","stopOnEntry":true}}""".format(testProg) & "\n" &
+                        """{"seq":2,"type":"request","command":"launch","arguments":{"program":"$1","stopAtEntry":true}}""".format(testProg) & "\n" &
                         """{"seq":3,"type":"request","command":"next","arguments":{"threadId":1}}""" & "\n" &
                         """{"seq":4,"type":"request","command":"scopes","arguments":{"frameId":0}}""" & "\n" &
                         """{"seq":5,"type":"request","command":"next","arguments":{"threadId":1}}""" & "\n" &
@@ -190,7 +190,7 @@ fn main() -> void {
     defer: removeFile(testProg)
 
     let inputCommands = """{"seq":1,"type":"request","command":"initialize","arguments":{}}""" & "\n" &
-                        """{"seq":2,"type":"request","command":"launch","arguments":{"program":"$1","stopOnEntry":true}}""".format(testProg) & "\n" &
+                        """{"seq":2,"type":"request","command":"launch","arguments":{"program":"$1","stopAtEntry":true}}""".format(testProg) & "\n" &
                         """{"seq":3,"type":"request","command":"next","arguments":{"threadId":1}}""" & "\n" &
                         """{"seq":4,"type":"request","command":"next","arguments":{"threadId":1}}""" & "\n" &
                         """{"seq":5,"type":"request","command":"next","arguments":{"threadId":1}}""" & "\n" &
@@ -218,7 +218,7 @@ fn main() -> void {
     defer: removeFile(testProg)
 
     let inputCommands = """{"seq":1,"type":"request","command":"initialize","arguments":{}}""" & "\n" &
-                        """{"seq":2,"type":"request","command":"launch","arguments":{"program":"$1","stopOnEntry":true}}""".format(testProg) & "\n" &
+                        """{"seq":2,"type":"request","command":"launch","arguments":{"program":"$1","stopAtEntry":true}}""".format(testProg) & "\n" &
                         """{"seq":3,"type":"request","command":"continue","arguments":{"threadId":1}}""" & "\n" &
                         """{"seq":4,"type":"request","command":"disconnect","arguments":{}}""" & "\n"
 
@@ -234,7 +234,7 @@ fn main() -> void {
     defer: removeFile(testProg)
 
     let inputCommands = """{"seq":1,"type":"request","command":"initialize","arguments":{}}""" & "\n" &
-                        """{"seq":2,"type":"request","command":"launch","arguments":{"program":"$1","stopOnEntry":true}}""".format(testProg) & "\n" &
+                        """{"seq":2,"type":"request","command":"launch","arguments":{"program":"$1","stopAtEntry":true}}""".format(testProg) & "\n" &
                         """{"seq":3,"type":"request","command":"threads","arguments":{}}""" & "\n" &
                         """{"seq":4,"type":"request","command":"disconnect","arguments":{}}""" & "\n"
 

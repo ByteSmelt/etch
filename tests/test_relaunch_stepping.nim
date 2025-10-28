@@ -19,7 +19,7 @@ suite "Register VM Debugger - Relaunch and Stepping":
       "seq": 2,
       "type": "request",
       "command": "launch",
-      "arguments": {"stopOnEntry": true, "program": "examples/fn_order.etch"}
+      "arguments": {"stopAtEntry": true, "program": "examples/fn_order.etch"}
     })
 
     # Check initial position
@@ -49,7 +49,7 @@ suite "Register VM Debugger - Relaunch and Stepping":
       "seq": 2,
       "type": "request",
       "command": "launch",
-      "arguments": {"stopOnEntry": true, "program": "examples/fn_order.etch"}
+      "arguments": {"stopAtEntry": true, "program": "examples/fn_order.etch"}
     })
 
     # Step through globals
