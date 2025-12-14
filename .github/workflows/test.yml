@@ -57,6 +57,11 @@ jobs:
       run: |
         choco install make
 
+    - name: Install dependencies (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        apt-get install -y libffi-dev
+  
     - name: Verify installations
       run: |
         nim --version
