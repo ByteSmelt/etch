@@ -19,6 +19,18 @@ when defined(macosx):
   switch("passC", "-I" & libffiPath & "/include")
   switch("passL", libffiPath & "/lib/libffi.a")
 
+elif defined(linux):
+  # Ubuntu/Linux libffi support
+  switch("passC", "-I/usr/include/ffi")
+  switch("passL", "-L/usr/lib -lffi")
+
+elif defined(windows):
+  # Windows libffi support with customizable paths
+  let libffiInclude = getEnv("LIBFFI_INCLUDE", "C:/libffi/include")
+  let libffiLib = getEnv("LIBFFI_LIB", "C:/libffi/lib")
+  switch("passC", "-I" & libffiInclude)
+  switch("passL", "-L" & libffiLib & " -lffi")
+
 when defined(release) or defined(deploy):
   switch("define", "danger")
   switch("define", "strip")
