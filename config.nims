@@ -16,6 +16,7 @@ when defined(macosx):
   switch("passL", "-L " & sdkPath & "/usr/lib -F " & sdkPath & "/System/Library/Frameworks")
 
   # Handle both Apple Silicon (arm64) and Intel (x86_64) Macs
+  # This compile-time check determines the path when building the Nim compiler
   let libffiPath = 
     when system.fileExists("/opt/homebrew/opt/libffi/lib/libffi.a"):
       "/opt/homebrew/opt/libffi"  # Apple Silicon
@@ -25,14 +26,14 @@ when defined(macosx):
   switch("passL", libffiPath & "/lib/libffi.a")
 
 when defined(linux):
-  # Link against system libffi
+  # Link against system libffi (installed via apt-get install libffi-dev)
   switch("passL", "-lffi")
 
 when defined(windows):
   # On Windows with MSYS2, use explicit paths
-  # MSYS2 typically installs to C:/msys64 or in GitHub Actions under D:/a/_temp/msys64
+  # These compile-time checks determine the path when building
   when system.fileExists("D:/a/_temp/msys64/mingw64/lib/libffi.a"):
-    # GitHub Actions path
+    # GitHub Actions path (msys2/setup-msys2 action)
     switch("passC", "-ID:/a/_temp/msys64/mingw64/include")
     switch("passL", "D:/a/_temp/msys64/mingw64/lib/libffi.a")
   elif system.fileExists("C:/msys64/mingw64/lib/libffi.a"):
@@ -40,11 +41,12 @@ when defined(windows):
     switch("passC", "-IC:/msys64/mingw64/include")
     switch("passL", "C:/msys64/mingw64/lib/libffi.a")
   elif system.fileExists("C:/tools/msys64/mingw64/lib/libffi.a"):
-    # Alternative MSYS2 installation
+    # Alternative MSYS2 installation (e.g., via chocolatey)
     switch("passC", "-IC:/tools/msys64/mingw64/include")
     switch("passL", "C:/tools/msys64/mingw64/lib/libffi.a")
   else:
-    # Fall back to dynamic linking
+    # Fall back to dynamic linking (requires libffi.dll in PATH)
+    # This will use the dynlib pragma from libffi.nim
     discard
 
 when defined(release) or defined(deploy):
