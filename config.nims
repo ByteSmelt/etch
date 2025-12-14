@@ -27,7 +27,8 @@ when defined(macosx):
 
 when defined(linux):
   # Link against system libffi (installed via apt-get install libffi-dev)
-  switch("passL", "-lffi")
+  switch("passC", "-I/usr/local/include")
+  switch("passL", "/usr/local/lib/libffi.a")
 
 when defined(windows):
   # On Windows with MSYS2, use explicit paths
