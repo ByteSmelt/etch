@@ -10,7 +10,7 @@ Etch's Foreign Function Interface (FFI) has been upgraded to use [libffi](https:
 
 - `src/etch/common/cffi.nim` - Main FFI implementation using libffi
 - `src/etch/common/libffi_static.nim` - Static wrapper around libffi for proper linking
-- `config.nims` - Build configuration for static libffi linking
+- `config.nims` - Build configuration for libffi linking across macOS, Ubuntu/Linux, and Windows
 
 ### Architecture
 
@@ -107,7 +107,7 @@ The standard libffi Nim wrapper uses dynamic linking (`dynlib` pragma), which re
 
 Created `libffi_static.nim` that:
 1. Uses `header` pragma instead of `dynlib` for compile-time linking
-2. Configures static linking via `passL` for the `.a` file
+2. Configures static linking via `passL` for the library file
 3. Adds include paths via `passC` for header files
 
 ```nim
@@ -119,24 +119,62 @@ when defined(macosx):
   {.pragma: mylib, header: "<ffi.h>".}
 ```
 
+This approach is now extended to support Ubuntu/Linux and Windows platforms via `config.nims`, ensuring consistent behavior across all supported operating systems.
+
 This ensures:
-- No runtime dependencies on libffi.dylib
+- No runtime dependencies on libffi shared libraries
 - Symbols are resolved at compile time
 - Works consistently across different systems
+- Cross-platform compatibility (macOS, Linux, Windows)
 
 ### Build Configuration
 
-`config.nims` is configured to link libffi statically on macOS:
+`config.nims` is configured to link libffi statically across all supported platforms:
 
+**macOS:**
 ```nim
 when defined(macosx):
-  # Static link libffi from homebrew
-  switch("passL", "/opt/homebrew/opt/libffi/lib/libffi.a")
+  let libffiPath = "/opt/homebrew/opt/libffi"
+  switch("passC", "-I" & libffiPath & "/include")
+  switch("passL", libffiPath & "/lib/libffi.a")
+```
+
+**Ubuntu/Linux:**
+```nim
+elif defined(linux):
+  switch("passC", "-I/usr/include/ffi")
+  switch("passL", "-L/usr/lib -lffi")
+```
+
+**Windows:**
+```nim
+elif defined(windows):
+  let libffiInclude = getEnv("LIBFFI_INCLUDE", "C:/libffi/include")
+  let libffiLib = getEnv("LIBFFI_LIB", "C:/libffi/lib")
+  switch("passC", "-I" & libffiInclude)
+  switch("passL", "-L" & libffiLib & " -lffi")
 ```
 
 **Installation:**
+
+*macOS:*
 ```bash
 brew install libffi
+nimble install libffi
+```
+
+*Ubuntu/Linux:*
+```bash
+sudo apt-get install libffi-dev
+nimble install libffi
+```
+
+*Windows:*
+```bash
+# Install libffi via vcpkg, msys2, or manual build
+# Set environment variables if not using default paths:
+# set LIBFFI_INCLUDE=C:\path\to\libffi\include
+# set LIBFFI_LIB=C:\path\to\libffi\lib
 nimble install libffi
 ```
 
