@@ -4,6 +4,8 @@ when defined(macosx):
   {.pragma: ffiLibrary, header: "<ffi.h>".}
 elif defined(linux):
   {.pragma: ffiLibrary, header: "<ffi/ffi.h>".}
+elif defined(windows):
+  {.pragma: ffiLibrary, header: "<ffi.h>".}
 else:
   {.pragma: ffiLibrary, dynlib: "libffi.so".}
 

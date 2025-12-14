@@ -15,9 +15,24 @@ when defined(macosx):
   switch("passC", "-isysroot " & sdkPath)
   switch("passL", "-L " & sdkPath & "/usr/lib -F " & sdkPath & "/System/Library/Frameworks")
 
-  let libffiPath = "/opt/homebrew/opt/libffi"
+  # Handle both Apple Silicon (arm64) and Intel (x86_64) Macs
+  let libffiPath = 
+    when system.fileExists("/opt/homebrew/opt/libffi/lib/libffi.a"):
+      "/opt/homebrew/opt/libffi"  # Apple Silicon
+    else:
+      "/usr/local/opt/libffi"      # Intel Mac
   switch("passC", "-I" & libffiPath & "/include")
   switch("passL", libffiPath & "/lib/libffi.a")
+
+when defined(linux):
+  # Link against system libffi
+  switch("passL", "-lffi")
+
+when defined(windows):
+  # Link against msys2 libffi
+  when system.fileExists("C:/tools/msys64/mingw64/lib/libffi.a"):
+    switch("passC", "-IC:/tools/msys64/mingw64/include")
+    switch("passL", "C:/tools/msys64/mingw64/lib/libffi.a")
 
 when defined(release) or defined(deploy):
   switch("define", "danger")
