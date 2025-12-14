@@ -22,7 +22,7 @@ when defined(macosx):
 elif defined(linux):
   # Ubuntu/Linux libffi support
   switch("passC", "-I/usr/include/ffi")
-  switch("passL", "-L/usr/lib -lffi")
+  switch("passL", "-lffi")
 
 elif defined(windows):
   # Windows libffi support with customizable paths

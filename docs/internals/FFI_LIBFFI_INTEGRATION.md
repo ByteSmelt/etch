@@ -143,7 +143,7 @@ when defined(macosx):
 ```nim
 elif defined(linux):
   switch("passC", "-I/usr/include/ffi")
-  switch("passL", "-L/usr/lib -lffi")
+  switch("passL", "-lffi")
 ```
 
 **Windows:**
