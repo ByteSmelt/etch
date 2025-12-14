@@ -29,10 +29,23 @@ when defined(linux):
   switch("passL", "-lffi")
 
 when defined(windows):
-  # Link against msys2 libffi
-  when system.fileExists("C:/tools/msys64/mingw64/lib/libffi.a"):
+  # On Windows with MSYS2, use explicit paths
+  # MSYS2 typically installs to C:/msys64 or in GitHub Actions under D:/a/_temp/msys64
+  when system.fileExists("D:/a/_temp/msys64/mingw64/lib/libffi.a"):
+    # GitHub Actions path
+    switch("passC", "-ID:/a/_temp/msys64/mingw64/include")
+    switch("passL", "D:/a/_temp/msys64/mingw64/lib/libffi.a")
+  elif system.fileExists("C:/msys64/mingw64/lib/libffi.a"):
+    # Standard MSYS2 installation
+    switch("passC", "-IC:/msys64/mingw64/include")
+    switch("passL", "C:/msys64/mingw64/lib/libffi.a")
+  elif system.fileExists("C:/tools/msys64/mingw64/lib/libffi.a"):
+    # Alternative MSYS2 installation
     switch("passC", "-IC:/tools/msys64/mingw64/include")
     switch("passL", "C:/tools/msys64/mingw64/lib/libffi.a")
+  else:
+    # Fall back to dynamic linking
+    discard
 
 when defined(release) or defined(deploy):
   switch("define", "danger")
