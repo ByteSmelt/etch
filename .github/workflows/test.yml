@@ -68,8 +68,8 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y libffi-dev make
-        ls -la /usr/local/include/ffi
-        ls -la /usr/include/ffi
+        find /usr/local/include -name "*ffi*"
+        find /usr/include -name "*ffi*"
 
     - name: Verify installations
       run: |
