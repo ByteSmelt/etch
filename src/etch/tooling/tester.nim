@@ -313,9 +313,11 @@ proc initTestState(state: var TestState; numTests: int) =
 
 
 proc shutdownTestState(state: var TestState) =
+  state.jobs = @[]
+  state.results = @[]
   when threadsEnabled:
-    deinitLock(state.jobsLock)
     deinitLock(state.resultsLock)
+    deinitLock(state.jobsLock)
   else:
     discard
 
@@ -433,24 +435,13 @@ proc runTests*(testFiles: seq[string], verbose: bool = false, release: bool = fa
     proc workerProc(s: ptr TestState) {.thread, nimcall.} =
       var job: TestJob
       while true:
-        # Check if we should stop (explicit flag or all work done)
-        # Use separate lock acquisitions to avoid potential deadlock
+        # Check stop flag under lock for proper synchronization
         var shouldStop = false
-        var jobsEmpty = false
         withLock s.jobsLock:
           shouldStop = s.workersShouldStop
-          jobsEmpty = s.jobs.len == 0
 
         if shouldStop:
           break
-
-        # If no jobs in queue, check if all work is complete
-        if jobsEmpty:
-          var remainingWork = 0
-          withLock s.resultsLock:
-            remainingWork = s.remainingJobs
-          if remainingWork == 0:
-            break
 
         if not tryDequeueJob(s[], job):
           sleep(1)
