@@ -432,7 +432,26 @@ proc runTests*(testFiles: seq[string], verbose: bool = false, release: bool = fa
 
     proc workerProc(s: ptr TestState) {.thread, nimcall.} =
       var job: TestJob
-      while not s.workersShouldStop:
+      while true:
+        # Check if we should stop (explicit flag or all work done)
+        # Use separate lock acquisitions to avoid potential deadlock
+        var shouldStop = false
+        var jobsEmpty = false
+        withLock s.jobsLock:
+          shouldStop = s.workersShouldStop
+          jobsEmpty = s.jobs.len == 0
+
+        if shouldStop:
+          break
+
+        # If no jobs in queue, check if all work is complete
+        if jobsEmpty:
+          var remainingWork = 0
+          withLock s.resultsLock:
+            remainingWork = s.remainingJobs
+          if remainingWork == 0:
+            break
+
         if not tryDequeueJob(s[], job):
           sleep(1)
           continue
@@ -449,7 +468,9 @@ proc runTests*(testFiles: seq[string], verbose: bool = false, release: bool = fa
           continue
         emitResult(s[], maybeRes.get)
 
-      s.workersShouldStop = true
+      # Signal workers to stop - use lock to ensure visibility across threads
+      withLock s.jobsLock:
+        s.workersShouldStop = true
 
     for i, testFile in testFiles:
       enqueueJob(state, i, testFile)
